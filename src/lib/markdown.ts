@@ -199,7 +199,7 @@ export async function renderMermaidIn(root: HTMLElement | null): Promise<number>
   const blocks = Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-mermaid"));
   if (blocks.length === 0) return 0;
 
-  const { configuredMermaid, currentMermaidTheme } = await import("./mermaid");
+  const { renderDiagram, currentMermaidTheme } = await import("./mermaid");
   let rendered = 0;
 
   for (const code of blocks) {
@@ -208,10 +208,10 @@ export async function renderMermaidIn(root: HTMLElement | null): Promise<number>
     const source = code.textContent ?? "";
     if (!source.trim()) continue;
 
+    // id 只是给失败时清理用；真正的渲染 id 由共享模块统一分配（避免撞 id）
+    const id = `mmd-${++mermaidSeq}`;
     try {
-      const mermaid = await configuredMermaid(currentMermaidTheme());
-      const id = `mmd-${++mermaidSeq}`;
-      const { svg } = await mermaid.render(id, source);
+      const svg = await renderDiagram(source, currentMermaidTheme());
 
       const holder = document.createElement("div");
       holder.className = "mermaid-block";
@@ -237,6 +237,9 @@ export async function renderMermaidIn(root: HTMLElement | null): Promise<number>
     } catch (e) {
       // 图有语法错误时保留代码块，并在旁边说明——总比整段消失好
       pre.dataset.mermaid = "failed";
+      // 防御：万一 Mermaid 仍然往 DOM 里插了错误节点（它有过这种行为），
+      // 这里把它清掉，免得留在界面上还被拍进截图
+      cleanupMermaidErrorNode(id);
       const note = document.createElement("div");
       note.className = "mermaid-error";
       note.textContent = `这张图渲染失败（${String(e).slice(0, 120)}），下面是原始定义`;
@@ -246,8 +249,20 @@ export async function renderMermaidIn(root: HTMLElement | null): Promise<number>
   return rendered;
 }
 
-/** 缩放：适应宽度用 max-width 限制，固定比例用宽度百分比 */
-function applyZoom(holder: HTMLElement, zoom: string) {
+/**
+ * 清掉 Mermaid 在渲染失败时可能注入到 DOM 里的错误节点。
+ *
+ * Mermaid 会在 `document.body`（或容器内）插入一个 id 形如 `dmermaid-<id>` 的元素，
+ * 里面是「Syntax error in text」的提示。它是全局副作用，不会随 React 卸载消失，
+ * 所以这里主动收尾。已开启 `suppressErrorRendering`，这里是双保险。
+ */
+function cleanupMermaidErrorNode(id: string): void {
+  for (const node of Array.from(document.querySelectorAll(`#d${CSS.escape(id)}, [id^="dmermaid"]`))) {
+    node.remove();
+  }
+}
+
+/** 缩放：适应宽度用 max-width 限制，固定比例用宽度百分比 */function applyZoom(holder: HTMLElement, zoom: string) {
   const canvas = holder.querySelector<HTMLElement>(".mermaid-canvas");
   const svg = canvas?.querySelector<SVGSVGElement>("svg");
   if (!canvas || !svg) return;

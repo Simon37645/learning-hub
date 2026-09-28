@@ -82,6 +82,17 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **改完 Rust 不用手动重启**：`tauri dev` 会监听 `src-tauri` 自动重编译并重启应用。
 - **`topic_get` 必须带笔记清单**：前端在 agent 写文件后会重新拉它来刷新界面；
   若返回空的 notes，界面会被刷空（踩过一次）。
+- **Mermaid 的渲染必须收口到一处**：界面上有两个入口会画图（聊天/内置浏览器的 Markdown 渲染器、
+  编辑器里的图表组件）。各自调 `mermaid.render()` 会**撞 id**（两边都从 1 开始编号），
+  而且 render 本身不是并发安全的。症状很迷惑人：合法的图报「Syntax error in text」，
+  并且 Mermaid 会把那个错误框塞进 DOM、一直留在界面上（曾经被截进 README 的图里）。
+  现在统一走 `src/inknote/lib/mermaid.ts` 的 `renderDiagram()`：唯一 id + 串行队列 +
+  `suppressErrorRendering`。**别再绕过它直接调 mermaid。**
+- **widget 里不要在 await 之前判断 `target.isConnected`**：widget 刚创建时节点可能还没挂到文档上，
+  检查会直接 return，图就永远不渲染。要么先 await 一次（加载 mermaid 天然会让出微任务），
+  要么把这个判断放到渲染之后。
+- **README 的截图脚本带守卫**（`scripts/shots.mjs`）：拍照前会检查界面上有没有渲染失败的残留
+  （Mermaid 错误框、`pre[data-mermaid=failed]`），有就直接报错。文档里的图必须来自干净状态。
 - **主题走 `html[data-theme]`，不是媒体查询**：用户要能强制明亮。
   新写样式如果要区分深浅色，用 `html[data-theme="dark"]` 选择器，别用 `@media (prefers-color-scheme)`。
 

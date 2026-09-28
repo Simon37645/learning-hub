@@ -177,6 +177,19 @@ async function main() {
     }
     try {
       const shot = async (path) => {
+        // 截图前先确认界面上没有渲染失败的残留（Mermaid 的错误框曾经被拍进 README）
+        const dirty = await cdp.eval(
+          `(() => {
+            const t = document.body.innerText;
+            return {
+              mermaidError: t.includes('Syntax error in text'),
+              failedBlocks: document.querySelectorAll('pre[data-mermaid=failed], .mermaid-error').length,
+            };
+          })()`,
+        );
+        if (dirty.mermaidError || dirty.failedBlocks > 0) {
+          throw new Error(`界面上有渲染失败的残留（mermaidError=${dirty.mermaidError}, failed=${dirty.failedBlocks}），先修好再截图`);
+        }
         const first = await cdp.screenshot(path);
         const h1 = fs.readFileSync(path).length;
         // 同一帧重拍一次：WebView2 在窗口不可见时可能不产生新帧

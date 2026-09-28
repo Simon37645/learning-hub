@@ -1,6 +1,6 @@
 import { WidgetType, EditorView } from "@codemirror/view";
 import { bindBlockBoundaryCursor, stampBlockRange } from "./blockRange";
-import { configuredMermaid } from "../../lib/mermaid";
+import { renderDiagram } from "../../lib/mermaid";
 import {
   attachSourceEditing,
   beginSourceEditing,
@@ -23,15 +23,17 @@ function renderMermaid(target: HTMLElement, code: string) {
   target.dataset.visualReady = "false";
 
   void (async () => {
-    const mermaid = await configuredMermaid(currentTheme());
-    if (target.dataset.renderToken !== token || !target.isConnected) return;
+    // 注意：这里不要在 await 之前检查 target.isConnected。
+    // 此时 widget 的 DOM 可能还没挂到文档上，检查会直接 return、图永远不渲染。
+    // （renderDiagram 内部会 await 加载 mermaid，天然让出一轮微任务，
+    //   之后的 isConnected 判断才有意义。）
     if (!code.trim()) {
       target.textContent = t(getLocale(), "editor.mermaid.empty");
       target.classList.add("md-mermaid-error");
       return;
     }
     try {
-      const { svg } = await mermaid.render(`mmd-${token}`, code);
+      const svg = await renderDiagram(code, currentTheme());
       if (target.dataset.renderToken !== token || !target.isConnected) return;
       target.innerHTML = svg;
       target.dataset.visualReady = "true";

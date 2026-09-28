@@ -7,13 +7,18 @@ import { api, errText } from "../lib/api";
 import { highlightWithin, linkifyCitations, renderMarkdown, renderMermaidIn } from "../lib/markdown";
 import { clampText, fmtClock, hotkey } from "../lib/format";
 import {
+  EFFORT_HINT,
+  EFFORT_LABEL,
   PERMISSION_LABEL,
   RISK_LABEL,
+  STYLE_LABEL,
   SANDBOX_MODE_LABEL,
   STAGE_LABEL,
   type ChatMessage,
   type ContentBlock,
   type PermissionMode,
+  type ReasoningEffort,
+  type ReasoningStyle,
   type Risk,
   type StudyStage,
   type ToolOutcomeView,
@@ -468,6 +473,7 @@ function Composer() {
   const [importing, setImporting] = useState(false);
 
   const active = config?.profiles.find((p) => p.id === config.activeProfileId) ?? null;
+  const profile = active;
   const mode = config?.agent.permissionMode ?? "ask";
 
   async function submit() {
@@ -619,6 +625,66 @@ function Composer() {
           </Dropdown>
 
           <div className="spacer" />
+
+          {/* 思考强度：和模型选择放在一起，随时能调 */}
+          <Dropdown
+            trigger={() => (
+              <button
+                className="pill-select"
+                title="思考强度：让模型想多久（各家写法的兼容性不同，可在设置里改发送方式）"
+              >
+                <Icon name="sparkle" size={13} />
+                <span className="ellip">思考 {EFFORT_LABEL[profile?.reasoning?.effort ?? "off"]}</span>
+                <Icon name="chevron-down" size={12} />
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <MenuLabel>思考强度</MenuLabel>
+                {(["off", "low", "medium", "high", "max"] as ReasoningEffort[]).map((e) => (
+                  <MenuItem
+                    key={e}
+                    selected={(profile?.reasoning?.effort ?? "off") === e}
+                    onClick={() => {
+                      void useApp.getState().setReasoning(e);
+                      close();
+                    }}
+                  >
+                    <span className="grow">
+                      {EFFORT_LABEL[e]}
+                      <span className="muted" style={{ marginLeft: 8, fontSize: 11 }}>
+                        {EFFORT_HINT[e]}
+                      </span>
+                    </span>
+                  </MenuItem>
+                ))}
+                <MenuSep />
+                <MenuItem
+                  onClick={async () => {
+                    const cur = profile?.reasoning?.style ?? "auto";
+                    const next: ReasoningStyle =
+                      cur === "auto"
+                        ? "openai_effort"
+                        : cur === "openai_effort"
+                          ? "qwen_thinking"
+                          : cur === "qwen_thinking"
+                            ? "anthropic_thinking"
+                            : cur === "anthropic_thinking"
+                              ? "none"
+                              : "auto";
+                    await useApp.getState().setReasoning(profile?.reasoning?.effort ?? "off", next);
+                    close();
+                  }}
+                >
+                  <Icon name="refresh" size={13} /> 发送方式：{STYLE_LABEL[profile?.reasoning?.style ?? "auto"]}
+                </MenuItem>
+                <MenuLabel>
+                  有的服务商不认这些参数；报错就点上面把它切成「不发」
+                </MenuLabel>
+              </>
+            )}
+          </Dropdown>
 
           {active && !active.supportsTools && (
             <span className="muted" style={{ fontSize: 11.5 }} title="该模型未开启工具调用，agent 会把工具建议写进回复">

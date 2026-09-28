@@ -42,7 +42,20 @@ impl LlmProvider for AnthropicProvider {
         let mut body = Map::new();
         body.insert("model".into(), json!(req.model));
         body.insert("max_tokens".into(), json!(req.max_tokens));
-        body.insert("temperature".into(), json!(req.temperature));
+        // Anthropic 开了 extended thinking 就不接受自定义 temperature（必须为默认值 1）
+        let thinking = reasoning_for_anthropic(&req.reasoning);
+        if thinking.is_none() {
+            body.insert("temperature".into(), json!(req.temperature));
+        }
+        if let Some(budget) = thinking {
+            // 官方要求 budget_tokens < max_tokens，这里夹一下避免请求被拒
+            let budget = budget.min(req.max_tokens.saturating_sub(1).max(1024));
+            body.insert(
+                "thinking".into(),
+                json!({ "type": "enabled", "budget_tokens": budget }),
+            );
+            body.insert("max_tokens".into(), json!(req.max_tokens.max(budget + 1)));
+        }
         body.insert("stream".into(), json!(true));
         if !req.system.trim().is_empty() {
             body.insert("system".into(), json!(req.system));
@@ -171,6 +184,20 @@ impl LlmProvider for AnthropicProvider {
             Ok(true)
         })
         .await
+    }
+}
+
+/// 该不该开 extended thinking，开了的话预算是多少。
+///
+/// 风格为 QwenThinking / None 时不发（那是别的服务商的写法）。
+fn reasoning_for_anthropic(cfg: &crate::config::ReasoningConfig) -> Option<u32> {
+    use crate::config::ReasoningStyle;
+    if !cfg.effort.is_on() {
+        return None;
+    }
+    match cfg.style {
+        ReasoningStyle::QwenThinking | ReasoningStyle::None => None,
+        _ => Some(cfg.effort.thinking_budget()),
     }
 }
 

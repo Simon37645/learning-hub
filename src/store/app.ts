@@ -12,6 +12,8 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errText } from "../lib/api";
 import type {
   ThemeMode,
+  ReasoningEffort,
+  ReasoningStyle,
   AgentEvent,
   AgendaBucket,
   Card,
@@ -141,6 +143,7 @@ interface AppStore {
 
   patchConfig: (patch: ConfigPatch) => Promise<void>;
   setTheme: (theme: ThemeMode) => Promise<void>;
+  setReasoning: (effort: ReasoningEffort, style?: ReasoningStyle) => Promise<void>;
   upsertProfile: (input: ProfileInput) => Promise<void>;
   deleteProfile: (id: string) => Promise<void>;
 
@@ -428,6 +431,17 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   // ============================================================ 配置
+
+  async setReasoning(effort, style) {
+    const id = get().config?.activeProfileId;
+    if (!id) return;
+    try {
+      const config = await api.profileSetReasoning(id, effort, style);
+      set({ config });
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
 
   async setTheme(theme) {
     applyTheme(theme);

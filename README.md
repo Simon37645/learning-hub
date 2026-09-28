@@ -87,6 +87,9 @@ access, quizzes, the knowledge base, lesson plans, mind maps, skills and MCP.
 
 - **Every write shows up as a card**, with what it touched, how long it took and whether it succeeded.
 - **Writes ask first** — three permission levels: ask / auto-edit / full access.
+- **Thinking effort** sits next to the model picker: off / low / medium / high / max. Off by default
+  (the field is a non-standard extension, so it is only sent once you turn it on); the sending style
+  (`reasoning_effort` / `enable_thinking` / Anthropic `thinking`) is selectable per profile in Settings.
 - **Its documents are your documents**: notes, cards and quizzes are ordinary files you can edit by hand.
 
 <img src="docs/images/chat.png" alt="Chat with tool cards, formulas and source citations" width="820" />

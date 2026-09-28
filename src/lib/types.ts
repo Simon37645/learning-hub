@@ -300,6 +300,41 @@ export interface ViewerConfig {
   searchEngine: string;
 }
 
+/** 思考强度：让模型想多久 */
+export type ReasoningEffort = "off" | "low" | "medium" | "high" | "max";
+
+export const EFFORT_LABEL: Record<ReasoningEffort, string> = {
+  off: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+  max: "最高",
+};
+
+export const EFFORT_HINT: Record<ReasoningEffort, string> = {
+  off: "不发送思考参数（兼容性最好）",
+  low: "适合改写、格式化这类轻任务",
+  medium: "日常问答与讲解",
+  high: "复杂推导、长材料分析",
+  max: "最费 token、最慢，留给硬骨头",
+};
+
+/** 发送方式：各家扩展不统一，认不出来时可以关掉 */
+export type ReasoningStyle = "auto" | "openai_effort" | "anthropic_thinking" | "qwen_thinking" | "none";
+
+export const STYLE_LABEL: Record<ReasoningStyle, string> = {
+  auto: "自动（按协议）",
+  openai_effort: "reasoning_effort",
+  anthropic_thinking: "thinking",
+  qwen_thinking: "enable_thinking",
+  none: "不发",
+};
+
+export interface ReasoningConfig {
+  effort: ReasoningEffort;
+  style: ReasoningStyle;
+}
+
 export interface PublicProfile {
   id: string;
   name: string;
@@ -310,6 +345,7 @@ export interface PublicProfile {
   temperature: number;
   maxTokens: number;
   supportsTools: boolean;
+  reasoning: ReasoningConfig;
   hasApiKey: boolean;
   keyHint: string;
 }
@@ -388,6 +424,7 @@ export interface ProfileInput {
   maxTokens: number;
   supportsTools: boolean;
   headers: Record<string, string>;
+  reasoning?: ReasoningConfig;
 }
 
 export interface ProfileTestResult {

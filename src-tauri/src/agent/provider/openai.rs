@@ -41,6 +41,9 @@ impl LlmProvider for OpenAiProvider {
         body.insert("temperature".into(), json!(req.temperature));
         body.insert("max_tokens".into(), json!(req.max_tokens));
 
+        // 思考强度：只有用户明确打开、且风格允许时才写进请求体
+        apply_reasoning_openai(&mut body, &req.reasoning, self.profile.kind);
+
         let use_tools = self.profile.supports_tools && !req.tools.is_empty();
         if use_tools {
             body.insert("tools".into(), json!(to_openai_tools(&req.tools)));
@@ -183,6 +186,45 @@ pub fn to_openai_messages(system: &str, messages: &[ChatMessage]) -> Vec<Value> 
         }
     }
     out
+}
+
+/// 把思考强度写进 OpenAI 兼容的请求体。
+///
+/// 这个字段不是所有服务商都认，所以：
+/// - `effort = off` 时完全不写（默认，保证最大兼容）
+/// - 风格为 QwenThinking 时改发 `enable_thinking`（通义千问的写法）
+/// - 风格为 None 时不发
+fn apply_reasoning_openai(
+    body: &mut Map<String, Value>,
+    cfg: &crate::config::ReasoningConfig,
+    _kind: crate::config::ProviderKind,
+) {
+    use crate::config::{ReasoningEffort, ReasoningStyle};
+    if !cfg.effort.is_on() || cfg.style == ReasoningStyle::None {
+        return;
+    }
+    match cfg.style {
+        ReasoningStyle::QwenThinking => {
+            body.insert("enable_thinking".into(), json!(true));
+            // 部分网关同时认这个上限字段
+            body.insert(
+                "thinking_budget".into(),
+                json!(cfg.effort.thinking_budget()),
+            );
+        }
+        ReasoningStyle::AnthropicThinking => {
+            body.insert(
+                "thinking".into(),
+                json!({ "type": "enabled", "budget_tokens": cfg.effort.thinking_budget() }),
+            );
+        }
+        // Auto / OpenaiEffort：发标准字段
+        _ => {
+            if cfg.effort != ReasoningEffort::Off {
+                body.insert("reasoning_effort".into(), json!(cfg.effort.openai_value()));
+            }
+        }
+    }
 }
 
 fn to_openai_tools(tools: &[ToolSpec]) -> Vec<Value> {

@@ -111,6 +111,7 @@ pub fn run() {
             commands::app::config_patch,
             commands::app::profile_upsert,
             commands::app::profile_delete,
+            commands::app::profile_set_reasoning,
             commands::app::profile_test,
             commands::app::prompt_preview,
             commands::app::workspace_info,

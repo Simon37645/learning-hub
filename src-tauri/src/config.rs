@@ -31,6 +31,120 @@ impl ProviderKind {
     }
 }
 
+/// 思考强度。对应各家「让模型想多久」的参数：
+/// OpenAI 系的 `reasoning_effort`、Anthropic 的 `thinking.budget_tokens`。
+///
+/// 默认关闭：这个字段不是所有服务商都认，只有在用户明确打开后才往请求里加，
+/// 免得平白把请求写坏。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    #[default]
+    Off,
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReasoningEffort::Off => "关闭",
+            ReasoningEffort::Low => "低",
+            ReasoningEffort::Medium => "中",
+            ReasoningEffort::High => "高",
+            ReasoningEffort::Max => "最高",
+        }
+    }
+
+    pub fn is_on(self) -> bool {
+        !matches!(self, ReasoningEffort::Off)
+    }
+
+    /// OpenAI 系的取值（只有 low/medium/high 三档，max 归到 high）
+    pub fn openai_value(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            _ => "high",
+        }
+    }
+
+    /// Anthropic 的思考预算（token）。官方要求至少 1024，且必须小于 max_tokens。
+    pub fn thinking_budget(self) -> u32 {
+        match self {
+            ReasoningEffort::Off => 0,
+            ReasoningEffort::Low => 1024,
+            ReasoningEffort::Medium => 4096,
+            ReasoningEffort::High => 12_000,
+            ReasoningEffort::Max => 32_000,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "关闭" | "none" => Some(ReasoningEffort::Off),
+            "low" | "低" => Some(ReasoningEffort::Low),
+            "medium" | "mid" | "中" => Some(ReasoningEffort::Medium),
+            "high" | "高" => Some(ReasoningEffort::High),
+            "max" | "最高" => Some(ReasoningEffort::Max),
+            _ => None,
+        }
+    }
+}
+
+/// 用哪种写法把「思考强度」发出去。
+///
+/// 各家扩展不统一：OpenAI 系认 `reasoning_effort`，通义千问认 `enable_thinking`，
+/// Anthropic 认 `thinking`。默认按协议自动选，认不出来的服务商可以关掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningStyle {
+    /// 按协议自动：OpenAI 兼容 → reasoning_effort；Anthropic → thinking
+    #[default]
+    Auto,
+    /// 只发 OpenAI 的 reasoning_effort
+    OpenaiEffort,
+    /// 只发 Anthropic 的 thinking
+    AnthropicThinking,
+    /// 发 enable_thinking（通义千问等）
+    QwenThinking,
+    /// 什么都不发
+    None,
+}
+
+impl ReasoningStyle {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReasoningStyle::Auto => "自动",
+            ReasoningStyle::OpenaiEffort => "reasoning_effort",
+            ReasoningStyle::AnthropicThinking => "thinking",
+            ReasoningStyle::QwenThinking => "enable_thinking",
+            ReasoningStyle::None => "不发",
+        }
+    }
+}
+
+/// 一个档案的思考强度设置。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningConfig {
+    #[serde(default)]
+    pub effort: ReasoningEffort,
+    #[serde(default)]
+    pub style: ReasoningStyle,
+}
+
+impl Default for ReasoningConfig {
+    fn default() -> Self {
+        Self {
+            effort: ReasoningEffort::Off,
+            style: ReasoningStyle::Auto,
+        }
+    }
+}
+
 /// 一套接入配置 = 一个「模型档案」，界面上就是模型选择器里的一项。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +169,9 @@ pub struct ProviderProfile {
     /// 是否支持函数调用（不支持时 agent 自动降级为「纯文本 + 指令」模式）
     #[serde(default = "yes")]
     pub supports_tools: bool,
+    /// 思考强度（默认关闭）
+    #[serde(default)]
+    pub reasoning: ReasoningConfig,
 }
 
 fn default_temperature() -> f32 {
@@ -80,6 +197,7 @@ impl ProviderProfile {
             max_tokens: default_max_tokens(),
             headers: BTreeMap::new(),
             supports_tools: true,
+            reasoning: ReasoningConfig::default(),
         }
     }
 
@@ -434,6 +552,7 @@ pub struct PublicProfile {
     pub temperature: f32,
     pub max_tokens: u32,
     pub supports_tools: bool,
+    pub reasoning: ReasoningConfig,
     pub has_api_key: bool,
     pub key_hint: String,
 }
@@ -458,6 +577,7 @@ impl From<&AppConfig> for PublicConfig {
                     temperature: p.temperature,
                     max_tokens: p.max_tokens,
                     supports_tools: p.supports_tools,
+                    reasoning: p.reasoning,
                     has_api_key: !p.api_key.trim().is_empty(),
                     key_hint: p.key_hint(),
                 })

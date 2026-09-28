@@ -48,6 +48,16 @@ function pieces(text, size = 6) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function streamChat(res, body) {
+  // 把「思考强度」相关字段打出来：验证客户端有没有正确接线（各家写法不同）
+  const reasoning = {
+    reasoning_effort: body.reasoning_effort,
+    enable_thinking: body.enable_thinking,
+    thinking: body.thinking,
+    temperature: body.temperature,
+  };
+  if (reasoning.reasoning_effort || reasoning.enable_thinking || reasoning.thinking) {
+    log("收到思考参数：", JSON.stringify(reasoning));
+  }
   const messages = body.messages ?? [];
   const toolResults = messages.filter((m) => m.role === "tool");
   const hasToolCall = messages.some((m) => m.role === "assistant" && m.tool_calls);

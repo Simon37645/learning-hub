@@ -236,6 +236,9 @@ pub struct ProfileInput {
     pub supports_tools: bool,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    /// 思考强度；不传就沿用原值（新建时用默认值 = 关闭）
+    #[serde(default)]
+    pub reasoning: Option<crate::config::ReasoningConfig>,
 }
 
 fn default_temp() -> f32 {
@@ -270,6 +273,9 @@ pub async fn profile_upsert(state: State<'_, AppState>, input: ProfileInput) -> 
                 p.max_tokens = input.max_tokens.clamp(256, 200_000);
                 p.supports_tools = input.supports_tools;
                 p.headers = input.headers.clone();
+                if let Some(r) = input.reasoning {
+                    p.reasoning = r;
+                }
                 if let Some(k) = &input.api_key {
                     p.api_key = k.trim().to_string();
                 }
@@ -281,6 +287,9 @@ pub async fn profile_upsert(state: State<'_, AppState>, input: ProfileInput) -> 
                 p.max_tokens = input.max_tokens.clamp(256, 200_000);
                 p.supports_tools = input.supports_tools;
                 p.headers = input.headers.clone();
+                if let Some(r) = input.reasoning {
+                    p.reasoning = r;
+                }
                 if let Some(k) = &input.api_key {
                     p.api_key = k.trim().to_string();
                 }
@@ -301,6 +310,26 @@ pub async fn profile_delete(state: State<'_, AppState>, id: String) -> AppResult
         c.profiles.retain(|p| p.id != id);
         if c.active_profile_id == id {
             c.active_profile_id = c.profiles.first().map(|p| p.id.clone()).unwrap_or_default();
+        }
+    })?;
+    Ok(PublicConfig::from(&cfg))
+}
+
+/// 只改思考强度（对话栏里那个芯片用，不必打开设置页）。
+#[tauri::command]
+pub async fn profile_set_reasoning(
+    state: State<'_, AppState>,
+    profile_id: String,
+    effort: crate::config::ReasoningEffort,
+    style: Option<crate::config::ReasoningStyle>,
+) -> AppResult<PublicConfig> {
+    let core = state.0.clone();
+    let cfg = core.update_config(|c| {
+        if let Some(p) = c.profiles.iter_mut().find(|p| p.id == profile_id) {
+            p.reasoning.effort = effort;
+            if let Some(st) = style {
+                p.reasoning.style = st;
+            }
         }
     })?;
     Ok(PublicConfig::from(&cfg))
@@ -340,6 +369,7 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
         tools: Vec::new(),
         temperature: 0.0,
         max_tokens: 32,
+        reasoning: crate::config::ReasoningConfig::default(),
         timeout: Duration::from_secs(45),
         cancel: Arc::new(AtomicBool::new(false)),
     };

@@ -5,8 +5,10 @@ import { api, errText } from "../lib/api";
 import {
   PERMISSION_LABEL,
   type AnkiStatus,
+  STYLE_LABEL,
   type PermissionMode,
   type ProfileInput,
+  type ReasoningStyle,
   type ProviderKind,
 } from "../lib/types";
 import { useApp } from "../store/app";
@@ -478,6 +480,7 @@ function ProfilesSection() {
         supportsTools: current.supportsTools,
         headers: {},
         apiKey: null,
+        reasoning: current.reasoning,
       });
       setApiKey("");
       setTestResult(null);
@@ -499,6 +502,7 @@ function ProfilesSection() {
       supportsTools: true,
       headers: {},
       apiKey: "",
+      reasoning: { effort: "off", style: "auto" },
     });
     setSelected(null);
     setTestResult(null);
@@ -631,6 +635,31 @@ function ProfilesSection() {
               onChange={(v) => setForm({ ...form, supportsTools: v })}
               label="该模型支持原生工具调用（不支持时 agent 会降级成文字建议）"
             />
+
+            <Field
+              label="思考强度参数的写法"
+              hint="对话栏里模型旁边那颗「思考」芯片调的是强度，这里决定用哪种写法发出去。有的服务商不认这些扩展，报错就选「不发」。"
+            >
+              <select
+                className="select"
+                value={form.reasoning?.style ?? "auto"}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    reasoning: {
+                      effort: form.reasoning?.effort ?? "off",
+                      style: e.target.value as ReasoningStyle,
+                    },
+                  })
+                }
+              >
+                {(Object.keys(STYLE_LABEL) as ReasoningStyle[]).map((k) => (
+                  <option key={k} value={k}>
+                    {STYLE_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
             <div className="row">
               <button

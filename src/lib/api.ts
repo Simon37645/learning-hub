@@ -32,6 +32,8 @@ import type {
   StudyStage,
   Grade,
   CardKind,
+  ReasoningEffort,
+  ReasoningStyle,
   SkillDirs,
   SkillsOverview,
   Scope,
@@ -67,6 +69,8 @@ export const api = {
   profileUpsert: (input: ProfileInput) => invoke<PublicConfig>("profile_upsert", { input }),
   profileDelete: (id: string) => invoke<PublicConfig>("profile_delete", { id }),
   profileTest: (id: string) => invoke<ProfileTestResult>("profile_test", { id }),
+  profileSetReasoning: (profileId: string, effort: ReasoningEffort, style?: ReasoningStyle) =>
+    invoke<PublicConfig>("profile_set_reasoning", { profileId, effort, style: style ?? null }),
   promptPreview: (topicSlug?: string | null) =>
     invoke<string>("prompt_preview", { topicSlug: topicSlug ?? null }),
   workspaceInfo: () => invoke<WorkspaceInfo>("workspace_info"),

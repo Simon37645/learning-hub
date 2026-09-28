@@ -300,6 +300,7 @@ impl AgentService {
                 tools: specs.clone(),
                 temperature: profile.temperature,
                 max_tokens: profile.max_tokens,
+                reasoning: profile.reasoning,
                 timeout: Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
                 cancel: cancel.clone(),
             };
@@ -586,6 +587,7 @@ pub async fn complete_once(
         tools: Vec::new(),
         temperature: 0.2,
         max_tokens,
+        reasoning: profile.reasoning,
         timeout: std::time::Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
         cancel: Arc::new(AtomicBool::new(false)),
     };

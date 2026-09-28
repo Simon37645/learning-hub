@@ -1,0 +1,19 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# 运行时数据（真实学习资料不进版本库）
+workspace/
+*.log
+
+# 开发时抓的截图
+.screenshots/

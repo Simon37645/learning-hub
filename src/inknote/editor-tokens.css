@@ -1,0 +1,74 @@
+/* ============================================================================
+   InkNote 令牌 → 学习中枢设计变量的映射
+   ---------------------------------------------------------------------------
+   移植过来的 editor.css 用的是 InkNote 的令牌名（--fg / --bg-editor / --syntax-* …）。
+   这里把它们指向学习中枢的令牌，于是编辑器自动跟随应用主题，
+   也不需要在 1656 行样式里做任何替换。
+
+   几个名字两边都有（--bg / --border / --accent / --bg-hover / --bg-active /
+   --radius-sm / --font-mono）：它们的语义在两边一致，直接用学习中枢的即可，
+   所以下面是「补齐缺失的别名」而不是「覆盖全部」。
+   ========================================================================= */
+
+:root {
+  /* 背景与文字 */
+  --bg-sidebar: var(--bg-side);
+  --bg-toolbar: var(--bg-sub);
+  --bg-editor: var(--bg);
+  --fg: var(--text);
+  --fg-muted: var(--text-sub);
+  --fg-faint: var(--text-faint);
+  --tree-fg: var(--text-sub);
+
+  --accent-hover: var(--accent);
+  --code-bg: var(--bg-code);
+  --mark-bg: #ffe58a;
+  --mark-fg: #3a2f00;
+  --selection: color-mix(in srgb, var(--accent) 26%, transparent);
+
+  /* 代码高亮：直接用学习中枢那套 token 配色，保证与聊天里的代码块一致 */
+  --syntax-keyword: var(--code-keyword);
+  --syntax-string: var(--code-string);
+  --syntax-number: var(--code-number);
+  --syntax-comment: var(--text-faint);
+  --syntax-type: var(--code-builtin);
+  --syntax-function: var(--code-title);
+  --syntax-operator: var(--code-title);
+  --syntax-meta: var(--code-keyword);
+
+  /* 字体 */
+  --font-ui: var(--font);
+  --font-sidebar: var(--font);
+  --editor-font-size: 14px;
+
+  /* 菜单与滚动条（弹窗组件用得到） */
+  --scrollbar-thumb: color-mix(in srgb, var(--text-faint) 40%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-faint) 65%, transparent);
+  --menu-bg: var(--bg);
+  --menu-border: var(--border-strong);
+  --menu-shadow: var(--shadow-lg);
+  --menu-hover-bg: var(--bg-hover);
+  --menu-hover-fg: var(--text);
+  --menu-disabled-opacity: 0.45;
+  --input-focus-ring: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* 深色下标记色要压暗一点，纯亮黄会刺眼 */
+html[data-theme="dark"] {
+  --mark-bg: #6b5c1a;
+  --mark-fg: #f2efe6;
+}
+
+/* 编辑器主体：贴合学习中枢的行高与圆角，别看起来像嵌进来的另一个应用 */
+.editor-host {
+  --md-component-radius: var(--radius);
+  --md-panel-bg: var(--bg-sub);
+  --md-panel-border: var(--border);
+}
+
+/* InkNote 的编辑器令牌默认值（它原本在 .editor-host 里定义，这里补上缺失的） */
+.editor-host {
+  --editor-block-indent: 0px;
+  --md-accent: var(--accent);
+  --md-muted: var(--text-faint);
+}

@@ -1,0 +1,281 @@
+//! Anthropic 协议（`POST {base}/messages`）。
+//!
+//! 与 OpenAI 的三个关键差异：
+//! 1. system 是顶层参数，不是一条消息
+//! 2. 工具调用/结果是内容块（`tool_use` / `tool_result`），不是独立字段
+//! 3. user / assistant 必须交替出现，同角色连续消息需要合并
+
+use super::{error_from_response, pump_sse, ChatRequest, LlmProvider, StreamEvent};
+use crate::agent::message::{ChatMessage, ContentBlock, Role};
+use crate::agent::registry::ToolSpec;
+use crate::config::{ProviderKind, ProviderProfile};
+use crate::error::{AppError, AppResult};
+use async_trait::async_trait;
+use serde_json::{json, Map, Value};
+use tokio::sync::mpsc::UnboundedSender;
+
+/// 与 Anthropic API 版本绑定的常量；升级时改这里。
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+pub struct AnthropicProvider {
+    profile: ProviderProfile,
+    http: reqwest::Client,
+}
+
+impl AnthropicProvider {
+    pub fn new(profile: &ProviderProfile, http: reqwest::Client) -> Self {
+        Self { profile: profile.clone(), http }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnthropicProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Anthropic
+    }
+
+    fn label(&self) -> String {
+        format!("{} · {}", self.profile.name, self.profile.model)
+    }
+
+    async fn stream(&self, req: ChatRequest, tx: UnboundedSender<StreamEvent>) -> AppResult<()> {
+        let mut body = Map::new();
+        body.insert("model".into(), json!(req.model));
+        body.insert("max_tokens".into(), json!(req.max_tokens));
+        body.insert("temperature".into(), json!(req.temperature));
+        body.insert("stream".into(), json!(true));
+        if !req.system.trim().is_empty() {
+            body.insert("system".into(), json!(req.system));
+        }
+        body.insert("messages".into(), json!(to_anthropic_messages(&req.messages)));
+        if !req.tools.is_empty() {
+            body.insert("tools".into(), json!(to_anthropic_tools(&req.tools)));
+        }
+
+        let mut rb = self
+            .http
+            .post(self.profile.chat_url())
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .timeout(req.timeout)
+            .json(&Value::Object(body));
+        let key = self.profile.api_key.trim();
+        if !key.is_empty() {
+            rb = rb.header("x-api-key", key);
+        }
+        for (k, v) in &self.profile.headers {
+            rb = rb.header(k.as_str(), v.as_str());
+        }
+
+        let resp = rb.send().await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response(resp).await);
+        }
+
+        let cancel = req.cancel.clone();
+        // 记录 content_block_index → 是否工具块，用于把增量归到正确的工具序号上
+        let mut block_is_tool: Vec<bool> = Vec::new();
+        let mut tool_seq: Vec<usize> = Vec::new();
+
+        pump_sse(resp, &cancel, move |event, v| {
+            let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or(event);
+            match kind {
+                "error" => {
+                    let msg = v
+                        .pointer("/error/message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Anthropic 返回错误");
+                    return Err(AppError::Provider(msg.to_string()));
+                }
+                "content_block_start" => {
+                    let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                    if block_is_tool.len() <= index {
+                        block_is_tool.resize(index + 1, false);
+                        tool_seq.resize(index + 1, usize::MAX);
+                    }
+                    let block = v.get("content_block");
+                    let is_tool = block
+                        .and_then(|b| b.get("type"))
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t == "tool_use" || t == "server_tool_use");
+                    block_is_tool[index] = is_tool;
+                    if is_tool {
+                        let seq = tool_seq.iter().filter(|s| **s != usize::MAX).count();
+                        tool_seq[index] = seq;
+                        let id = block.and_then(|b| b.get("id")).and_then(|i| i.as_str()).map(String::from);
+                        let name = block.and_then(|b| b.get("name")).and_then(|n| n.as_str()).map(String::from);
+                        if tx
+                            .send(StreamEvent::ToolCall { index: seq, id, name, args: String::new() })
+                            .is_err()
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+                "content_block_delta" => {
+                    let block_index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                    let delta = v.get("delta");
+                    let dtype = delta.and_then(|d| d.get("type")).and_then(|t| t.as_str()).unwrap_or("");
+                    match dtype {
+                        "text_delta" => {
+                            if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
+                                if !text.is_empty() && tx.send(StreamEvent::Text(text.to_string())).is_err() {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        "thinking_delta" => {
+                            if let Some(text) = delta.and_then(|d| d.get("thinking")).and_then(|t| t.as_str()) {
+                                if !text.is_empty() && tx.send(StreamEvent::Thinking(text.to_string())).is_err() {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        "input_json_delta" => {
+                            let seq = tool_seq.get(block_index).copied().unwrap_or(usize::MAX);
+                            if seq != usize::MAX {
+                                let partial = delta
+                                    .and_then(|d| d.get("partial_json"))
+                                    .and_then(|p| p.as_str())
+                                    .unwrap_or("");
+                                if !partial.is_empty()
+                                    && tx
+                                        .send(StreamEvent::ToolCall {
+                                            index: seq,
+                                            id: None,
+                                            name: None,
+                                            args: partial.to_string(),
+                                        })
+                                        .is_err()
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                "message_delta" => {
+                    if let Some(reason) = v.pointer("/delta/stop_reason").and_then(|r| r.as_str()) {
+                        let mapped = match reason {
+                            "tool_use" => "tool_calls",
+                            "end_turn" | "stop_sequence" => "stop",
+                            "max_tokens" => "length",
+                            other => other,
+                        };
+                        let _ = tx.send(StreamEvent::Finish(mapped.to_string()));
+                    }
+                }
+                "message_stop" => return Ok(false),
+                _ => {}
+            }
+            Ok(true)
+        })
+        .await
+    }
+}
+
+/// 消息 → Anthropic 格式，并合并连续同角色消息。
+pub fn to_anthropic_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+
+    let mut push = |role: &str, blocks: Vec<Value>| {
+        if blocks.is_empty() {
+            return;
+        }
+        if let Some(last) = out.last_mut() {
+            if last.get("role").and_then(|r| r.as_str()) == Some(role) {
+                if let Some(arr) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    arr.extend(blocks);
+                    return;
+                }
+            }
+        }
+        out.push(json!({ "role": role, "content": blocks }));
+    };
+
+    for m in messages {
+        match m.role {
+            Role::System => {}
+            Role::User => {
+                let text = m.text();
+                push("user", vec![json!({ "type": "text", "text": text })]);
+            }
+            Role::Assistant => {
+                let mut blocks: Vec<Value> = Vec::new();
+                let text = m.text();
+                if !text.trim().is_empty() {
+                    blocks.push(json!({ "type": "text", "text": text }));
+                }
+                for b in &m.blocks {
+                    if let ContentBlock::ToolUse { id, name, input } = b {
+                        blocks.push(json!({
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                        }));
+                    }
+                }
+                push("assistant", blocks);
+            }
+            Role::Tool => {
+                // 工具结果以 user 身份回传
+                let blocks: Vec<Value> = m
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolResult { tool_use_id, content, is_error } => Some(json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                            "is_error": is_error,
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                push("user", blocks);
+            }
+        }
+    }
+    out
+}
+
+fn to_anthropic_tools(tools: &[ToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merges_consecutive_roles() {
+        let msgs = vec![
+            ChatMessage::user("问题"),
+            ChatMessage::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "fs_read".into(),
+                    input: json!({"path": "a.md"}),
+                }],
+            ),
+            ChatMessage::tool_result("tu_1", "结果", false),
+            ChatMessage::tool_result("tu_2", "结果2", false),
+        ];
+        let out = to_anthropic_messages(&msgs);
+        // user / assistant / user（后两条工具结果合并）
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1]["content"][0]["type"], "tool_use");
+        assert_eq!(out[2]["content"].as_array().unwrap().len(), 2);
+    }
+}

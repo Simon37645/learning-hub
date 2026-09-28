@@ -1,0 +1,64 @@
+[package]
+name = "learning-hub"
+version = "0.1.0"
+description = "学习中枢 — 个人 AI 学习助手"
+authors = ["Simon37645"]
+license = "GPL-2.0-only"
+edition = "2021"
+rust-version = "1.77"
+default-run = "learning-hub"
+
+[lib]
+name = "learning_hub_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# --- Tauri 运行时 ---
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# --- 基础库 ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+parking_lot = "0.12"
+regex = "1"
+walkdir = "2"
+percent-encoding = "2"
+encoding_rs = "0.8"
+url = "2"
+
+# --- 异步 / 网络（LLM 流式） ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = true, features = ["json", "stream", "gzip", "brotli", "charset", "http2"] }
+
+# --- 内容处理 ---
+scraper = "0.23"          # 网页正文提取（其 DOM 句柄类型来自 ego-tree）
+ego-tree = "0.10"         # 与 scraper 同版本，用来在遍历时持有节点引用
+pdf-extract = "0.8"       # PDF 全文提取（喂给 agent / 全文检索）
+
+[features]
+# 默认不启用自定义协议；前端统一走 IPC 读文件字节
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

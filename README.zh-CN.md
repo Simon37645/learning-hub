@@ -203,7 +203,7 @@ agent 回答前会先用 `kb_search` 查一遍，并标出处：
 
 ### 直接装 Windows 安装包
 
-到 [Releases](../../releases) 下载最新的 `*-setup.exe` 运行即可。安装到当前用户，不需要管理员权限。
+到 [Releases](../../releases) 下载 `LearningHub-<版本>-x64-setup.exe` 运行即可。安装到当前用户，不需要管理员权限。
 需要 Windows 10/11 与 WebView2 运行时（Windows 11 自带，打过补丁的 Win10 一般也有）。
 
 ### 从源码构建
@@ -213,8 +213,12 @@ git clone https://github.com/Simon37645/learning-hub.git
 cd learning-hub
 npm install          # 网络慢的话在 .npmrc 里配代理
 npm run app:dev      # 开发模式
-npm run app:build    # → src-tauri/target/release/bundle/nsis/*.exe
+npm run dist         # 打包并把安装包收集到 release/
 ```
+
+`npm run dist` 会跑一次 `tauri build`，然后把 NSIS 安装包复制成
+`release/LearningHub-<版本>-x64-setup.exe`（ASCII 名：打包器自己的产物名是中文产品名，
+而 GitHub 上传附件时会剥掉非 ASCII 字符），并打印大小与 SHA256。
 
 需要 Node 20+、Rust 1.77+，Windows 上还需要 MSVC 工具链。首次编译 Rust 要几分钟。
 

@@ -20,7 +20,8 @@
     "test:e2e": "node scripts/e2e-smoke.mjs",
     "icon": "node scripts/make-icon.mjs && tauri icon src-tauri/app-icon.png",
     "test:ui": "vitest run",
-    "test:ui:watch": "vitest"
+    "test:ui:watch": "vitest",
+    "dist": "tauri build && node scripts/package.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

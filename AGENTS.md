@@ -12,6 +12,7 @@ npm run typecheck                                      # 前端类型检查（�
 npm run build                                          # 前端构建
 npm run rust:check                                     # 后端类型检查
 npm run rust:test                                      # 后端单测（19 个）
+npm run dist                                           # 打包（tauri build + scripts/package.mjs）
 npm run demo:seed && npm run demo:pdf                  # 造演示数据（workspace/）
 npm run dev:fake-llm                                   # 本地假模型（无需 API Key 验证对话链路）
 npm run test:e2e                                       # 端到端冒烟（需要应用带调试端口启动）

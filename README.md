@@ -217,9 +217,9 @@ External tools are treated as *writes*, so they always ask you first.
 
 ### Prebuilt Windows installer
 
-Download the latest `*-setup.exe` from [Releases](../../releases) and run it. The installer is per-user
-(no admin rights). Requires Windows 10/11 with the WebView2 runtime — preinstalled on Windows 11 and on
-most updated Windows 10 machines.
+Download `LearningHub-<version>-x64-setup.exe` from [Releases](../../releases) and run it. The installer
+is per-user (no admin rights). Requires Windows 10/11 with the WebView2 runtime — preinstalled on
+Windows 11 and on most updated Windows 10 machines.
 
 ### Build from source
 
@@ -228,8 +228,12 @@ git clone https://github.com/Simon37645/learning-hub.git
 cd learning-hub
 npm install          # put a proxy in .npmrc if your registry is slow
 npm run app:dev      # development mode
-npm run app:build    # → src-tauri/target/release/bundle/nsis/*.exe
+npm run dist         # build + collect the installer into release/
 ```
+
+`npm run dist` runs `tauri build` and then copies the NSIS installer to
+`release/LearningHub-<version>-x64-setup.exe` (an ASCII name — the bundler's own output uses the Chinese
+product name, which GitHub strips from release assets), printing its size and SHA256.
 
 Requires Node 20+, Rust 1.77+ and (on Windows) the MSVC toolchain. The first Rust build takes several
 minutes.

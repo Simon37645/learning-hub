@@ -137,7 +137,7 @@ PDF, Markdown, web pages, images and code — tabbed, in a side panel.
 
 ### 4. Teach mode: plan first, then one step at a time
 
-A **collapsible progress card** sits at the top-right of the conversation (): every step of
+A **collapsible progress card** sits at the top-right of the conversation (e.g. `3/6 · step 4 …`): every step of
  the plan, struck through when covered, the current one highlighted, with its “how do I check you got it”
  line when expanded. You can see where you are without leaving the chat.
 

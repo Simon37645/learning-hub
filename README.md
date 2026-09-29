@@ -200,7 +200,7 @@ body with `skill_read` when it decides the skill applies.
 **MCP** servers are launched over stdio; their tools appear to the agent as `mcp__<server>__<tool>`.
 External tools are treated as *writes*, so they always ask you first.
 
-<img src="docs/images/skills.png" alt="Skills panel with global / per-topic switches" width="820" />
+<img src="docs/images/mcp.png" alt="Skills and MCP panels, each with global / per-topic switches" width="820" />
 
 ### 11. Sandbox, permissions, schedule
 

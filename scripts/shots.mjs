@@ -35,6 +35,7 @@ const SCENES = {
     await p.shot(`${OUT}/chat.png`);
   },
   viewer: async (p) => {
+    await ensureWorkbench(p);
     await openTopic(p);
     await clickText(p, ".segmented button", "工作台");
     await sleep(600);
@@ -46,6 +47,7 @@ const SCENES = {
     await p.shot(`${OUT}/viewer.png`);
   },
   mindmap: async (p) => {
+    await ensureWorkbench(p);
     await openTopic(p);
     await clickText(p, ".segmented button", "工作台");
     await sleep(500);
@@ -55,17 +57,20 @@ const SCENES = {
     await p.shot(`${OUT}/mindmap.png`);
   },
   editor: async (p) => {
+    await ensureWorkbench(p);
     await resetNoteList(p);
     await p.eval(`(() => { const r = Array.from(document.querySelectorAll('.wb-pane .list-row')).find(x => x.innerText.includes('特征值与特征向量')); if (r) r.click(); return !!r; })()`);
     await sleep(4000);
     await p.shot(`${OUT}/editor.png`);
   },
   lesson: async (p) => {
+    await ensureWorkbench(p);
     await clickText(p, ".wb-tab", "概览");
     await sleep(1200);
     await p.shot(`${OUT}/lesson.png`);
   },
   cards: async (p) => {
+    await ensureWorkbench(p);
     await clickText(p, ".wb-tab", "卡片");
     await sleep(1100);
     await clickText(p, ".btn", "开始复习");
@@ -75,6 +80,7 @@ const SCENES = {
     await p.shot(`${OUT}/cards.png`);
   },
   quiz: async (p) => {
+    await ensureWorkbench(p);
     await clickText(p, ".wb-tab", "测验");
     await sleep(1100);
     // 打开试卷
@@ -100,13 +106,6 @@ const SCENES = {
     await clickText(p, ".btn", "交卷");
     await sleep(2600);
     await p.shot(`${OUT}/quiz.png`);
-  },
-  skills: async (p) => {
-    await clickText(p, ".sidebar-top .side-item", "技能");
-    await sleep(1400);
-    await p.shot(`${OUT}/skills.png`);
-    await p.eval(`(() => { document.querySelector('.modal-head .icon-btn')?.click(); return true; })()`);
-    await sleep(400);
   },
   mcp: async (p) => {
     await clickText(p, ".sidebar-top .side-item", "MCP");
@@ -151,6 +150,13 @@ async function resetNoteList(page) {
   await clickText(page, ".wb-tab", "概览");
   await new Promise((r) => setTimeout(r, 500));
   await clickText(page, ".wb-tab", "笔记");
+  await new Promise((r) => setTimeout(r, 700));
+}
+
+/** 打开主题并切到工作台：工作台相关场景自己保证起点，单独跑也能出图 */
+async function ensureWorkbench(page) {
+  await openTopic(page);
+  await clickText(page, ".segmented button", "工作台");
   await new Promise((r) => setTimeout(r, 700));
 }
 

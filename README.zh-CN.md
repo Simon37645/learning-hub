@@ -187,7 +187,7 @@ agent 回答前会先用 `kb_search` 查一遍，并标出处：
 **MCP** 服务器走 stdio 启动，它提供的工具会以 `mcp__服务器__工具` 出现。外部工具按「写入」级别处理，
 一定会先问你。
 
-<img src="docs/images/skills.png" alt="技能面板：全局 / 本主题两级开关" width="820" />
+<img src="docs/images/mcp.png" alt="技能与 MCP 面板：都分全局 / 本主题两级" width="820" />
 
 ### 11. 沙箱、权限、日程
 

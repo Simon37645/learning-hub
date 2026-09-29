@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "userName": "旅行者",
+  "workspaceRoot": "学习中枢",
+  "activeProfileId": "c31cffba-5aaa-4f9c-9a27-671bb50f31dd",
+  "profiles": [
+    {
+      "id": "c31cffba-5aaa-4f9c-9a27-671bb50f31dd",
+      "name": "DeepSeek",
+      "kind": "open_ai",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKey": "",
+      "model": "deepseek-chat",
+      "temperature": 0.5,
+      "maxTokens": 8192,
+      "headers": {},
+      "supportsTools": true,
+      "reasoning": {
+        "effort": "off",
+        "style": "auto"
+      }
+    },
+    {
+      "id": "30ba97bb-633b-473a-ba20-67c4a692af09",
+      "name": "Claude",
+      "kind": "anthropic",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "apiKey": "",
+      "model": "claude-sonnet-4-5",
+      "temperature": 0.5,
+      "maxTokens": 8192,
+      "headers": {},
+      "supportsTools": true,
+      "reasoning": {
+        "effort": "off",
+        "style": "auto"
+      }
+    },
+    {
+      "id": "25d99c65-18ba-41cf-937a-17bf0329e983",
+      "name": "Ollama（本地）",
+      "kind": "open_ai",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "",
+      "model": "qwen3:8b",
+      "temperature": 0.5,
+      "maxTokens": 8192,
+      "headers": {},
+      "supportsTools": false,
+      "reasoning": {
+        "effort": "off",
+        "style": "auto"
+      }
+    }
+  ],
+  "agent": {
+    "permissionMode": "ask",
+    "maxIterations": 24,
+    "systemPromptExtra": "",
+    "allowWeb": true,
+    "requestTimeoutSecs": 180,
+    "contextBudgetChars": 24000,
+    "sandbox": true,
+    "approvedRoots": [],
+    "skillsEnabled": true,
+    "extraSkillDirs": [],
+    "mcpServers": [],
+    "disabledSkills": []
+  },
+  "viewer": {
+    "homeUrl": "https://www.bing.com",
+    "searchEngine": "duckduckgo"
+  },
+  "anki": {
+    "url": "http://127.0.0.1:8765",
+    "deckPrefix": ""
+  },
+  "appearance": {
+    "theme": "system"
+  },
+  "lastTopic": null,
+  "recentProfiles": []
+}

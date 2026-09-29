@@ -17,7 +17,7 @@ import {
   type TopicSummary,
 } from "../lib/types";
 import { useApp } from "../store/app";
-import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, Segmented, Spinner, Switch } from "./ui";
+import { Dropdown, Empty, Field, Icon, MenuItem, MenuSep, Modal, Segmented, Spinner, Switch } from "./ui";
 import { Markdown } from "./Chat";
 import { NoteEditor } from "./NoteEditor";
 import { QuizPane } from "./Quiz";
@@ -238,19 +238,6 @@ function OverviewPane() {
             className="btn sm"
             onClick={async () => {
               try {
-                const r = await api.cardExportAnki(topic.slug);
-                toast("success", `已导出 ${r.count} 张卡片到 ${r.path}`);
-              } catch (e) {
-                toast("error", errText(e));
-              }
-            }}
-          >
-            <Icon name="download" size={13} /> 导出 Anki 卡片
-          </button>
-          <button
-            className="btn sm"
-            onClick={async () => {
-              try {
                 setPrompt(await api.promptPreview(topic.slug));
               } catch (e) {
                 toast("error", errText(e));
@@ -259,9 +246,6 @@ function OverviewPane() {
           >
             <Icon name="eye" size={13} /> 看看 agent 眼中的我
           </button>
-        </div>
-        <div className="muted" style={{ fontSize: 11.5 }}>
-          导出的 TSV 可以在 Anki 里「文件 → 导入」使用，字段顺序：正面 / 背面 / 标签。
         </div>
       </div>
 
@@ -565,7 +549,6 @@ function CardsPane() {
   const cards = useApp((s) => s.cards);
   const loadCards = useApp((s) => s.loadCards);
   const reviewCard = useApp((s) => s.reviewCard);
-  const toast = useApp((s) => s.toast);
 
   const [dueOnly, setDueOnly] = useState(false);
   const [reviewing, setReviewing] = useState(false);
@@ -611,7 +594,7 @@ function CardsPane() {
     }
   }
 
-  // 键盘操作（Anki 的手感）：空格/回车翻面，1~4 打分，Esc 结束
+  // 键盘操作：空格/回车翻面，1~4 打分，Esc 结束（打字时让开）
   useEffect(() => {
     if (!reviewing) return;
     const onKey = (e: KeyboardEvent) => {
@@ -656,63 +639,6 @@ function CardsPane() {
         <button className="btn" onClick={() => setAdding(true)}>
           <Icon name="plus" size={13} /> 新建卡片
         </button>
-        {/* 外部 Anki 是可选项：复习与调度都在本应用内完成，这里的入口只是
-            给「手机上也装了 Anki」的人留的通道，不点它不影响任何功能 */}
-        <Dropdown
-          up={false}
-          trigger={() => (
-            <button className="btn" title="与外部 Anki 交换卡片（可选，不装也能在本应用里复习）">
-              <Icon name="external" size={13} /> Anki <Icon name="chevron-down" size={11} />
-            </button>
-          )}
-        >
-          {(close) => (
-            <>
-              <MenuLabel>可选：与外部 Anki 交换卡片</MenuLabel>
-              <MenuItem
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      const r = await api.ankiSync(topic.slug);
-                      if (r.added === 0 && r.failed.length === 0) {
-                        toast("info", `没有需要同步的新卡片（已跳过 ${r.skipped} 张）`);
-                      } else {
-                        toast(
-                          "success",
-                          `已同步 ${r.added} 张到牌组「${r.deck}」` +
-                            (r.skipped ? `，跳过 ${r.skipped} 张已同步的` : "") +
-                            (r.failed.length ? `，${r.failed.length} 张失败` : ""),
-                        );
-                      }
-                      if (r.failed.length) console.warn("Anki 同步失败项：", r.failed);
-                      void loadCards({ dueOnly });
-                    } catch (e) {
-                      toast("error", errText(e));
-                    }
-                  })();
-                  close();
-                }}
-              >
-                <Icon name="external" size={13} /> 同步到 Anki 牌组（需要 Anki 开着）
-              </MenuItem>
-              <MenuItem
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      const r = await api.cardExportAnki(topic.slug);
-                      toast("success", `已导出 ${r.count} 张到 ${r.path}`);
-                    } catch (e) {
-                      toast("error", errText(e));
-                    }
-                  })();
-                  close();
-                }}
-              >
-                <Icon name="download" size={13} /> 导出 TSV（Anki 可导入，不需要插件）
-              </MenuItem>
-            </>
-          )}
-        </Dropdown>
       </div>
 
       {reviewing ? (
@@ -784,7 +710,7 @@ function CardsPane() {
           还没有卡片。
           <br />
           让 agent 在讲完之后「把要点存成卡片」，之后就在这里按间隔重复复习
-          （SM-2 调度在本应用内完成，不需要装 Anki）。
+          （SM-2 调度就在本应用内完成）。
         </Empty>
       ) : (
         <div className="col" style={{ gap: 4 }}>
@@ -817,7 +743,6 @@ function CardRow({ card }: { card: Card }) {
           {card.module ? `${card.module}｜` : ""}
           {card.srs.reviews === 0 ? "新卡" : `复习 ${card.srs.reviews} 次｜难度 ${card.srs.ease.toFixed(2)}`}
           {card.source ? `｜${card.source}` : ""}
-          {card.ankiNoteId ? "｜已同步 Anki" : ""}
         </div>
       </div>
       {card.kind !== "basic" && <span className="tag">{CARD_KIND_LABEL[card.kind]}</span>}

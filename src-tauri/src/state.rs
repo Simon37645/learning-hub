@@ -190,6 +190,7 @@ impl AppCore {
 
     /// **在某个主题下真正生效**的技能：全局 + 该主题私有 + 父主题私有，
     /// 再剪掉禁用——禁用是**沿父子链取并集**的：父主题关掉的，子主题也关。
+    /// 判断只看开关，不看技能来自哪个目录（用户以后往哪儿加都适用）。
     pub fn skills_for(&self, topic: Option<&crate::domain::topic::Topic>) -> Vec<crate::skills::Skill> {
         let cfg = self.config_read();
         if !cfg.agent.skills_enabled {
@@ -205,9 +206,27 @@ impl AppCore {
                 disabled.extend(a.meta.tools.disabled_skills.iter().cloned());
             }
         }
-        all.into_iter()
-            .filter(|s| !disabled.iter().any(|d| d == &s.id))
-            .collect()
+        crate::skills::effective(all, cfg.agent.skills_enabled, &disabled)
+    }
+
+    /// 技能在指定主题下「该不该给 agent」——面板与提示词都以此为准，
+    /// 免得两处各写一套判断。返回不可用的原因（给界面显示）。
+    pub fn skill_off_reason(
+        &self,
+        skill: &crate::skills::Skill,
+        topic: Option<&crate::domain::topic::Topic>,
+    ) -> Option<String> {
+        let cfg = self.config_read();
+        if !cfg.agent.skills_enabled {
+            return Some("总开关".into());
+        }
+        if cfg.agent.disabled_skills.iter().any(|d| d == &skill.id) {
+            return Some("global".into());
+        }
+        if let Some(by) = self.skill_disabled_by_topic(&skill.id, topic) {
+            return Some(by.into());
+        }
+        None
     }
 
     /// 某个技能在指定主题下是否被**主题层面**关着，以及是谁关的。

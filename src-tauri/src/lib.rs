@@ -13,7 +13,6 @@
 //! ```
 
 pub mod agent;
-pub mod anki;
 pub mod commands;
 pub mod config;
 pub mod domain;
@@ -99,12 +98,14 @@ pub fn run() {
             commands::extend::skill_save,
             commands::extend::skill_set_enabled,
             commands::extend::skills_set_enabled,
+            commands::extend::skills_set_all,
             commands::extend::mcp_overview,
             commands::extend::mcp_status,
             commands::extend::mcp_reload,
             commands::extend::mcp_upsert,
             commands::extend::mcp_delete,
             commands::extend::mcp_set_enabled,
+            commands::extend::mcp_set_all,
             // --- 应用 ---
             commands::app::app_bootstrap,
             commands::app::config_get,
@@ -185,10 +186,6 @@ pub fn run() {
             commands::study::card_update,
             commands::study::card_delete,
             commands::study::card_review,
-            commands::study::card_export_anki,
-            commands::study::anki_status,
-            commands::study::anki_sync,
-            commands::study::anki_ping,
             commands::study::task_list,
             commands::study::task_create,
             commands::study::task_update,

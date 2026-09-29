@@ -389,32 +389,6 @@ impl Default for AppearanceConfig {
     }
 }
 
-/// AnkiConnect 相关配置。Anki 桌面版装上 AnkiConnect 插件后，
-/// 我们就能把卡片直接灌进牌组，把调度交给 Anki 自己管。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AnkiConfig {
-    /// AnkiConnect 地址
-    #[serde(default = "default_anki_url")]
-    pub url: String,
-    /// 同步过去的牌组名前缀，留空则直接用主题名
-    #[serde(default)]
-    pub deck_prefix: String,
-}
-
-fn default_anki_url() -> String {
-    crate::anki::DEFAULT_URL.to_string()
-}
-
-impl Default for AnkiConfig {
-    fn default() -> Self {
-        Self {
-            url: default_anki_url(),
-            deck_prefix: String::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -431,8 +405,6 @@ pub struct AppConfig {
     pub agent: AgentConfig,
     #[serde(default)]
     pub viewer: ViewerConfig,
-    #[serde(default)]
-    pub anki: AnkiConfig,
     #[serde(default)]
     pub appearance: AppearanceConfig,
     /// 上次打开的主题（下次启动直接回到那里）
@@ -468,7 +440,6 @@ impl AppConfig {
             profiles: vec![deepseek, anthropic, ollama],
             agent: AgentConfig::default(),
             viewer: ViewerConfig::default(),
-            anki: AnkiConfig::default(),
             appearance: AppearanceConfig::default(),
             last_topic: None,
             recent_profiles: Vec::new(),
@@ -535,7 +506,6 @@ pub struct PublicConfig {
     pub profiles: Vec<PublicProfile>,
     pub agent: AgentConfig,
     pub viewer: ViewerConfig,
-    pub anki: AnkiConfig,
     pub appearance: AppearanceConfig,
     pub last_topic: Option<String>,
 }
@@ -584,7 +554,6 @@ impl From<&AppConfig> for PublicConfig {
                 .collect(),
             agent: c.agent.clone(),
             viewer: c.viewer.clone(),
-            anki: c.anki.clone(),
             appearance: c.appearance.clone(),
             last_topic: c.last_topic.clone(),
         }

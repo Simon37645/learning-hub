@@ -204,7 +204,6 @@ const cards = [
           lastReview: null,
           reviews: 0,
         },
-  ankiNoteId: null,
 }));
 
 write("cards/cards.jsonl", cards.map((c) => JSON.stringify(c)).join("\n") + "\n");

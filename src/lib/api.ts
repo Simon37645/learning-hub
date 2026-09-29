@@ -3,7 +3,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AnkiExport,
   Bootstrap,
   Card,
   ChatMessage,
@@ -51,8 +50,6 @@ import type {
   WrongItem,
   Question,
   QuizKind,
-  AnkiStatus,
-  AnkiSyncOutcome,
 } from "./types";
 
 /** 后端返回的错误是纯字符串 */
@@ -205,13 +202,7 @@ export const api = {
   cardDelete: (slug: string, ids: string[]) => invoke<number>("card_delete", { slug, ids }),
   cardReview: (slug: string, id: string, grade: Grade) =>
     invoke<Card>("card_review", { slug, id, grade }),
-  cardExportAnki: (slug: string) => invoke<AnkiExport>("card_export_anki", { slug }),
 
-  // ---------------- AnkiConnect ----------------
-  ankiStatus: () => invoke<AnkiStatus>("anki_status"),
-  ankiPing: () => invoke<string>("anki_ping"),
-  ankiSync: (slug: string, deck?: string | null) =>
-    invoke<AnkiSyncOutcome>("anki_sync", { slug, deck: deck ?? null }),
 
   taskList: (opts?: { slug?: string; status?: string; includeDone?: boolean }) =>
     invoke<TaskWithTopic[]>("task_list", {
@@ -264,6 +255,8 @@ export const api = {
     invoke<SkillsOverview>("skills_overview", { topicSlug: topicSlug ?? null }),
   skillsReload: () => invoke<number>("skills_reload"),
   skillsSetEnabled: (enabled: boolean) => invoke<void>("skills_set_enabled", { enabled }),
+  /** 一键开关全部技能（不区分来源，扫到什么管什么） */
+  skillsSetAll: (enabled: boolean) => invoke<number>("skills_set_all", { enabled }),
   skillSetEnabled: (skillId: string, scope: Scope, enabled: boolean, topicSlug?: string | null) =>
     invoke<void>("skill_set_enabled", { skillId, scope, enabled, topicSlug: topicSlug ?? null }),
   skillsDirs: (topicSlug?: string | null) =>
@@ -290,6 +283,8 @@ export const api = {
     invoke<McpStatusEntry[]>("mcp_delete", { name, scope, topicSlug: topicSlug ?? null }),
   mcpSetEnabled: (name: string, enabled: boolean, scope: Scope, topicSlug?: string | null) =>
     invoke<McpStatusEntry[]>("mcp_set_enabled", { name, enabled, scope, topicSlug: topicSlug ?? null }),
+  /** 一键开关全部 MCP 服务器 */
+  mcpSetAll: (enabled: boolean) => invoke<McpStatusEntry[]>("mcp_set_all", { enabled }),
 
   // ---------------- 讲解方案 ----------------
   lessonList: (slug: string) => invoke<LessonPlan[]>("lesson_list", { slug }),

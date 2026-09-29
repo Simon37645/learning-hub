@@ -224,8 +224,11 @@ Both live in the sidebar, right under *New topic*, and both work at **two scopes
   off for a single topic, using the second switch on each row.
 
 **Skills** are `SKILL.md` files (the same format as Claude / ZCode agent skills), so skills already on
-your machine work as-is. Only names and one-line descriptions go into the prompt; the agent reads the
-body with `skill_read` when it decides the skill applies.
+your machine work as-is. **Only the ones that are switched on go into the prompt** (and only as a name
+plus a one-line description — the agent reads the body with `skill_read` when it decides the skill
+applies). The panel shows "N total, M on", and *Turn all off / Turn all on* lets you zero the list and
+pick from there. The rule looks at switches only, never at which folder a skill came from, so skills you
+add to any folder later fall under the same switches.
 
 **MCP** servers are launched over stdio; their tools appear to the agent as `mcp__<server>__<tool>`.
 External tools are treated as *writes*, so they always ask you first.

@@ -1,7 +1,7 @@
 //! 记忆卡片 + 间隔重复（SM-2 变体）。
 //!
 //! 卡片存在 `cards/cards.jsonl`，一枚卡片一行，既能被本应用调度，
-//! 也能一键同步到 Anki（`anki` 模块）。调度状态内联在卡片上，所以文件可以单独带走。
+//! 调度状态内联在卡片上，所以文件可以单独带走。
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SrsState {
-    /// 难度系数，Anki 里叫 ease factor
+    /// 难度系数（ease factor）
     pub ease: f32,
     /// 当前间隔（天）
     pub interval_days: f32,
@@ -134,16 +134,16 @@ impl SrsState {
     }
 }
 
-/// 卡片类型。决定导出到 Anki 时用哪个笔记模板，也决定背面怎么填。
+/// 卡片类型：决定这张卡怎么问、背面怎么填。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CardKind {
-    /// 正问反答（Anki 的 Basic）
+    /// 正问反答
     #[default]
     Basic,
-    /// 反向卡：正反都能问（Anki 的 Basic (and reversed card)）
+    /// 反向卡：正反都能问
     Reversed,
-    /// 完形填空：正文里用 {{c1::...}} 标出空格（Anki 的 Cloze）
+    /// 完形填空：正文里用 {{c1::...}} 标出要挖空的部分
     Cloze,
 }
 
@@ -153,15 +153,6 @@ impl CardKind {
             CardKind::Basic => "基础",
             CardKind::Reversed => "反向",
             CardKind::Cloze => "完形",
-        }
-    }
-
-    /// 对应的 Anki 笔记模板名
-    pub fn anki_model(self) -> &'static str {
-        match self {
-            CardKind::Basic => "Basic",
-            CardKind::Reversed => "Basic (and reversed card)",
-            CardKind::Cloze => "Cloze",
         }
     }
 
@@ -197,9 +188,6 @@ pub struct Card {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub srs: SrsState,
-    /// 同步到 Anki 后回填的 note id
-    #[serde(default)]
-    pub anki_note_id: Option<i64>,
 }
 
 impl Card {
@@ -214,7 +202,6 @@ impl Card {
             module: None,
             created_at: Utc::now(),
             srs: SrsState::default(),
-            anki_note_id: None,
         }
     }
 
@@ -236,23 +223,7 @@ impl Card {
         format!("{:?}||{}||{}", self.kind, norm(&self.front), norm(&self.back))
     }
 
-    /// 拆成 Anki 的字段表（不同模板字段名不同）。
-    pub fn anki_fields(&self) -> std::collections::BTreeMap<String, String> {
-        let mut map = std::collections::BTreeMap::new();
-        match self.kind {
-            CardKind::Cloze => {
-                map.insert("Text".into(), self.front.clone());
-                map.insert("Back Extra".into(), self.back.clone());
-            }
-            _ => {
-                map.insert("Front".into(), self.front.clone());
-                map.insert("Back".into(), self.back.clone());
-            }
-        }
-        map
-    }
-
-    /// 校验：完形卡必须有至少一个 {{cN::}} 标记，否则到 Anki 那边会变成空白卡。
+    /// 校验：完形卡必须至少有一个 {{cN::}} 标记，否则这张卡要么没得问、要么和普通卡重复。
     pub fn validate(&self) -> Result<(), String> {
         if matches!(self.kind, CardKind::Cloze) && !has_cloze_marker(&self.front) {
             return Err("完形卡必须在正面里用 {{c1::要挖空的内容}} 标出空格".into());

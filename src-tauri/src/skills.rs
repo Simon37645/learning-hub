@@ -179,6 +179,20 @@ pub fn discover(
     out
 }
 
+/// 技能生效规则（纯函数，好测也好读）：**只给开着的技能**。
+///
+/// 判断不区分技能来自哪个目录——工作区、用户目录、自定义目录一视同仁。
+/// 用户以后往哪儿加技能，规则都成立（没有按名字或目录写死的特例）。
+/// 调用方负责把「全局禁用 + 本主题禁用 + 父主题禁用」并成 `disabled`。
+pub fn effective(all: Vec<Skill>, skills_enabled: bool, disabled: &[String]) -> Vec<Skill> {
+    if !skills_enabled {
+        return Vec::new();
+    }
+    all.into_iter()
+        .filter(|s| !disabled.iter().any(|d| d == &s.id))
+        .collect()
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -233,6 +247,38 @@ pub fn read_body(skill: &Skill) -> AppResult<String> {
 mod tests {
     use super::*;
 
+    /// 只给开着的技能：被禁用的不给（不管它来自哪个目录），总开关关了一个都不给。
+    #[test]
+    fn effective_respects_switches() {
+        let mk = |id: &str| Skill {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            dir: String::new(),
+            body: String::new(),
+            files: Vec::new(),
+            source: "测试".into(),
+        };
+        let all = vec![mk("skill-a"), mk("skill-b")];
+        let ids = |v: Vec<Skill>| v.into_iter().map(|s| s.id).collect::<Vec<_>>();
+
+        // 没关就都给
+        assert_eq!(ids(effective(all.clone(), true, &[])), vec!["skill-a", "skill-b"]);
+        // 关掉哪个就不给哪个
+        assert_eq!(
+            ids(effective(all.clone(), true, &["skill-a".to_string()])),
+            vec!["skill-b"]
+        );
+        // 两个都关就都不给
+        assert!(effective(
+            all.clone(),
+            true,
+            &["skill-a".to_string(), "skill-b".to_string()]
+        )
+        .is_empty());
+        // 总开关关掉：一个都不给
+        assert!(effective(all, false, &[]).is_empty());
+    }
     /// 子主题能看见父主题私有目录里的技能；同名时子主题自己的那份胜出。
     #[test]
     fn discovers_parent_topic_skills() {

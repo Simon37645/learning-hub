@@ -204,29 +204,8 @@ export interface Card {
   module?: string | null;
   createdAt: string;
   srs: SrsState;
-  ankiNoteId?: number | null;
   /** 四档评分各自会把下次复习推到多久之后（秒）。后端用同一套调度算法算好，界面直接印在按钮上 */
   preview?: { again: number; hard: number; good: number; easy: number };
-}
-
-export interface AnkiStatus {
-  reachable: boolean;
-  url: string;
-  version?: number | null;
-  decks: string[];
-  message: string;
-}
-
-export interface AnkiSyncOutcome {
-  added: number;
-  skipped: number;
-  failed: string[];
-  deck: string;
-}
-
-export interface AnkiConfig {
-  url: string;
-  deckPrefix: string;
 }
 
 export type Grade = "again" | "hard" | "good" | "easy";
@@ -294,12 +273,6 @@ export interface DailyBrief {
   overdueTasks: number;
   topicsTouchedToday: number;
   heatmap: HeatCell[];
-}
-
-export interface AnkiExport {
-  path: string;
-  count: number;
-  format: string;
 }
 
 // ---------------------------------------------------------------- 配置
@@ -392,7 +365,6 @@ export interface PublicConfig {
   profiles: PublicProfile[];
   agent: AgentConfig;
   viewer: ViewerConfig;
-  anki: AnkiConfig;
   appearance: AppearanceConfig;
   lastTopic?: string | null;
 }
@@ -426,8 +398,6 @@ export interface ConfigPatch {
   contextBudgetChars?: number;
   homeUrl?: string;
   searchEngine?: string;
-  ankiUrl?: string;
-  ankiDeckPrefix?: string;
   theme?: ThemeMode;
   /** 撤销某个已授权目录 */
   revokeRoot?: string;
@@ -755,7 +725,7 @@ export interface SkillEntry {
   scope: Scope;
   /** 在当前上下文里是否生效 */
   enabled: boolean;
-  /** 被哪一级关掉的：global / topic / 总开关 */
+  /** 没生效的原因：global / topic / parent / 总开关 */
   disabledBy?: string | null;
   files: string[];
 }

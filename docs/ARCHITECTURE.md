@@ -210,7 +210,6 @@ impl Tool for MyTool {
 | 知识库 | `kb.rs` | 把 `kb/`+`materials/`+`notes/` 抽成带来源的文本块，索引缓存在 `.hub/kb.json`（按 mtime 增量刷新）。工具：`kb_build` / `kb_search` |
 | 讲解方案 | `commands/lesson.rs` + `agent/tools/lesson.rs` | 讲解模式的骨架：方案落成 `lessons/<id>.json`，进度注入提示词，跨轮次不迷路 |
 | 测验 | `domain/quiz.rs` + `commands/quiz.rs` + `agent/tools/quiz.rs` | 六种题型；客观题本地判分，主观题把采分点交给模型逐条对照（`quiz_grade_subjective`） |
-| Anki | `anki.rs` | AnkiConnect 客户端（`version` / `deckNames` / `createDeck` / `addNotes`）。卡片带 `kind`（basic/reversed/cloze），完形卡会校验 `{{c1::}}` 标记 |
 | 技能 | `skills.rs` | 扫 `SKILL.md`（frontmatter 只解析 name/description，不引 YAML）。渐进式披露：提示词里只给名字+适用场景 |
 | MCP | `mcp.rs` + `agent/tools/mcp.rs` | 手写的 stdio JSON-RPC 客户端（换行分帧）。握手 → `tools/list` → 包装成 `mcp__<服务器>__<工具>` |
 | 沙箱 | `state.rs` 的 `is_inside_workspace` / `needs_escalation` / `approve_root` | 越权时发 `sandbox_request` 事件等用户点头；批准粒度是**目录**并写进配置 |

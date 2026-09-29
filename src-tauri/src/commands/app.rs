@@ -116,8 +116,6 @@ pub struct ConfigPatch {
     pub context_budget_chars: Option<usize>,
     pub home_url: Option<String>,
     pub search_engine: Option<String>,
-    pub anki_url: Option<String>,
-    pub anki_deck_prefix: Option<String>,
     /// 撤销某个已授权目录
     pub revoke_root: Option<String>,
     /// 清空越权白名单
@@ -161,14 +159,6 @@ pub async fn config_patch(state: State<'_, AppState>, patch: ConfigPatch) -> App
         }
         if patch.clear_approved_roots.unwrap_or(false) {
             c.agent.approved_roots.clear();
-        }
-        if let Some(v) = patch.anki_url.clone() {
-            if !v.trim().is_empty() {
-                c.anki.url = v.trim().to_string();
-            }
-        }
-        if let Some(v) = patch.anki_deck_prefix.clone() {
-            c.anki.deck_prefix = v.trim().to_string();
         }
         if let Some(v) = patch.max_iterations {
             c.agent.max_iterations = v.clamp(1, 100);

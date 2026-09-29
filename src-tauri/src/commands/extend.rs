@@ -43,7 +43,7 @@ pub struct SkillEntry {
     pub scope: String,
     /// 在当前上下文里是否生效
     pub enabled: bool,
-    /// 被哪一级关掉的（global / topic / null），界面上说明原因
+    /// 为什么没生效（总开关 / global / topic / parent），界面上说明原因
     pub disabled_by: Option<String>,
     pub files: Vec<String>,
 }
@@ -88,9 +88,9 @@ pub async fn skills_overview(
     };
 
     let entry = |s: &crate::skills::Skill, scope: &str| -> SkillEntry {
-        let global_off = cfg.agent.disabled_skills.iter().any(|d| d == &s.id);
-        // 「本主题已关」和「父主题已关」都来自主题层，但要让用户分得清是谁关的
-        let topic_off = core.skill_disabled_by_topic(&s.id, topic.as_ref());
+        // 开关状态统一由 state 里的规则算：面板显示的「开/关」必须和提示词里给的
+        // 完全一致，两处各写一套判断迟早会打架
+        let off = core.skill_off_reason(s, topic.as_ref());
         SkillEntry {
             id: s.id.clone(),
             name: s.name.clone(),
@@ -98,14 +98,8 @@ pub async fn skills_overview(
             dir: s.dir.clone(),
             source: s.source.clone(),
             scope: scope.to_string(),
-            enabled: cfg.agent.skills_enabled && !global_off && topic_off.is_none(),
-            disabled_by: if !cfg.agent.skills_enabled {
-                Some("总开关".into())
-            } else if global_off {
-                Some("global".into())
-            } else {
-                topic_off.map(|s| s.to_string())
-            },
+            enabled: off.is_none(),
+            disabled_by: off,
             files: s.files.clone(),
         }
     };
@@ -153,6 +147,24 @@ pub async fn skill_set_enabled(
         }
     }
     Ok(())
+}
+
+/// 一键开关：把当前扫到的**全部全局技能**打开或关掉。
+///
+/// 不针对某个技能名或目录写死——扫到什么就管什么，用户以后新加的技能
+/// 照样落在同一套开关里（界面上就是「全部打开 / 全部关掉」两个按钮）。
+#[tauri::command]
+pub async fn skills_set_all(state: State<'_, AppState>, enabled: bool) -> AppResult<usize> {
+    let core = state.0.clone();
+    let cfg = core.config_read();
+    let all = crate::skills::discover(Some(&cfg.workspace_root), &[], &cfg.agent.extra_skill_dirs);
+    let ids: Vec<String> = all.into_iter().map(|s| s.id).collect();
+    let n = ids.len();
+    core.update_config(|c| {
+        c.agent.disabled_skills = if enabled { Vec::new() } else { ids };
+    })?;
+    core.reload_skills();
+    Ok(n)
 }
 
 /// 技能总开关。
@@ -440,4 +452,22 @@ pub async fn mcp_set_enabled(
             Ok(core.mcp_status().await)
         }
     }
+}
+
+/// 一键开关：把配置里的**全部 MCP 服务器**打开或关掉。
+///
+/// 与 `skills_set_all` 同理——按当前配置里有什么就管什么，不写死具体名字；
+/// 用户以后加新服务器，也会被这两个按钮一并管到。
+#[tauri::command]
+pub async fn mcp_set_all(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> AppResult<Vec<McpStatusEntry>> {
+    let core = state.0.clone();
+    core.update_config(|c| {
+        for s in c.agent.mcp_servers.iter_mut() {
+            s.enabled = enabled;
+        }
+    })?;
+    Ok(core.mcp_reload().await)
 }

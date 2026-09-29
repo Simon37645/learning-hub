@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { api, errText } from "../lib/api";
 import {
   PERMISSION_LABEL,
-  type AnkiStatus,
   STYLE_LABEL,
   type PermissionMode,
   type ProfileInput,
@@ -24,8 +23,6 @@ export function Settings() {
   const version = useApp((s) => s.version);
 
   const [ws, setWs] = useState<{ root: string; topicCount: number; diskUsageText: string } | null>(null);
-  const [ankiState, setAnkiState] = useState<AnkiStatus | null>(null);
-  const [ankiTesting, setAnkiTesting] = useState(false);
   const [name, setName] = useState(config?.userName ?? "");
   const [toolsOpen, setToolsOpen] = useState(false);
 
@@ -240,68 +237,6 @@ export function Settings() {
             <div className="muted" style={{ fontSize: 12 }}>
               PDF 用 pdf.js 渲染（agent 能读每一页的文字、能翻页）；
               网页用内嵌窗口打开，遇到禁止嵌入的站点可以切「阅读模式」看提取后的正文。
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- Anki（可选，默认用内置复习） ---------------- */}
-        <section className="col">
-          <h2>
-            Anki 同步 <span className="sub">可选 · 复习默认在应用内完成</span>
-          </h2>
-          <div className="card-box">
-            <div className="sub" style={{ fontSize: 12.5, marginBottom: 10 }}>
-              卡片、间隔重复（SM-2）和复习界面都在本应用里，**不需要安装 Anki**。
-              只有当你还想在 Anki（比如手机端）上复习同一批卡片时，才需要在这里填 AnkiConnect。
-            </div>
-            <div className="grid-2">
-              <Field label="AnkiConnect 地址" hint="Anki 桌面版 + AnkiConnect 插件（插件代码 2055492159）">
-                <input
-                  className="input mono"
-                  value={config.anki.url}
-                  onChange={(e) => void patchConfig({ ankiUrl: e.target.value })}
-                />
-              </Field>
-              <Field label="牌组名前缀" hint="留空则用主题名当牌组名">
-                <input
-                  className="input"
-                  value={config.anki.deckPrefix}
-                  placeholder="例如：学习中枢::"
-                  onChange={(e) => void patchConfig({ ankiDeckPrefix: e.target.value })}
-                />
-              </Field>
-            </div>
-            <div className="row">
-              <button
-                className="btn"
-                disabled={ankiTesting}
-                onClick={async () => {
-                  setAnkiTesting(true);
-                  try {
-                    const msg = await api.ankiPing();
-                    toast("success", msg);
-                    setAnkiState(await api.ankiStatus());
-                  } catch (e) {
-                    toast("error", errText(e));
-                    setAnkiState(await api.ankiStatus().catch(() => null));
-                  } finally {
-                    setAnkiTesting(false);
-                  }
-                }}
-              >
-                {ankiTesting ? <Spinner /> : <Icon name="play" size={13} />} 测试连接
-              </button>
-              {ankiState ? (
-                <span style={{ fontSize: 12, color: ankiState.reachable ? "var(--ok)" : "var(--text-sub)" }}>
-                  {ankiState.reachable
-                    ? `已连上，共 ${ankiState.decks.length} 个牌组`
-                    : `没连上（${ankiState.message}）——不影响使用，卡片照常在本应用里复习`}
-                </span>
-              ) : (
-                <span className="muted" style={{ fontSize: 11.5 }}>
-                  不填也能用；卡片页的「Anki」菜单里还有「导出 TSV」，可以手动导入
-                </span>
-              )}
             </div>
           </div>
         </section>

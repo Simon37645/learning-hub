@@ -24,6 +24,9 @@ export function SkillsDialog({ onClose }: { onClose: () => void }) {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ id: "", name: "", description: "", body: "", scope: "global" as Scope });
 
+  // 会被写进系统提示词的技能数（面板上要能一眼看到「agent 到底拿到几个」）
+  const onCount = data ? [...data.global, ...data.topic].filter((s) => s.enabled).length : 0;
+
   const refresh = useCallback(async () => {
     try {
       setData(await api.skillsOverview(slug));
@@ -132,7 +135,37 @@ export function SkillsDialog({ onClose }: { onClose: () => void }) {
             />
             <div className="grow" />
             <span className="muted" style={{ fontSize: 11.5 }}>
-              系统提示词里只列名字与适用场景，模型需要时才读正文
+              写进系统提示词的只有开着的那些（共 {data.global.length + data.topic.length} 个，
+              当前开着 {onCount} 个）。提示词里只列名字与适用场景，模型需要时才读正文。
+            </span>
+          </div>
+
+          <div className="row" style={{ gap: 6 }}>
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              全局技能一键开关：
+            </span>
+            <button
+              className="btn sm"
+              onClick={async () => {
+                const n = await api.skillsSetAll(false);
+                await refresh();
+                toast("info", `已关掉 ${n} 个技能（不再写进提示词）`);
+              }}
+            >
+              全部关掉
+            </button>
+            <button
+              className="btn sm"
+              onClick={async () => {
+                const n = await api.skillsSetAll(true);
+                await refresh();
+                toast("info", `已打开 ${n} 个技能`);
+              }}
+            >
+              全部打开
+            </button>
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              （按当前扫到的技能来，以后新加的也会被这两个按钮管到）
             </span>
           </div>
 
@@ -170,6 +203,14 @@ export function SkillsDialog({ onClose }: { onClose: () => void }) {
     </Modal>
   );
 }
+
+/** 技能没生效的原因 → 界面文案（后端算，界面只负责显示） */
+const LABELS: Record<string, string> = {
+  topic: "本主题已关",
+  parent: "父主题已关",
+  global: "全局已关",
+  总开关: "总开关已关",
+};
 
 function SkillGroup({
   title,
@@ -215,13 +256,7 @@ function SkillGroup({
               <span className="tag">{s.source}</span>
               {s.disabledBy && (
                 <span className="tag" style={{ color: "var(--warn)" }}>
-                  {s.disabledBy === "topic"
-                    ? "本主题已关"
-                    : s.disabledBy === "parent"
-                      ? "父主题已关"
-                      : s.disabledBy === "global"
-                        ? "全局已关"
-                        : "总开关已关"}
+                  {LABELS[s.disabledBy] ?? s.disabledBy}
                 </span>
               )}
               <div className="grow" />
@@ -230,14 +265,14 @@ function SkillGroup({
               </button>
               <ScopeSwitch
                 scope="global"
-                checked={s.disabledBy !== "global" && s.disabledBy !== "总开关"}
+                checked={!["global", "总开关", "default"].includes(s.disabledBy ?? "")}
                 disabled={s.disabledBy === "总开关"}
                 onChange={(v) => onToggle(s, v, "global")}
               />
               {showGlobalToggle && (
                 <ScopeSwitch
                   scope="topic"
-                  checked={s.disabledBy !== "topic"}
+                  checked={!["topic", "parent"].includes(s.disabledBy ?? "")}
                   disabled={!topicOpen}
                   onChange={(v) => onToggle(s, v, "topic")}
                 />
@@ -422,6 +457,50 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
 
       {data ? (
         <>
+          <div className="row" style={{ gap: 6 }}>
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              全局服务器一键开关：
+            </span>
+            <button
+              className="btn sm"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await api.mcpSetAll(false);
+                  await refresh();
+                  toast("info", "已关掉全部 MCP 服务器（工具不再暴露给 agent）");
+                } catch (e) {
+                  toast("error", errText(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              全部关掉
+            </button>
+            <button
+              className="btn sm"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await api.mcpSetAll(true);
+                  await refresh();
+                  toast("info", "已打开全部 MCP 服务器");
+                } catch (e) {
+                  toast("error", errText(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              全部打开
+            </button>
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              （按当前配置里的服务器来，以后新加的也一起管）
+            </span>
+          </div>
           <McpGroup
             title={`全局（${data.global.length}）`}
             hint="左边开关控制全局；右边开关只影响当前主题"

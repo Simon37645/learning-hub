@@ -137,6 +137,10 @@ PDF, Markdown, web pages, images and code — tabbed, in a side panel.
 
 ### 4. Teach mode: plan first, then one step at a time
 
+A **collapsible progress card** sits at the top-right of the conversation (): every step of
+ the plan, struck through when covered, the current one highlighted, with its “how do I check you got it”
+ line when expanded. You can see where you are without leaving the chat.
+
 Preview defaults to teach mode. The agent must do three things in order:
 
 1. **Search your lecture notes** to find what your teacher emphasised.

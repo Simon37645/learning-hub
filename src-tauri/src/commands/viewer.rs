@@ -16,8 +16,15 @@ pub async fn viewer_snapshot(state: State<'_, AppState>) -> AppResult<ViewerSnap
 }
 
 #[tauri::command]
-pub async fn viewer_open(state: State<'_, AppState>, req: OpenRequest) -> AppResult<TabView> {
+pub async fn viewer_open(state: State<'_, AppState>, mut req: OpenRequest) -> AppResult<TabView> {
     let core = state.0.clone();
+    // 引用里常见的「路径 + 章节」写法（例句：…pdf 第三章）：原路径存在就原样用，
+    // 不存在才去掉尾巴上的定位词。放在这一层是因为只有这里拿得到工作区。
+    if let (Some(slug), Some(path)) = (req.topic_slug.clone(), req.path.clone()) {
+        if let Ok(topic) = core.workspace().resolve(&slug) {
+            req.path = Some(crate::paths::strip_locator_if_missing(&topic.dir, &path));
+        }
+    }
     let tab = core.viewer.open(req).await?;
     core.emit_viewer_sync().await;
     Ok(TabView::from(&tab))

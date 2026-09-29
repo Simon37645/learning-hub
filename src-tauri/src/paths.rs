@@ -79,6 +79,51 @@ pub fn resolve_in_root(root: &Path, rel: &str) -> AppResult<PathBuf> {
     Ok(candidate)
 }
 
+/// 引用里的定位词：`materials/xx.pdf 第三章` 中的「第三章」不是文件名的一部分。
+///
+/// 出现的原因：模型引用资料时爱写「路径 + 章节」，而我们的引用格式只教了「第 N 页」。
+/// 这条容错**只在原路径不存在时**才去掉尾巴，所以文件名真的以「第三讲」结尾也不受影响。
+pub fn strip_locator_if_missing(root: &Path, rel: &str) -> String {
+    let Ok(direct) = resolve_in_root(root, rel) else {
+        return rel.trim().to_string();
+    };
+    if direct.exists() {
+        return rel.trim().to_string();
+    }
+    match split_locator(rel) {
+        Some((head, _)) => head.to_string(),
+        None => rel.trim().to_string(),
+    }
+}
+
+/// 把「materials/xx.pdf 第三章」拆成 `("materials/xx.pdf", "第三章")`；形状不对就返回 None。
+fn split_locator(raw: &str) -> Option<(String, String)> {
+    let t = raw.trim_end();
+    let idx = t.rfind('第')?;
+    let head = &t[..idx];
+    let tail = &t[idx..];
+    // 「第」前面要有空白：`第一讲.pdf` 这种是文件名，不能动
+    if head.is_empty() || !head.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let unit = ["部分", "页", "章", "节", "讲", "篇", "段", "课"]
+        .into_iter()
+        .find(|u| tail.ends_with(u))?;
+    let mid = &tail['第'.len_utf8()..tail.len() - unit.len()];
+    let mid = mid.trim();
+    // 中间只允许数字、中文数字、区间符号
+    let ok = !mid.is_empty()
+        && mid.chars().all(|c| {
+            c.is_ascii_digit()
+                || matches!(c, '-' | '~' | '～' | '、' | ',')
+                || "零一二三四五六七八九十百两".contains(c)
+        });
+    if !ok {
+        return None;
+    }
+    Some((head.trim_end().to_string(), tail.to_string()))
+}
+
 /// root 内部的相对路径（用于回传给 agent / 前端）。永不返回 `..`。
 pub fn rel_in_root(root: &Path, path: &Path) -> String {
     let root_abs = normalize(&absolutize(root).unwrap_or_else(|_| root.to_path_buf()));
@@ -189,6 +234,43 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 引用尾巴上的「第 X 章/页/讲」要在文件不存在时才被去掉，
+    /// 而文件名本来就叫「第一讲.pdf」的不能被误伤。
+    #[test]
+    fn strips_citation_locator_only_when_missing() {
+        let tmp = std::env::temp_dir().join(format!("lh-paths-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("materials")).unwrap();
+        std::fs::write(tmp.join("materials/lecture.pdf"), b"x").unwrap();
+        std::fs::write(tmp.join("materials/第一讲.pdf"), b"x").unwrap();
+
+        // 存在 → 原样返回（哪怕尾巴长得像定位词）
+        assert_eq!(
+            strip_locator_if_missing(&tmp, "materials/第一讲.pdf"),
+            "materials/第一讲.pdf"
+        );
+        // 不存在 + 章节定位 → 去掉定位词
+        assert_eq!(
+            strip_locator_if_missing(&tmp, "materials/lecture.pdf 第三章"),
+            "materials/lecture.pdf"
+        );
+        assert_eq!(
+            strip_locator_if_missing(&tmp, "materials/lecture.pdf 第 12-13 页"),
+            "materials/lecture.pdf"
+        );
+        // 形状不像定位词（或路径本来就对）→ 不动
+        assert_eq!(
+            strip_locator_if_missing(&tmp, "materials/nope.pdf 讲义"),
+            "materials/nope.pdf 讲义"
+        );
+        assert_eq!(strip_locator_if_missing(&tmp, "materials/ok.pdf"), "materials/ok.pdf");
+
+        assert!(split_locator("notes/a.md 第三章").is_some());
+        assert!(split_locator("notes/第一讲.md").is_none(), "文件名里的「第」不能在没空格时被切");
+        assert!(split_locator("notes/a.md 第一章 PDF").is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     fn root() -> PathBuf {
         PathBuf::from("C:/ws")

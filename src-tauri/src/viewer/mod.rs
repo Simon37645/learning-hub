@@ -254,6 +254,7 @@ impl ViewerService {
         if req.url.is_none() && req.path.is_none() {
             return Err(AppError::invalid("需要 url 或 path"));
         }
+
         let kind = req.kind.unwrap_or_else(|| {
             ViewerKind::detect(req.url.as_deref().or(req.path.as_deref()).unwrap_or(""))
         });

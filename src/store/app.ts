@@ -105,6 +105,8 @@ interface AppStore {
   usage: { input: number; output: number } | null;
   chatError: string | null;
   approval: ApprovalRequest | null;
+  /** 每跑完一轮 +1：讲解步骤面板靠它刷新（agent 会在这一轮里改方案） */
+  lessonTick: number;
 
   // --- 内置浏览器 ---
   viewer: ViewerSnapshot;
@@ -227,6 +229,7 @@ export const useApp = create<AppStore>((set, get) => ({
   usage: null,
   chatError: null,
   approval: null,
+  lessonTick: 0,
 
   viewer: { tabs: [], activeId: null, visible: false },
   viewerWidth: 460,
@@ -978,7 +981,7 @@ function handleAgentEvent(
       set({ usage: { input: ev.input_tokens, output: ev.output_tokens } });
       break;
     case "finished":
-      set({ streaming: null, iteration: null, approval: null });
+      set((s) => ({ streaming: null, iteration: null, approval: null, lessonTick: s.lessonTick + 1 }));
       void get().refreshTopics();
       void get().refreshBrief();
       // 侧栏的对话清单：标题取自第一句话，所以第一轮结束后要刷一次才会出现

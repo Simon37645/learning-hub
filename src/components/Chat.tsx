@@ -6,6 +6,7 @@ import { useApp, type ToolActivity } from "../store/app";
 import { api, errText } from "../lib/api";
 import { highlightWithin, linkifyCitations, renderMarkdown, renderMermaidIn } from "../lib/markdown";
 import { clampText, fmtClock, hotkey } from "../lib/format";
+import { LessonSteps } from "./Lesson";
 import {
   EFFORT_HINT,
   EFFORT_LABEL,
@@ -292,6 +293,7 @@ export function Chat() {
   return (
     <div className="chat">
       <ChatHead />
+      <LessonSteps />
 
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
         {visible.length === 0 && !streaming ? (

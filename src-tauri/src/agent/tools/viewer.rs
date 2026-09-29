@@ -161,6 +161,8 @@ impl Tool for ViewerOpen {
         // 本地文件先确认存在，避免前端开个空白页
         let topic_slug = if let Some(rel) = path.clone() {
             let (topic, rel) = topic_and_rel(ctx, &rel, arg_str(&input, "topic").as_deref())?;
+            // 「…pdf 第三章」这种带章节的引用：去掉尾巴再判断存在性
+            let rel = crate::paths::strip_locator_if_missing(&topic.dir, &rel);
             let abs = crate::paths::resolve_in_root(&topic.dir, &rel)?;
             if !abs.exists() {
                 return Err(AppError::NotFound(format!("文件不存在：{rel}")));

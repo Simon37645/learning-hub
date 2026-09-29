@@ -9,6 +9,89 @@ import { STEP_STATUS_LABEL, type LessonPlan, type StepStatus } from "../lib/type
 import { useApp } from "../store/app";
 import { Icon, Spinner } from "./ui";
 
+/**
+ * 对话里的「讲解进度」卡片：像待办清单一样列着方案里的步骤，可展开/收起。
+ *
+ * 为什么要有它：方案卡片原来只在工作台「概览」里，聊天时看不到自己走到哪了——
+ * 讲解模式本来就是一步一停，进度必须跟对话在同一屏上（用户要求的样式）。
+ * 折叠状态记在本地，展开时每一步的状态由 agent 的 lesson_step 驱动。
+ */
+export function LessonSteps() {
+  const topic = useApp((s) => s.topic);
+  const tick = useApp((s) => s.lessonTick);
+  const [plan, setPlan] = useState<LessonPlan | null>(null);
+  const [open, setOpen] = useState(() => localStorage.getItem("hub.lessonSteps.open") !== "0");
+
+  useEffect(() => {
+    if (!topic) {
+      setPlan(null);
+      return;
+    }
+    let alive = true;
+    api
+      .lessonList(topic.slug)
+      .then((ps) => {
+        if (alive) setPlan(ps.find((p) => !p.finished) ?? null);
+      })
+      .catch(() => alive && setPlan(null));
+    return () => {
+      alive = false;
+    };
+  }, [topic?.slug, tick]);
+
+  if (!plan || plan.steps.length === 0) return null;
+
+  const done = plan.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
+  const current = plan.steps.find((s) => s.status === "doing") ?? plan.steps.find((s) => s.status === "todo");
+
+  const toggle = () => {
+    setOpen((v) => {
+      try {
+        localStorage.setItem("hub.lessonSteps.open", v ? "0" : "1");
+      } catch {
+        /* 隐私模式下写不了，不影响使用 */
+      }
+      return !v;
+    });
+  };
+
+  return (
+    <div className={"lesson-steps" + (open ? " open" : "")}>
+      <button className="ls-head" onClick={toggle} title={open ? "收起步骤" : "展开步骤"}>
+        <Icon name="list" size={13} />
+        <span className="ls-count mono">
+          {done}/{plan.steps.length}
+        </span>
+        <span className="ls-now">{current ? `第 ${current.index} 步 · ${current.title}` : "方案已走完"}</span>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={13} />
+      </button>
+
+      {open && (
+        <div className="ls-body">
+          {plan.title && <div className="ls-title">{plan.title}</div>}
+          {plan.steps.map((s) => {
+            const isCurrent = current?.index === s.index;
+            const isDone = s.status === "done" || s.status === "skipped";
+            return (
+              <div key={s.index} className={"ls-step" + (isCurrent ? " on" : "") + (isDone ? " done" : "")}>
+                <span className="ls-mark">
+                  {isDone ? <Icon name="check" size={11} /> : isCurrent ? <span className="ls-dot" /> : <span className="ls-ring" />}
+                </span>
+                <div className="ls-main">
+                  <div className="ls-step-title">
+                    {s.index}. {s.title}
+                  </div>
+                  {(isCurrent || !isDone) && s.check && <div className="ls-check">检验：{s.check}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LessonCard() {
   const topic = useApp((s) => s.topic)!;
   const send = useApp((s) => s.send);

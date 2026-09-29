@@ -93,7 +93,50 @@ export function ViewerPanel() {
         >
           <Icon name="plus" />
         </button>
-        <button className="icon-btn" title="收起内置浏览器" onClick={() => void toggleViewer(false)}>
+
+        {/* 本地文档的状态与动作并到这一行：原来下面还有一条路径栏，
+            白白多占一行、还把正文挤掉一截（用户反馈「顶上的框挡住内容」）。
+            完整路径现在放在标签的 tooltip 里。 */}
+        {active && active.kind !== "web" && (
+          <>
+            {active.kind === "pdf" && (
+              <span className="mono nowrap" style={{ fontSize: 11 }}>
+                {active.page}/{active.totalPages || "?"}
+              </span>
+            )}
+            <span className="muted mono nowrap" style={{ fontSize: 10.5 }} title="agent 已读到的正文字数">
+              {active.snapshotChars > 0 ? `${(active.snapshotChars / 1000).toFixed(1)}k 字` : "未读"}
+            </span>
+            {active.path && (
+              <>
+                <button
+                  className="icon-btn"
+                  title="重新加载"
+                  onClick={() => void api.viewerReload(active.id).catch((e) => useApp.getState().toast("error", errText(e)))}
+                >
+                  <Icon name="refresh" size={13} />
+                </button>
+                <button
+                  className="icon-btn"
+                  title="用系统程序打开"
+                  onClick={() =>
+                    void api
+                      .openWithSystem(active.topicSlug ?? "", active.path ?? "")
+                      .catch((e) => useApp.getState().toast("error", errText(e)))
+                  }
+                >
+                  <Icon name="external" size={13} />
+                </button>
+              </>
+            )}
+          </>
+        )}
+
+        <button
+          className="icon-btn"
+          title="收起内置浏览器"
+          onClick={() => void toggleViewer(false)}
+        >
           <Icon name="close" />
         </button>
       </div>
@@ -133,7 +176,8 @@ function TabBody({
 
   return (
     <>
-      <TabBar tab={tab} readerMode={readerMode} setReaderMode={setReaderMode} />
+      {/* 只有网页才需要地址栏那一行；本地文档的状态已经并到顶部标签行里了 */}
+      {tab.kind === "web" && <TabBar tab={tab} readerMode={readerMode} setReaderMode={setReaderMode} />}
       {tab.loading && (
         <div className="row" style={{ padding: "6px 12px", color: "var(--text-faint)", fontSize: 12 }}>
           <Spinner /> 加载中…

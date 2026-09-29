@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "./store/app";
 import { Sidebar, SearchPalette } from "./components/Sidebar";
+import { SidebarResizer } from "./components/SidebarResizer";
 import { Chat } from "./components/Chat";
 import { Workbench } from "./components/Workbench";
 import { ViewerPanel } from "./components/Viewer";
@@ -73,6 +74,7 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar />
+      <SidebarResizer />
       <div className="app-main">
         <div className="main-body">
           <div className="main-center">

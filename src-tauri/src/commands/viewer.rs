@@ -85,6 +85,23 @@ pub async fn viewer_report_snapshot(
     error: Option<String>,
 ) -> AppResult<()> {
     let core = state.0.clone();
+    // 前端把逐页文本交上来了：存一份到主题里，知识库建索引时就能带上真页码
+    // （Rust 侧的 pdf-extract 不保留分页，这是拿得到页码的唯一来源）
+    if let Some(page_list) = &pages {
+        if let Some(tab) = core.viewer.find(&tab_id).await {
+            if let (Some(slug), Some(rel)) = (tab.topic_slug.clone(), tab.path.clone()) {
+                if let Ok(topic) = core.workspace().resolve(&slug) {
+                    if let Ok(abs) = crate::paths::resolve_in_root(&topic.dir, &rel) {
+                        let rows: Vec<(u32, String)> =
+                            page_list.iter().map(|p| (p.page, p.text.clone())).collect();
+                        if let Err(e) = crate::kb::save_pages_cache(&topic.dir, &abs, &rows) {
+                            eprintln!("[kb] 分页缓存写入失败 {}：{e}", abs.display());
+                        }
+                    }
+                }
+            }
+        }
+    }
     core.viewer
         .report_snapshot(&tab_id, content, pages, total_pages, error)
         .await;

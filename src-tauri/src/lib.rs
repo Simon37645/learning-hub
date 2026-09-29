@@ -143,6 +143,7 @@ pub fn run() {
             commands::topic::note_delete,
             commands::topic::material_list,
             commands::topic::material_import,
+            commands::topic::kb_rebuild,
             // --- 对话 ---
             commands::agent::agent_send,
             commands::agent::agent_cancel,

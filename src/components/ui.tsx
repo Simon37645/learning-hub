@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { useApp } from "../store/app";
 
 // ---------------------------------------------------------------- 图标
@@ -341,12 +342,58 @@ export function Dropdown({
   up?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number; ready: boolean }>({ left: 0, top: 0, ready: false });
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // 菜单渲染到 body 上（portal）：原来它长在触发按钮旁边，而侧栏主题列表是
+  // overflow:auto 的滚动容器——菜单会被裁掉、还会被后面的内容盖住
+  // （用户报的「点⋯被上方内容遮住、找不到新建子主题」就是这么来的）。
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      let anchor = ref.current?.getBoundingClientRect();
+      // 主题行的「⋯」平时是 display:none（悬停才显示），量出来是 0×0 —— 那就退回外层
+      if (anchor && anchor.width === 0 && anchor.height === 0) {
+        const outer = ref.current?.parentElement?.getBoundingClientRect();
+        if (outer && (outer.width > 0 || outer.height > 0)) anchor = outer;
+      }
+      // 还是 0×0（没有真实指针，比如脚本触发）→ 用整行当锚点，至少别跑到左上角
+      if (anchor && anchor.width === 0 && anchor.height === 0) {
+        const row = ref.current?.closest<HTMLElement>(".topic-row, .chat-row, .list-row");
+        const rr = row?.getBoundingClientRect();
+        if (rr && rr.width > 0) anchor = rr;
+      }
+      const menu = menuRef.current;
+      if (!anchor || !menu) return;
+      const h = menu.offsetHeight;
+      const w = menu.offsetWidth;
+      const below = anchor.bottom + 6 + h <= window.innerHeight - 8;
+      const wantUp = up === undefined ? !below : up;
+      let top = wantUp ? anchor.top - 6 - h : anchor.bottom + 6;
+      top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+      let left = align === "right" ? anchor.right - w : anchor.left;
+      left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+      setPos({ left, top, ready: true });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, align, up]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setPos({ left: 0, top: 0, ready: false });
+      return;
+    }
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("mousedown", onDown);
@@ -362,14 +409,17 @@ export function Dropdown({
       <div onClick={() => setOpen((v) => !v)} style={{ display: "inline-flex" }}>
         {trigger(open)}
       </div>
-      {open && (
-        <div
-          className={"menu" + (up === false ? " down" : " up")}
-          style={align === "right" ? { right: 0, left: "auto" } : { left: 0, right: "auto" }}
-        >
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="menu portal"
+            style={{ left: pos.left, top: pos.top, visibility: pos.ready ? "visible" : "hidden" }}
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

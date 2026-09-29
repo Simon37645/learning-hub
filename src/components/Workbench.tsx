@@ -491,6 +491,24 @@ function MaterialsPane() {
           {inheritedBy.length > 0 && " 带「继承」标记的来自父主题，点开就能看，原件不用复制过来。"}
         </span>
         <div className="grow" />
+        <button
+          className="btn"
+          title="把 materials/ 与 kb/ 里的讲义重新抽成可检索文本。PDF 的页码来自内置浏览器读过的分页文本，所以引用能定位到具体页"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const r = await api.kbRebuild(topic.slug);
+              toast("success", `索引已重建：${r.files} 份文件、${r.chunks} 个片段（带页码的 ${r.paged} 份）`);
+            } catch (e) {
+              toast("error", errText(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <Icon name="refresh" size={13} /> 重建索引
+        </button>
         <button className="btn primary" onClick={importFiles} disabled={busy}>
           {busy ? <Spinner /> : <Icon name="download" size={13} />} 导入资料
         </button>

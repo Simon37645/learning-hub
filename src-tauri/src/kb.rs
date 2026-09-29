@@ -39,6 +39,9 @@ pub struct KbFile {
     #[serde(default)]
     pub headings: Vec<String>,
     pub chars: usize,
+    /// 带真页码的片段数（PDF 走了前端 pdf.js 的分页文本；0 = 只能给文件名）
+    #[serde(default)]
+    pub chunks_with_pages: usize,
     /// 抽取失败时记下原因，界面上能提示用户「这份是扫描件」
     #[serde(default)]
     pub error: Option<String>,
@@ -150,8 +153,67 @@ fn pick_headings(text: &str, md: bool) -> Vec<String> {
     out
 }
 
+
+/// 分页文本缓存目录（前端 pdf.js 抽好的逐页文本放这里）
+fn pages_dir(topic_dir: &Path) -> PathBuf {
+    topic_dir.join(crate::domain::topic::DIR_INTERNAL).join("pdf-pages")
+}
+
+/// 缓存文件名：保持可读，但把路径分隔符压平，避免再造一层目录
+fn pages_cache_path(topic_dir: &Path, path: &Path) -> PathBuf {
+    let rel = crate::paths::rel_in_root(topic_dir, path).replace(['/', '\\'], "__");
+    pages_dir(topic_dir).join(format!("{rel}.json"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PagesCache {
+    size: u64,
+    modified: DateTime<Utc>,
+    pages: Vec<(u32, String)>,
+}
+
+/// 写入分页缓存（前端上报快照时调用）。
+pub fn save_pages_cache(topic_dir: &Path, path: &Path, pages: &[(u32, String)]) -> AppResult<()> {
+    if pages.is_empty() {
+        return Ok(());
+    }
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    let payload = PagesCache {
+        size: meta.len(),
+        modified: store::modified_at(path),
+        pages: pages.to_vec(),
+    };
+    let target = pages_cache_path(topic_dir, path);
+    if let Some(dir) = target.parent() {
+        crate::paths::ensure_dir(&dir.to_path_buf())?;
+    }
+    store::write_json(&target, &payload)
+}
+
+/// 读取分页缓存；文件改过（size/mtime 变了）就当没有，宁可退回粗抽取。
+fn load_pages_cache(topic_dir: &Path, path: &Path) -> Option<Vec<(u32, String)>> {
+    let meta = std::fs::metadata(path).ok()?;
+    let payload: PagesCache = store::read_json_opt(&pages_cache_path(topic_dir, path)).ok().flatten()?;
+    if payload.size != meta.len() || payload.modified != store::modified_at(path) {
+        return None;
+    }
+    if payload.pages.len() < 2 {
+        return None;
+    }
+    Some(payload.pages)
+}
+
 /// 抽取单个文件的文本。PDF 按页返回，其它按整篇一页（page=0）。
-async fn extract(path: &Path) -> AppResult<Vec<(u32, String)>> {
+async fn extract(path: &Path, topic_dir: &Path) -> AppResult<Vec<(u32, String)>> {
+    // 前端 pdf.js 抽过这一份（并且文件没变）→ 直接用带真页码的文本
+    if let Some(pages) = load_pages_cache(topic_dir, path) {
+        return Ok(pages);
+    }
+
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -254,7 +316,8 @@ pub async fn build(
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
 
-        match extract(&path).await {
+        let chunk_start = chunks.len();
+        match extract(&path, topic_dir).await {
             Ok(pages) => {
                 let mut chars = 0usize;
                 let mut headings: Vec<String> = Vec::new();
@@ -269,6 +332,7 @@ pub async fn build(
                         }
                     }
                 }
+                let chunks_with_pages = chunks[chunk_start..].iter().filter(|c| c.page > 0).count();
                 files.push(KbFile {
                     path: rel,
                     kind,
@@ -276,6 +340,7 @@ pub async fn build(
                     modified,
                     headings,
                     chars,
+                    chunks_with_pages,
                     error: None,
                 });
             }
@@ -287,6 +352,7 @@ pub async fn build(
                     modified,
                     headings: Vec::new(),
                     chars: 0,
+                    chunks_with_pages: 0,
                     error: Some(e.to_string()),
                 });
             }
@@ -419,6 +485,7 @@ mod tests {
                 modified: Utc::now(),
                 headings: vec![],
                 chars: text.chars().count(),
+                chunks_with_pages: 0,
                 error: None,
             }],
             chunks,

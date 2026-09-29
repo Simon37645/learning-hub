@@ -1080,8 +1080,16 @@ impl Tool for SessionFinish {
     }
 
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
+        // 没有进行中的会话是**正常情况**（用户没点过「开始学习会话」，或者刚结束过）。
+        // 以前这里报「参数不合法：当前没有进行中的学习会话」，模型只能干瞪眼，
+        // 用户看到一张红色失败卡片——其实什么都没坏。现在返回一句可执行的说明。
         let Some(mut session) = ctx.core.current_session() else {
-            return Err(AppError::invalid("当前没有进行中的学习会话"));
+            return Ok(ToolOutput::ok(
+                "当前没有进行中的学习会话，没有会话记录要保存。\
+                 如果这一轮已经讲完，直接用 note_create 把总结写成笔记；\
+                 想正式记录一次学习，先请用户点侧栏主题菜单里的「开始学习会话」。"
+                    .to_string(),
+            ));
         };
         session.summary = arg_str(&input, "summary").unwrap_or_default();
         session.highlights = arg_str_array(&input, "highlights");

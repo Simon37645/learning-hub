@@ -417,6 +417,34 @@ pub async fn material_list(state: State<'_, AppState>, slug: String) -> AppResul
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KbRebuildResult {
+    pub files: usize,
+    pub chunks: usize,
+    /// 有页码的文件数（PDF 走了前端的分页缓存）
+    pub paged: usize,
+}
+
+/// 重建知识库索引（资料页面的按钮）。
+///
+/// 页数来自前端 pdf.js 的逐页文本缓存（`<主题>/.hub/pdf-pages/`），
+/// 所以检索结果能带「第 N 页」，agent 引用时照抄页码即可定位。
+#[tauri::command]
+pub async fn kb_rebuild(state: State<'_, AppState>, slug: String) -> AppResult<KbRebuildResult> {
+    let core = state.0.clone();
+    let ws = core.workspace();
+    let topic = ws.resolve(&slug)?;
+    let inherited = ws.inherited_dirs(&topic);
+    let index = crate::kb::build(&topic.dir, &inherited, true).await?;
+    core.emit_topics_updated(&topic);
+    Ok(KbRebuildResult {
+        files: index.files.len(),
+        chunks: index.chunks.len(),
+        paged: index.files.iter().filter(|f| f.chunks_with_pages > 0).count(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MaterialImportResult {
     pub imported: Vec<MaterialItem>,
     pub skipped: Vec<String>,

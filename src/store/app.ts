@@ -111,6 +111,8 @@ interface AppStore {
   // --- 内置浏览器 ---
   viewer: ViewerSnapshot;
   viewerWidth: number;
+  /** 侧栏宽度（分界线可拖） */
+  sidebarWidth: number;
   goto: GotoRequest | null;
   reloadSeq: Record<string, number>;
 
@@ -163,6 +165,7 @@ interface AppStore {
   openFile: (path: string, title?: string, page?: number, topicSlug?: string) => Promise<void>;
   openUrl: (url: string) => Promise<void>;
   setViewerWidth: (w: number) => void;
+  setSidebarWidth: (w: number) => void;
 
   // 笔记 / 资料
   createNote: (title: string) => Promise<Note | null>;
@@ -233,6 +236,10 @@ export const useApp = create<AppStore>((set, get) => ({
 
   viewer: { tabs: [], activeId: null, visible: false },
   viewerWidth: 460,
+  sidebarWidth: (() => {
+    const saved = Number(localStorage.getItem("hub.sidebarWidth"));
+    return saved >= 200 && saved <= 420 ? saved : 248;
+  })(),
   goto: null,
   reloadSeq: {},
 
@@ -581,6 +588,16 @@ export const useApp = create<AppStore>((set, get) => ({
 
   setViewerWidth(w) {
     set({ viewerWidth: Math.max(320, Math.min(1200, w)) });
+  },
+
+  setSidebarWidth(w) {
+    const width = Math.max(200, Math.min(420, Math.round(w)));
+    set({ sidebarWidth: width });
+    try {
+      localStorage.setItem("hub.sidebarWidth", String(width));
+    } catch {
+      /* 隐私模式下写不了，不影响使用 */
+    }
   },
 
   // ============================================================ 笔记 / 资料

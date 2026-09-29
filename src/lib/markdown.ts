@@ -309,11 +309,15 @@ const CITATION_RE = /【来源：([^】]+?)】/g;
 
 export function parseCitation(raw: string): CitationRef | null {
   const inner = raw.trim();
-  const m = /^(.*?)(?:\s*第\s*(\d+)\s*页)?$/.exec(inner);
+  // 尾巴上的「第 N 页」是页码，不是文件名的一部分。
+  // 其它定位词（「第四节」这类）在这里一并丢掉——定位只认页码，
+  // 页码由 kb_search 给出（见 kb.rs 的分页缓存），模型照抄即可。
+  const m = /^(.*?)(?:\s*第\s*([0-9]+|[零一二三四五六七八九十百两]+)\s*(页|章|节|讲|篇|段|课|部分))?$/.exec(inner);
   if (!m) return null;
   const path = m[1].trim().replace(/[，,。；;]$/, "");
   if (!path) return null;
-  return { path, page: m[2] ? Number(m[2]) : null };
+  const page = m[2] && m[3] === "页" && /^[0-9]+$/.test(m[2]) ? Number(m[2]) : null;
+  return { path, page };
 }
 
 /** 在已渲染的 DOM 里把来源标注替换成按钮（返回替换了几处） */

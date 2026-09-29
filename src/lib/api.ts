@@ -110,6 +110,8 @@ export const api = {
 
   // ---------------- 资料 ----------------
   materialList: (slug: string) => invoke<MaterialItem[]>("material_list", { slug }),
+  kbRebuild: (slug: string) =>
+    invoke<{ files: number; chunks: number; paged: number }>("kb_rebuild", { slug }),
   materialImport: (slug: string, sources: string[], subdir?: string) =>
     invoke<{ imported: MaterialItem[]; skipped: string[]; dir: string }>("material_import", {
       slug,

@@ -817,6 +817,7 @@ async function bootstrapStore(
   set: (p: Partial<AppStore> | ((s: AppStore) => Partial<AppStore>)) => void,
   get: () => AppStore,
 ): Promise<void> {
+  // 先按系统主题铺一层，避免启动瞬间闪一下白（配置要等 bootstrap 回来才有）
   applyTheme(get().config?.appearance?.theme ?? "system");
 
   // 把 set/get 交给上面的防抖刷新用
@@ -835,6 +836,9 @@ async function bootstrapStore(
       chatId: await api.agentNewChat(),
       viewer: await api.viewerSnapshot(),
     });
+    // 配置到手后再按用户存的主题铺一次：上面那次拿不到 config，
+    // 少了这一句「明亮模式」冷启动会被系统深色盖掉（看上去像设置没保存）。
+    applyTheme(boot.config.appearance?.theme ?? "system");
 
     // 事件订阅（生命周期与窗口一致）
     await listen<AgentEvent>("hub://agent", (e) => handleAgentEvent(e.payload, set, get));

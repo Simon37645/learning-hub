@@ -4,20 +4,58 @@
 // 脚本里的中文会变成乱码（快捷方式名字就花了）。这里把整段脚本编成
 // UTF-16LE 的 base64 交给 -EncodedCommand，彻底绕开编码问题。
 //
+// 快捷方式指向 release/app/ 下的绿色副本，而不是 src-tauri/target/release/
+// ——后者会被 cargo clean 清掉，快捷方式就成死链了。副本由本脚本从构建产物
+// 同步过来，所以「npm run dist && npm run shortcut」就是「重装到桌面」。
+//
 // 用法：node scripts/make-shortcut.mjs
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
-const exe = join(root, "release", "app", "learning-hub.exe");
-const icon = join(root, "release", "app", "app.ico");
+const appDir = join(root, "release", "app");
+const exe = join(appDir, "learning-hub.exe");
+const icon = join(appDir, "app.ico");
 
-if (!existsSync(exe)) {
-  console.error(`找不到打包版：${exe}\n先跑 npm run dist 生成。`);
-  process.exit(1);
+// 从构建产物同步绿色副本。应用正在运行时 Windows 会锁住 exe，
+// 这时不要去动它：报一句人话，继续把快捷方式维护好。
+const built = join(root, "src-tauri", "target", "release", "learning-hub.exe");
+const builtIcon = join(root, "src-tauri", "icons", "icon.ico");
+mkdirSync(appDir, { recursive: true });
+
+for (const [from, to, label] of [
+  [built, exe, "可执行文件"],
+  [builtIcon, icon, "图标"],
+]) {
+  if (!existsSync(from)) {
+    if (existsSync(to)) continue; // 没重新构建，用现有副本
+    console.error(`找不到${label}：${from}\n先跑 npm run app:build 或 npm run dist。`);
+    process.exit(1);
+  }
+  const same =
+    existsSync(to) &&
+    statSync(from).size === statSync(to).size &&
+    readFileSync(from).equals(readFileSync(to));
+  if (same) {
+    console.log(`${label}已是最新：${to}`);
+    continue;
+  }
+  try {
+    copyFileSync(from, to);
+    console.log(`${label}已更新：${to}（${(statSync(to).size / 1024 / 1024).toFixed(1)} MiB）`);
+  } catch (err) {
+    if (existsSync(to)) {
+      console.error(
+        `更新${label}失败（应用可能正在运行，先关掉它）：${err.code ?? err.message}\n` +
+          `快捷方式仍指向现有副本：${to}`,
+      );
+    } else {
+      throw err;
+    }
+  }
 }
 
 const desktop = join(homedir(), "Desktop");

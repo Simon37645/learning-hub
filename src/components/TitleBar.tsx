@@ -10,14 +10,15 @@
 // - 双击标题栏 = 最大化/还原（和系统一致）
 // - 需要 tauri.conf.json 里 `decorations: false`
 
-import { useEffect, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { useApp } from "../store/app";
 import { AppMark, Icon } from "./ui";
 
 export function TitleBar() {
   const topicName = useApp((s) => s.topic?.meta.name ?? null);
   const [maximized, setMaximized] = useState(false);
+  const restore = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -36,8 +37,33 @@ export function TitleBar() {
 
   const win = getCurrentWindow();
 
+  /**
+   * 最大化 = **填满工作区**，而不是调系统的 maximize()。
+   *
+   * 为什么：窗口是自绘的（decorations: false），Windows 对无边框窗口 maximize()
+   * 会铺满整个屏幕、连任务栏一起盖住——用户底部那排（资料 / 模型 / 思考 / 发送）
+   * 就永远压在任务栏下面了。这里按 screen.availWidth/Height（不含任务栏）自己摆。
+   */
+  async function toggleFill() {
+    if (!maximized) {
+      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+      restore.current = { x: pos.x, y: pos.y, w: size.width, h: size.height };
+      // availWidth/Height 不含任务栏；availLeft/Top 在部分运行时不暴露，取 0 兜底
+      const s = window.screen as Screen & { availLeft?: number; availTop?: number };
+      await win.setPosition(new LogicalPosition(s.availLeft ?? 0, s.availTop ?? 0));
+      await win.setSize(new LogicalSize(s.availWidth, s.availHeight));
+      setMaximized(true);
+    } else {
+      if (restore.current) {
+        await win.setSize(new LogicalSize(restore.current.w, restore.current.h));
+        await win.setPosition(new LogicalPosition(restore.current.x, restore.current.y));
+      }
+      setMaximized(false);
+    }
+  }
+
   return (
-    <div className="titlebar" data-tauri-drag-region onDoubleClick={() => void win.toggleMaximize()}>
+    <div className="titlebar" data-tauri-drag-region onDoubleClick={() => void toggleFill()}>
       <span className="tb-brand" data-tauri-drag-region>
         <AppMark size={14} color="var(--accent)" />
         学习中枢
@@ -53,7 +79,7 @@ export function TitleBar() {
           <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
         </svg>
       </button>
-      <button className="tb-btn" title={maximized ? "还原" : "最大化"} onClick={() => void win.toggleMaximize()}>
+      <button className="tb-btn" title={maximized ? "还原" : "最大化"} onClick={() => void toggleFill()}>
         {maximized ? (
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
             <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" />

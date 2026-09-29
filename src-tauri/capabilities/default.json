@@ -20,6 +20,11 @@
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-write-image",
-    "clipboard-manager:allow-read-image"
+    "clipboard-manager:allow-read-image",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-outer-position",
+    "core:window:allow-unmaximize"
   ]
 }

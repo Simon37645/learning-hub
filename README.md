@@ -248,6 +248,9 @@ External tools are treated as *writes*, so they always ask you first.
 - **Schedule view** buckets tasks into overdue / today / tomorrow / this week / later, plus a 30-day
   activity heat map. Tasks can come from you or from the agent.
 - **Appearance**: follow system / light / dark — forced light works even when Windows is in dark mode.
+- **A slim custom title bar**: no native caption (that OS-drawn strip could sit on top of the WebView2
+  content), so minimise / maximise / close live in a 32px bar drawn by the app — and “maximise” fills the
+  work area instead of covering the taskbar. The sidebar divider is draggable too.
 
 <img src="docs/images/agenda.png" alt="Schedule view" width="820" />
 

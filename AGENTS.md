@@ -115,9 +115,10 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **窗口是自绘标题栏**（`tauri.conf.json` 里 `decorations: false`，见 `components/TitleBar.tsx`）：
   系统标题栏属于 Windows 画的非客户区，配 WebView2 时它会压在网页内容上面
   （用户报的「一条黑框一直在挡界面，上面是最小化/窗口化/关闭」）。自绘后窗口里只有 DOM。
-  注意两点：**调 window API 需要 capabilities 里显式授权**（ 等，
-  漏了会在运行时报权限错误，typecheck 查不出来）；拖拽靠 
-  （需要 ），按钮上别加这个属性。
+  注意两点：**调 window API 需要 capabilities 里显式授权**
+  （`core:window:allow-minimize`、`allow-toggle-maximize`、`allow-close`、`allow-is-maximized` 等；
+  漏了会在运行时报权限错误，typecheck 查不出来）；拖拽靠 `data-tauri-drag-region`
+  （需要 `core:window:allow-start-dragging`），按钮上别加这个属性，否则点不灵。
 - **技能 / MCP 一律「只给开着的」**：判断只看开关（全局 + 本主题 + 父主题的禁用并集，
   `skills::effective` 是唯一的规则入口，面板与系统提示词都走它，别在别处再写一套过滤）。
   **不要按名字或目录写特例**——用户会自己往任意目录加技能，规则必须对以后新增的也成立。

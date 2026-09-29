@@ -678,24 +678,28 @@ a:hover {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 讲解进度卡片是浮在对话上的（不占排版空间，消息从它下面滚过去） */
+  position: relative;
 }
 
-/* 对话里的「讲解进度」卡片：默认展开成一张小卡片，点标题收起成一行 */
+/* 对话里的「讲解进度」卡片：浮在右上角，点标题收起成一行 */
 .lesson-steps {
-  flex: none;
-  margin: 8px 16px 0 auto;
-  max-width: min(420px, 60%);
-  align-self: flex-end;
-  border: 1px solid var(--border);
+  position: absolute;
+  top: 52px;
+  right: 16px;
+  z-index: 6;
+  width: min(400px, 46%);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: var(--bg-sub);
+  background: var(--bg);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
 .lesson-steps.open {
-  max-height: 42vh;
-  display: flex;
-  flex-direction: column;
+  max-height: min(56vh, 520px);
 }
 
 .lesson-steps .ls-head {

@@ -7,6 +7,15 @@ use crate::viewer::{OpenRequest, PageText, TabView, ViewerKind, ViewerSnapshot};
 use tauri::ipc::Response;
 use tauri::State;
 
+/// 标签页的「主题内相对路径」：老的标签可能存着带章节定位的写法（例如 `…pdf 第三章`，
+/// 那是模型把章节当页码写了），加载时再归一一次，历史标签也能自愈，不必手动关掉重开。
+fn tab_rel(core: &std::sync::Arc<crate::state::AppCore>, slug: &str, rel: &str) -> String {
+    match core.workspace().resolve(slug) {
+        Ok(topic) => crate::paths::strip_locator_if_missing(&topic.dir, rel),
+        Err(_) => rel.to_string(),
+    }
+}
+
 /// 单次送进前端的文件大小上限（防止把内存吃爆）。
 const MAX_INLINE_BYTES: u64 = 160 * 1024 * 1024;
 
@@ -21,9 +30,7 @@ pub async fn viewer_open(state: State<'_, AppState>, mut req: OpenRequest) -> Ap
     // 引用里常见的「路径 + 章节」写法（例句：…pdf 第三章）：原路径存在就原样用，
     // 不存在才去掉尾巴上的定位词。放在这一层是因为只有这里拿得到工作区。
     if let (Some(slug), Some(path)) = (req.topic_slug.clone(), req.path.clone()) {
-        if let Ok(topic) = core.workspace().resolve(&slug) {
-            req.path = Some(crate::paths::strip_locator_if_missing(&topic.dir, &path));
-        }
+        req.path = Some(tab_rel(&core, &slug, &path));
     }
     let tab = core.viewer.open(req).await?;
     core.emit_viewer_sync().await;
@@ -109,7 +116,7 @@ pub async fn viewer_load_text(state: State<'_, AppState>, tab_id: String) -> App
         .clone()
         .ok_or_else(|| AppError::invalid("标签页缺少文件路径"))?;
     let topic = core.workspace().resolve(&slug)?;
-    let abs = crate::paths::resolve_in_root(&topic.dir, &rel)?;
+    let abs = crate::paths::resolve_in_root(&topic.dir, &tab_rel(&core, &slug, &rel))?;
     if !abs.exists() {
         return Err(AppError::NotFound(format!("文件不存在：{rel}")));
     }
@@ -145,7 +152,7 @@ pub async fn viewer_load_bytes(state: State<'_, AppState>, tab_id: String) -> Ap
         .clone()
         .ok_or_else(|| AppError::invalid("标签页缺少文件路径"))?;
     let topic = core.workspace().resolve(&slug)?;
-    let abs = crate::paths::resolve_in_root(&topic.dir, &rel)?;
+    let abs = crate::paths::resolve_in_root(&topic.dir, &tab_rel(&core, &slug, &rel))?;
     if !abs.exists() {
         return Err(AppError::NotFound(format!("文件不存在：{rel}")));
     }
@@ -177,7 +184,7 @@ pub async fn viewer_get_content(state: State<'_, AppState>, tab_id: String) -> A
     // 还没有快照：本地文件即时提取，网页即时抓取
     if let (Some(slug), Some(rel)) = (tab.topic_slug.clone(), tab.path.clone()) {
         let topic = core.workspace().resolve(&slug)?;
-        let abs = crate::paths::resolve_in_root(&topic.dir, &rel)?;
+        let abs = crate::paths::resolve_in_root(&topic.dir, &tab_rel(&core, &slug, &rel))?;
         let text = crate::agent::tools::fs::read_document(&abs).await?;
         core.viewer
             .report_snapshot(&tab_id, Some(text.clone()), None, None, None)

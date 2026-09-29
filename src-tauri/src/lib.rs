@@ -157,6 +157,7 @@ pub fn run() {
             // --- 内置浏览器 ---
             commands::viewer::viewer_snapshot,
             commands::viewer::viewer_open,
+            commands::viewer::web_frame_check,
             commands::viewer::viewer_close,
             commands::viewer::viewer_activate,
             commands::viewer::viewer_set_visible,

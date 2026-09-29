@@ -137,6 +137,9 @@ export const api = {
   // ---------------- 内置浏览器 ----------------
   viewerSnapshot: () => invoke<ViewerSnapshot>("viewer_snapshot"),
   viewerOpen: (req: OpenRequest) => invoke<TabView>("viewer_open", { req }),
+  /** 网页能否内嵌（站点可能用 X-Frame-Options / CSP 拒绝） */
+  webFrameCheck: (url: string) =>
+    invoke<{ embeddable: boolean; reason: string }>("web_frame_check", { url }),
   viewerClose: (tabId: string) => invoke<void>("viewer_close", { tabId }),
   viewerActivate: (tabId: string) => invoke<TabView>("viewer_activate", { tabId }),
   viewerSetVisible: (visible: boolean) => invoke<void>("viewer_set_visible", { visible }),

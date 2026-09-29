@@ -195,7 +195,7 @@ function TabBody({
         ) : tab.kind === "image" ? (
           <ImageView tab={tab} />
         ) : tab.kind === "web" ? (
-          <WebTab tab={tab} readerMode={readerMode} />
+          <WebTab tab={tab} readerMode={readerMode} setReaderMode={setReaderMode} />
         ) : (
           <NewTabPage />
         )}
@@ -403,15 +403,47 @@ function ImageView({ tab }: { tab: TabView }) {
 
 // ---------------------------------------------------------------- 网页
 
-function WebTab({ tab, readerMode }: { tab: TabView; readerMode: boolean }) {
+function WebTab({
+  tab,
+  readerMode,
+  setReaderMode,
+}: {
+  tab: TabView;
+  readerMode: boolean;
+  setReaderMode: (v: boolean) => void;
+}) {
   const [reader, setReader] = useState<{ text: string | null; err: string | null; loading: boolean }>({
     text: null,
     err: null,
     loading: false,
   });
   const [localHtml, setLocalHtml] = useState<string | null>(null);
+  /** 站点禁止内嵌时的原因；非空说明我们已经自动切到阅读模式了 */
+  const [frameBlock, setFrameBlock] = useState<string | null>(null);
   const isLocal = !!tab.path;
   const reloadSeq = useApp((s) => s.reloadSeq[tab.id] ?? 0);
+
+  // 打开网页前先看一眼响应头：站点用 X-Frame-Options / CSP frame-ancestors 拒绝被嵌时，
+  // Chromium 只会把内嵌窗口画成一张「拒绝了我们的连接请求」的错误页（看着像断网）。
+  // 与其让用户看那张图，不如直接切阅读模式——正文来自服务端提取，agent 读到的也是它。
+  useEffect(() => {
+    if (isLocal || !tab.url) return;
+    let cancelled = false;
+    setFrameBlock(null);
+    api
+      .webFrameCheck(tab.url)
+      .then((r) => {
+        if (cancelled || r.embeddable) return;
+        setFrameBlock(r.reason);
+        setReaderMode(true);
+      })
+      .catch(() => {
+        /* 检查失败不拦着用户：照常渲染，让他自己看结果 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab.url, tab.id, isLocal, reloadSeq, setReaderMode]);
 
   // 本地 HTML：读出源码用 sandbox iframe 渲染
   useEffect(() => {
@@ -469,6 +501,15 @@ function WebTab({ tab, readerMode }: { tab: TabView; readerMode: boolean }) {
     if (reader.err) return <div className="viewer-note">{reader.err}</div>;
     return (
       <div className="viewer-scroll">
+        {frameBlock && (
+          <div className="viewer-note" style={{ margin: "8px 12px 0" }}>
+            {frameBlock}，所以不允许被嵌进这里——已切到阅读模式，显示的是服务端提取的正文
+            （agent 读到的也是它）。
+            <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => tab.url && void openExternal(tab.url)}>
+              用系统浏览器看原页面
+            </button>
+          </div>
+        )}
         <div className="reader">
           <Markdown source={reader.text ?? ""} onLink={(h) => void useApp.getState().openUrl(h)} />
         </div>
@@ -486,8 +527,10 @@ function WebTab({ tab, readerMode }: { tab: TabView; readerMode: boolean }) {
         referrerPolicy="no-referrer"
       />
       <div className="viewer-note" style={{ position: "absolute", bottom: 8, left: 8, right: 8, margin: 0 }}>
-        有些站点（GitHub、知乎等）禁止被嵌入，会显示空白。点工具栏的「阅读模式」看提取后的正文，
-        或点右上角用系统浏览器打开。
+        如果这里显示「拒绝了我们的连接请求」，那是站点自己发的
+        <code className="mono">X-Frame-Options</code> / <code className="mono">CSP frame-ancestors</code>
+        在拒绝被嵌入（GitHub、知乎、Google 都这样），不是网络问题。点工具栏的「阅读模式」看正文，
+        或用系统浏览器打开原页面。
       </div>
     </>
   );

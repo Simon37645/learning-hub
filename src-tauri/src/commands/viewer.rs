@@ -5,6 +5,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::viewer::{OpenRequest, PageText, TabView, ViewerKind, ViewerSnapshot};
 use tauri::ipc::Response;
+use serde::Serialize;
 use tauri::State;
 
 /// 标签页的「主题内相对路径」：老的标签可能存着带章节定位的写法（例如 `…pdf 第三章`，
@@ -37,6 +38,62 @@ pub async fn viewer_open(state: State<'_, AppState>, mut req: OpenRequest) -> Ap
     Ok(TabView::from(&tab))
 }
 
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameCheck {
+    /// 能不能嵌进内置浏览器
+    pub embeddable: bool,
+    /// 不能嵌的原因（直接给用户看）
+    pub reason: String,
+}
+
+/// 检查网址能否被内嵌（见文件头注释）。
+#[tauri::command]
+pub async fn web_frame_check(state: State<'_, AppState>, url: String) -> AppResult<FrameCheck> {
+    let core = state.0.clone();
+    let url = crate::net::normalize_url(&url)?;
+    // Range 只取 0 字节：只要响应头，不把整页拉下来
+    let resp = core
+        .http
+        .get(&url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await?;
+    let headers = resp.headers();
+
+    if let Some(xfo) = headers.get("x-frame-options").and_then(|v| v.to_str().ok()) {
+        let v = xfo.trim().to_ascii_lowercase();
+        if v.contains("deny") || v.contains("sameorigin") {
+            return Ok(FrameCheck {
+                embeddable: false,
+                reason: format!("站点声明 X-Frame-Options: {}", xfo.trim()),
+            });
+        }
+    }
+
+    if let Some(csp) = headers.get("content-security-policy").and_then(|v| v.to_str().ok()) {
+        if let Some(dir) = csp
+            .split(';')
+            .map(str::trim)
+            .find(|s| s.to_ascii_lowercase().starts_with("frame-ancestors"))
+        {
+            let value = dir.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+            // 只有明确放开（含 *）才认为可嵌；'self' / 'none' / 具体域名都不行
+            if !value.contains('*') {
+                return Ok(FrameCheck {
+                    embeddable: false,
+                    reason: format!("站点声明 Content-Security-Policy: frame-ancestors {value}"),
+                });
+            }
+        }
+    }
+
+    Ok(FrameCheck {
+        embeddable: true,
+        reason: String::new(),
+    })
+}
 #[tauri::command]
 pub async fn viewer_close(state: State<'_, AppState>, tab_id: String) -> AppResult<()> {
     let core = state.0.clone();

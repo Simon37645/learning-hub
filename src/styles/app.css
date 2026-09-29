@@ -166,6 +166,60 @@ a:hover {
 
 /* ------------------------------------------------------------------ 骨架 */
 
+/* 自绘标题栏（窗口 decorations: false）：32px，整条可拖，右侧是三个按钮 */
+.app-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-side);
+}
+
+.titlebar {
+  flex: none;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  background: var(--bg-side);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.titlebar .tb-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+
+.titlebar .tb-topic {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.titlebar .tb-btn {
+  width: 44px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: none;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.titlebar .tb-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.titlebar .tb-btn.close:hover {
+  background: #d13438;
+  color: #fff;
+}
+
 .app {
   display: flex;
   height: 100%;

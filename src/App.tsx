@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useApp } from "./store/app";
 import { Sidebar, SearchPalette } from "./components/Sidebar";
 import { SidebarResizer } from "./components/SidebarResizer";
+import { TitleBar } from "./components/TitleBar";
 import { Chat } from "./components/Chat";
 import { Workbench } from "./components/Workbench";
 import { ViewerPanel } from "./components/Viewer";
@@ -72,7 +73,9 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app-shell">
+      <TitleBar />
+      <div className="app">
       <Sidebar />
       <SidebarResizer />
       <div className="app-main">
@@ -94,6 +97,7 @@ export default function App() {
       <SearchPalette />
       <DropOverlay />
       <Toasts />
+      </div>
     </div>
   );
 }

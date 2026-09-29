@@ -222,7 +222,11 @@ a:hover {
 
 .app {
   display: flex;
-  height: 100%;
+  /* 外面套了 .app-shell（含 32px 自绘标题栏），所以这里**不能**写 height: 100%：
+     那会让整体比窗口高 32px，底部的输入框和那一排按钮被顶出窗口下沿
+     （用户报的「底部被切开、不完整」就是它）。用 flex: 1 吃掉剩余高度。 */
+  flex: 1;
+  min-height: 0;
   background: var(--bg);
 }
 

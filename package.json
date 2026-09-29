@@ -21,7 +21,8 @@
     "icon": "node scripts/make-icon.mjs && tauri icon src-tauri/app-icon.png",
     "test:ui": "vitest run",
     "test:ui:watch": "vitest",
-    "dist": "tauri build && node scripts/package.mjs"
+    "dist": "tauri build && node scripts/package.mjs",
+    "shortcut": "node scripts/make-shortcut.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

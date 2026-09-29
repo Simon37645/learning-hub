@@ -232,6 +232,7 @@ cd learning-hub
 npm install          # put a proxy in .npmrc if your registry is slow
 npm run app:dev      # development mode
 npm run dist         # build + collect the installer into release/
+npm run shortcut     # copy the built app to release/app and add a desktop shortcut
 ```
 
 `npm run dist` runs `tauri build` and then copies the NSIS installer to

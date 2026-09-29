@@ -217,6 +217,7 @@ cd learning-hub
 npm install          # 网络慢的话在 .npmrc 里配代理
 npm run app:dev      # 开发模式
 npm run dist         # 打包并把安装包收集到 release/
+npm run shortcut     # 把打包版复制到 release/app，并在桌面建一个快捷方式
 ```
 
 `npm run dist` 会跑一次 `tauri build`，然后把 NSIS 安装包复制成

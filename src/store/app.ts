@@ -147,6 +147,8 @@ interface AppStore {
   loadChat: (chatId: string) => Promise<void>;
   /** 读某个主题的对话清单（不传就是当前主题）；侧栏树展开时按需调用 */
   loadChats: (slug?: string | null) => Promise<void>;
+  /** 把一条对话挪到另一个主题（侧栏拖拽整理） */
+  moveChat: (chatId: string, fromSlug: string, toSlug: string) => Promise<void>;
   send: (text: string, attachments?: string[]) => Promise<void>;
   stop: () => Promise<void>;
   approve: (allow: boolean, always: boolean) => Promise<void>;
@@ -420,6 +422,24 @@ export const useApp = create<AppStore>((set, get) => ({
       set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
     } catch (e) {
       console.warn("读取对话清单失败", e);
+    }
+  },
+
+  async moveChat(chatId, fromSlug, toSlug) {
+    try {
+      await api.chatMove(chatId, fromSlug, toSlug);
+      const st = get();
+      await st.refreshTopics();
+      void st.loadChats(fromSlug);
+      void st.loadChats(toSlug);
+      // 正在看的这条被搬走了：源主题里已经没有它，新开一条，避免接着聊又写回源主题
+      if (st.topic?.slug === fromSlug && st.chatId === chatId) {
+        await st.newChat();
+        void get().loadChats(fromSlug);
+      }
+      get().toast("success", "对话已移到目标主题");
+    } catch (e) {
+      get().toast("error", errText(e));
     }
   },
 

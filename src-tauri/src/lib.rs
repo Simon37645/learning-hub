@@ -151,6 +151,7 @@ pub fn run() {
             commands::agent::agent_transcript,
             commands::agent::agent_chats,
             commands::agent::chat_overview,
+            commands::agent::chat_move,
             commands::agent::agent_new_chat,
             commands::agent::agent_running,
             // --- 内置浏览器 ---

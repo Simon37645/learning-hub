@@ -83,6 +83,7 @@ straight into the window to import them into that topic's `materials/`.
 Every topic expands in the sidebar: **its sub-topics and its past conversations hang under it** (a
 parent's conversations under the parent, a chapter's under the chapter). Click one to jump back into
 that chat — no digging through a dropdown in the chat header.
+**Hold a conversation and drop it on another topic row** to file it there (move a course-wide chat into a chapter, or back up to the parent).
 
 #### Only studying one chapter? Make it a sub-topic
 

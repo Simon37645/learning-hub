@@ -2,7 +2,7 @@
 
 use crate::agent::message::ChatMessage;
 use crate::agent::TurnRequest;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use serde::Serialize;
 use tauri::State;
@@ -110,6 +110,40 @@ pub async fn chat_overview(
         });
     }
     Ok(out)
+}
+
+/// 把一条对话挪到另一个主题（侧栏里拖着整理：父主题 ↔ 子主题）。
+///
+/// 只搬 `.hub/chats/<id>.jsonl` 这一个文件：对话本身不依赖主题里的其它东西，
+/// 里面的引用路径仍然是相对的，换主题后含义会变——所以移动是「整理」语义，
+/// 不是「重新归因」，界面上给个提示即可。
+#[tauri::command]
+pub async fn chat_move(
+    state: State<'_, AppState>,
+    chat_id: String,
+    from_slug: String,
+    to_slug: String,
+) -> AppResult<()> {
+    let core = state.0.clone();
+    let ws = core.workspace();
+    if from_slug == to_slug {
+        return Ok(());
+    }
+    let from = ws.resolve(&from_slug)?;
+    let to = ws.resolve(&to_slug)?;
+    let src = from.chat_path(&chat_id);
+    if !src.is_file() {
+        return Err(AppError::NotFound(format!("这个主题里没有这条对话：{chat_id}")));
+    }
+    crate::paths::ensure_dir(&to.chats_dir())?;
+    let dst = to.chat_path(&chat_id);
+    if dst.exists() {
+        return Err(AppError::invalid("目标主题里已经有一条同名对话了"));
+    }
+    std::fs::rename(&src, &dst)?;
+    core.emit_topics_updated(&from);
+    core.emit_topics_updated(&to);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -119,6 +119,15 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   （`core:window:allow-minimize`、`allow-toggle-maximize`、`allow-close`、`allow-is-maximized` 等；
   漏了会在运行时报权限错误，typecheck 查不出来）；拖拽靠 `data-tauri-drag-region`
   （需要 `core:window:allow-start-dragging`），按钮上别加这个属性，否则点不灵。
+- **侧栏拖拽用自己的指针事件实现**（`Sidebar.tsx` 的 `ChatRow`）：Tauri 在 Windows 上
+  `dragDropEnabled: true` 会接管文件拖放（资料导入要用），HTML5 的 `dragstart`/`drop`
+  **根本不会触发**——想加「拖动某个元素到另一处」的交互时别再试 HTML5 拖放。
+  现在的做法：pointerdown 记住起点 → 移动超过 5px 才算拖拽（否则仍是点击）→
+  跟随一个 body 上的幽灵小卡片 → `elementFromPoint` 找落点（主题行带 `data-slug`）→
+  pointerup 调命令。`setPointerCapture` 要包 try/catch，合成事件下会抛。
+- **对话可以在主题之间搬**（`chat_move` 只动 `.hub/chats/<id>.jsonl`）：
+  搬的是文件，聊天记录里已有的相对引用不会跟着重算——所以这是「整理」语义。
+  正在看的那条被搬走后，前端会给源主题新开一条，免得接着聊又写回旧主题。
 - **技能 / MCP 一律「只给开着的」**：判断只看开关（全局 + 本主题 + 父主题的禁用并集，
   `skills::effective` 是唯一的规则入口，面板与系统提示词都走它，别在别处再写一套过滤）。
   **不要按名字或目录写特例**——用户会自己往任意目录加技能，规则必须对以后新增的也成立。

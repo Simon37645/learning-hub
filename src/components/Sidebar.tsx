@@ -4,7 +4,7 @@
 // 一章仍占工作区根下的一个目录，只是侧栏里缩进显示——这样学一章节时
 // 既能收窄上下文，又不用把讲义重新导入一遍。
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import { STAGE_LABEL, THEME_LABEL, type StudyStage, type TopicSummary } from "../lib/types";
 import { hotkey, relTime } from "../lib/format";
@@ -183,6 +183,8 @@ export function Sidebar() {
             {chats.map((c) => (
               <ChatRow
                 key={c.id}
+                chatId={c.id}
+                topicSlug={t.slug}
                 title={c.title}
                 time={c.updatedAt}
                 depth={depth + 1}
@@ -195,7 +197,9 @@ export function Sidebar() {
                 }}
               />
             ))}
-            {pendingNew && <ChatRow title="新对话" time={null} depth={depth + 1} active onClick={() => {}} />}
+            {pendingNew && (
+              <ChatRow topicSlug={t.slug} title="新对话" time={null} depth={depth + 1} active onClick={() => {}} />
+            )}
           </>
         )}
       </Fragment>
@@ -382,25 +386,111 @@ export function Sidebar() {
  * 为什么放侧栏而不是对话区顶部：对话区顶部的下拉一打开就挡住内容，
  * 而且换主题时看不见「另一个主题里我聊到哪了」。挂进树里，归属一目了然。
  */
+/**
+ * 一条对话：点一下切换过去，**按住拖到别的主题行上**就把它搬过去
+ * （父主题的对话拖进子主题，或从子主题拖回父主题）。
+ *
+ * 为什么自己写拖拽：Tauri 在 Windows 上默认接管文件拖放（资料导入要用它），
+ * HTML5 的 dragstart/drop 根本不会触发，所以这里用指针事件自己做：
+ * 指针移动超过 5px 才算拖拽（否则还是普通的点击），跟随一个幽灵小卡片，
+ * 经过的主题行高亮，松手调用 chat_move。
+ */
 function ChatRow({
+  chatId,
+  topicSlug,
   title,
   time,
   depth,
   active,
   onClick,
 }: {
+  chatId?: string;
+  topicSlug: string;
   title: string;
   time: string | null;
   depth: number;
   active: boolean;
   onClick: () => void;
 }) {
+  const moveChat = useApp((s) => s.moveChat);
+  const drag = useRef<{
+    startX: number;
+    startY: number;
+    moved: boolean;
+    ghost: HTMLDivElement | null;
+    target: string | null;
+  } | null>(null);
+  const suppressClick = useRef(false);
+
+  const clearTarget = (row: HTMLElement | null) => row?.classList.remove("drop-target");
+  const findRow = (slug: string) =>
+    document.querySelector<HTMLElement>(`.topic-row[data-slug="${CSS.escape(slug)}"]`);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!chatId || e.button !== 0) return;
+    drag.current = { startX: e.clientX, startY: e.clientY, moved: false, ghost: null, target: null };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* 合成事件（脚本触发）没有真实指针，捕获不到也无所谓：移动事件照样会冒泡上来 */
+    }
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    if (!d) return;
+    if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 5) return;
+    if (!d.moved) {
+      d.moved = true;
+      const ghost = document.createElement("div");
+      ghost.className = "chat-drag-ghost";
+      ghost.textContent = title || "新对话";
+      document.body.appendChild(ghost);
+      d.ghost = ghost;
+      document.body.classList.add("dragging-chat");
+    }
+    if (d.ghost) {
+      d.ghost.style.left = `${e.clientX + 12}px`;
+      d.ghost.style.top = `${e.clientY + 12}px`;
+    }
+    const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>(".topic-row");
+    const slug = hit?.dataset.slug ?? null;
+    if (slug !== d.target) {
+      clearTarget(d.target ? findRow(d.target) : null);
+      d.target = slug;
+      if (slug && slug !== topicSlug) hit?.classList.add("drop-target");
+    }
+  };
+
+  const onPointerUp = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    d.ghost?.remove();
+    document.body.classList.remove("dragging-chat");
+    clearTarget(d.target ? findRow(d.target) : null);
+    if (d.moved) suppressClick.current = true; // 这一次不当作「打开」
+    if (d.moved && d.target && d.target !== topicSlug && chatId) {
+      void moveChat(chatId, topicSlug, d.target);
+    }
+  };
+
   return (
     <div
       className={"chat-row" + (active ? " active" : "")}
       style={{ paddingLeft: 9 + depth * 14 }}
-      title={title}
-      onClick={onClick}
+      title={chatId ? `${title || "新对话"}（按住拖到别的主题可以搬过去）` : title}
+      onClick={() => {
+        if (suppressClick.current) {
+          suppressClick.current = false;
+          return;
+        }
+        onClick();
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
     >
       <Icon name="chat" size={13} />
       <span className="chat-title">{title || "新对话"}</span>
@@ -482,6 +572,7 @@ function TopicRow({
   return (
     <>
       <div
+        data-slug={slug}
         className={"topic-row" + (active ? " active" : "") + (depth > 0 ? " child" : "")}
         style={depth > 0 ? { paddingLeft: 9 + depth * 14 } : undefined}
         onClick={onClick}

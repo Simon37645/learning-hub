@@ -130,6 +130,8 @@ export const api = {
     invoke<string[]>("agent_chats", { topicSlug: topicSlug ?? null }),
   chatOverview: (topicSlug?: string | null) =>
     invoke<ChatOverviewItem[]>("chat_overview", { topicSlug: topicSlug ?? null }),
+  chatMove: (chatId: string, fromSlug: string, toSlug: string) =>
+    invoke<void>("chat_move", { chatId, fromSlug, toSlug }),
   agentNewChat: () => invoke<string>("agent_new_chat"),
 
   // ---------------- 内置浏览器 ----------------

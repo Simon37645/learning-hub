@@ -135,21 +135,23 @@ fn load_skill(dir: &Path, source: &str) -> Option<Skill> {
 
 /// 搜索所有技能目录。顺序即优先级（先扫到的同名技能胜出）。
 ///
+/// - 子主题自己的 `skills/`：优先级最高
+/// - 父主题的 `skills/`：同一门课共用的技能（子主题看得见）
 /// - 工作区的 `.hub/skills/`：跟着这个工作区走，可以放进版本库
 /// - 用户目录的 `.agents/skills/`：与 ZCode / Claude 的技能目录共用
 /// - 用户目录的 `.learning-hub/skills/`：本应用自己的
 /// - 配置里额外指定的目录
 pub fn discover(
     workspace_root: Option<&Path>,
-    topic_dir: Option<&Path>,
+    topic_dirs: &[PathBuf],
     extra_dirs: &[String],
 ) -> Vec<Skill> {
     let mut out: Vec<Skill> = Vec::new();
 
-    // 主题自己的技能放最前面 → 同名时它胜出
-    if let Some(topic) = topic_dir {
-        scan_dir(&topic.join(crate::domain::topic::DIR_INTERNAL).join("skills"), "本主题", &mut out);
-        scan_dir(&topic.join("skills"), "本主题", &mut out);
+    // 主题自己的技能放最前面 → 同名时它胜出；父主题的排在其后
+    for dir in topic_dirs {
+        scan_dir(&dir.join(crate::domain::topic::DIR_INTERNAL).join("skills"), "本主题", &mut out);
+        scan_dir(&dir.join("skills"), "本主题", &mut out);
     }
 
     if let Some(root) = workspace_root {
@@ -230,6 +232,33 @@ pub fn read_body(skill: &Skill) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 子主题能看见父主题私有目录里的技能；同名时子主题自己的那份胜出。
+    #[test]
+    fn discovers_parent_topic_skills() {
+        let tmp = std::env::temp_dir().join(format!("lh-skills-{}", uuid::Uuid::new_v4()));
+        let parent = tmp.join("线性代数");
+        let child = tmp.join("第三章 特征值");
+        for (dir, body) in [
+            (parent.join("skills/文献检索"), "父主题版本"),
+            (child.join("skills/文献检索"), "子主题版本"),
+            (parent.join("skills/画图"), "父主题独有"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(SKILL_FILE), format!("---\nname: 测试\n---\n\n{body}\n")).unwrap();
+        }
+
+        // 只断言这两个测试技能：discover 还会扫用户目录，结果里会有本机装的其它技能
+        let found: Vec<Skill> = discover(None, &[child.clone(), parent.clone()], &[])
+            .into_iter()
+            .filter(|s| s.id == "文献检索" || s.id == "画图")
+            .collect();
+        assert_eq!(found.len(), 2, "同名技能应当只出现一次");
+        let shared = found.iter().find(|s| s.id == "文献检索").unwrap();
+        assert!(shared.body.contains("子主题版本"), "同名时子主题自己的技能优先");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     #[test]
     fn parses_frontmatter() {

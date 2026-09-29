@@ -47,7 +47,10 @@ impl Tool for KbBuild {
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
         let topic = ctx.topic_or(arg_str(&input, "topic").as_deref())?;
         let force = arg_bool(&input, "force").unwrap_or(false);
-        let index = crate::kb::build(&topic.dir, force).await?;
+        // 学一章节时讲义往往在父主题里：索引要把祖先的也收进来，
+        // 引用路径会写成「父主题名/materials/xx.pdf」，从而自带出处
+        let inherited = ctx.core.workspace().inherited_dirs(&topic);
+        let index = crate::kb::build(&topic.dir, &inherited, force).await?;
         let mut out = format!(
             "索引完成：{} 份文件、{} 个片段、共约 {} 字。
 
@@ -113,7 +116,8 @@ impl Tool for KbSearch {
 
         let mut index = crate::kb::load_index(&topic.dir);
         if index.chunks.is_empty() && arg_bool(&input, "auto_build").unwrap_or(true) {
-            index = crate::kb::build(&topic.dir, false).await?;
+            let inherited = ctx.core.workspace().inherited_dirs(&topic);
+            index = crate::kb::build(&topic.dir, &inherited, false).await?;
         }
         if index.chunks.is_empty() {
             return Ok(ToolOutput::ok(

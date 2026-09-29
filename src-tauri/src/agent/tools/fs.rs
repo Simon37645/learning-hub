@@ -611,9 +611,9 @@ impl Tool for MaterialImport {
     }
 
     fn description(&self) -> &'static str {
-        "把工作区之外的资料（讲义、课件、论文）复制进当前主题的 materials/ 目录，\
+        "把工作区之外的资料（讲义、课件、论文）复制进某个主题的 materials/ 目录，\
          之后就能正常检索和阅读了。源路径可以是绝对路径（会先向你申请授权）。\
-         用户说「我的课件在 D:\\xxx」时用它。"
+         用户说「我的课件在 D:\\xxx」时用它；要放进别的主题（例如父主题）就传 topic。"
     }
 
     fn schema(&self) -> Value {
@@ -625,6 +625,7 @@ impl Tool for MaterialImport {
                     "description": "源文件路径列表（绝对路径或相对主题目录）"
                 },
                 "subdir": str_prop("放进 materials/ 下的哪个子目录，默认直接放 materials/"),
+                "topic": str_prop("放进哪个主题，默认当前主题"),
                 "move": { "type": "boolean", "description": "是否用移动代替复制，默认 false" },
             }),
             &["sources"],
@@ -650,7 +651,7 @@ impl Tool for MaterialImport {
             return Err(AppError::invalid("sources 不能为空"));
         }
         let move_file = crate::agent::registry::arg_bool(&input, "move").unwrap_or(false);
-        let topic = ctx.topic()?.clone();
+        let topic = ctx.topic_or(arg_str(&input, "topic").as_deref())?;
 
         let target_dir = match arg_str(&input, "subdir").as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(sub) => {

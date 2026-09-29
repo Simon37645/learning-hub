@@ -73,21 +73,24 @@ pub async fn skills_overview(
     // 全局技能：不带主题私有目录扫一遍
     let global_all = crate::skills::discover(
         Some(&cfg.workspace_root),
-        None,
+        &[],
         &cfg.agent.extra_skill_dirs,
     );
-    // 主题私有：只扫主题目录
+    // 主题私有：自己的 + 父主题的（同一门课共用的技能，子主题也看得见）
     let topic_all = match &topic {
-        Some(t) => crate::skills::discover(None, Some(&t.dir), &[]),
+        Some(t) => {
+            let ws = core.workspace();
+            let mut dirs = vec![t.dir.clone()];
+            dirs.extend(ws.ancestors(t).into_iter().map(|a| a.dir));
+            crate::skills::discover(None, &dirs, &[])
+        }
         None => Vec::new(),
     };
 
     let entry = |s: &crate::skills::Skill, scope: &str| -> SkillEntry {
         let global_off = cfg.agent.disabled_skills.iter().any(|d| d == &s.id);
-        let topic_off = topic
-            .as_ref()
-            .map(|t| !t.meta.tools.skill_enabled(&s.id))
-            .unwrap_or(false);
+        // 「本主题已关」和「父主题已关」都来自主题层，但要让用户分得清是谁关的
+        let topic_off = core.skill_disabled_by_topic(&s.id, topic.as_ref());
         SkillEntry {
             id: s.id.clone(),
             name: s.name.clone(),
@@ -95,15 +98,13 @@ pub async fn skills_overview(
             dir: s.dir.clone(),
             source: s.source.clone(),
             scope: scope.to_string(),
-            enabled: cfg.agent.skills_enabled && !global_off && !topic_off,
+            enabled: cfg.agent.skills_enabled && !global_off && topic_off.is_none(),
             disabled_by: if !cfg.agent.skills_enabled {
                 Some("总开关".into())
             } else if global_off {
                 Some("global".into())
-            } else if topic_off {
-                Some("topic".into())
             } else {
-                None
+                topic_off.map(|s| s.to_string())
             },
             files: s.files.clone(),
         }

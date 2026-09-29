@@ -124,7 +124,7 @@ interface AppStore {
   setView: (v: ViewName) => void;
   openTopic: (slug: string) => Promise<void>;
   leaveTopic: () => void;
-  createTopic: (name: string, description?: string) => Promise<TopicDetail | null>;
+  createTopic: (name: string, description?: string, parent?: string | null) => Promise<TopicDetail | null>;
   updateTopic: (patch: {
     name?: string;
     description?: string;
@@ -133,6 +133,7 @@ interface AppStore {
     stage?: StudyStage;
   }) => Promise<void>;
   deleteTopic: (slug: string) => Promise<void>;
+  setTopicParent: (slug: string, parent: string | null) => Promise<void>;
   setStage: (stage: StudyStage) => Promise<void>;
 
   newChat: () => Promise<void>;
@@ -152,7 +153,7 @@ interface AppStore {
   closeTab: (tabId: string) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   toggleViewer: (show?: boolean) => Promise<void>;
-  openFile: (path: string, title?: string, page?: number) => Promise<void>;
+  openFile: (path: string, title?: string, page?: number, topicSlug?: string) => Promise<void>;
   openUrl: (url: string) => Promise<void>;
   setViewerWidth: (w: number) => void;
 
@@ -312,11 +313,14 @@ export const useApp = create<AppStore>((set, get) => ({
     void api.viewerSetVisible(false);
   },
 
-  async createTopic(name, description) {
+  async createTopic(name, description, parent) {
     try {
-      const detail = await api.topicCreate(name, description);
+      const detail = await api.topicCreate(name, description, undefined, parent ?? null);
       await get().refreshTopics();
-      get().toast("success", `已创建主题「${detail.meta.name}」`);
+      get().toast(
+        "success",
+        parent ? `已在「${parent}」下创建子主题「${detail.meta.name}」` : `已创建主题「${detail.meta.name}」`,
+      );
       return detail;
     } catch (e) {
       get().toast("error", errText(e));
@@ -342,6 +346,18 @@ export const useApp = create<AppStore>((set, get) => ({
       await get().refreshTopics();
       if (get().topic?.slug === slug) set({ topic: null, view: "home" });
       get().toast("info", "主题已移入工作区的 .hub/trash（可手动恢复）");
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
+
+  async setTopicParent(slug, parent) {
+    try {
+      const detail = await api.topicSetParent(slug, parent);
+      await get().refreshTopics();
+      // 改的是当前主题时，详情也要跟着更新（面包屑、继承资料都会变）
+      if (get().topic?.slug === slug) set({ topic: detail });
+      get().toast("info", parent ? `已移到「${parent}」下面` : "已移出父主题");
     } catch (e) {
       get().toast("error", errText(e));
     }
@@ -521,13 +537,19 @@ export const useApp = create<AppStore>((set, get) => ({
     }
   },
 
-  async openFile(path, title, page) {
-    const slug = get().topic?.slug;
+  async openFile(path, title, page, topicSlug) {
+    const { topics, topic } = get();
+    // 引用可能写成「主题名/materials/x.pdf」——继承来的资料在提示词里就是这种写法，
+    // 认出前缀就切到那个主题打开，否则按当前主题的相对路径解析
+    const [head, ...rest] = path.split("/");
+    const owner = rest.length > 0 ? topics.find((t) => t.slug === head) : undefined;
+    const slug = topicSlug ?? owner?.slug ?? topic?.slug;
     if (!slug) {
       get().toast("warn", "先打开一个主题，才能查看里面的文件");
       return;
     }
-    await get().openTab({ path, topicSlug: slug, title: title ?? null, page: page ?? null });
+    const rel = owner ? rest.join("/") : path;
+    await get().openTab({ path: rel, topicSlug: slug, title: title ?? null, page: page ?? null });
   },
 
   async openUrl(url) {
@@ -1006,6 +1028,13 @@ function scheduleTopicRefresh() {
 // 由 bootstrapStore 注入，避免模块间循环依赖
 let windowSet: ((p: Partial<AppStore> | ((s: AppStore) => Partial<AppStore>)) => void) | null = null;
 let windowGet: (() => AppStore) | null = null;
+
+// 开发模式下把 store 挂到 window，方便用 scripts/cdp.mjs 直接读状态
+// （`node scripts/cdp.mjs eval "window.__hub.getState().topic.slug"`）。
+// 只在 dev 构建里存在，打包版没有这个入口。
+if (import.meta.env.DEV) {
+  (window as unknown as { __hub?: typeof useApp }).__hub = useApp;
+}
 
 async function refreshTopicDetail(
   set: (p: Partial<AppStore> | ((s: AppStore) => Partial<AppStore>)) => void,

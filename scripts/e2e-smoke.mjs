@@ -63,10 +63,13 @@ async function main() {
     const typed = await cdp.eval(TYPE_JS(".composer textarea", MESSAGE));
     expect("注入消息文本", typed?.ok === true, typed?.value);
 
+    // 只认发送按钮本身：composer-bar 里还有「思考强度」这类按钮，
+    // 它的 title 里也带「发送」二字（「…可在设置里改发送方式」），
+    // 按 title 模糊找会点错，点了等于没发（曾经就这么静默失败过）。
     const sent = await cdp.eval(`(() => {
-      const btns = Array.from(document.querySelectorAll('.composer-bar button'));
-      const send = btns.find(b => b.title && b.title.includes("发送")) ?? btns[btns.length - 1];
-      if (!send || send.disabled) return { ok: false, reason: "send disabled" };
+      const send = document.querySelector('.send-btn');
+      if (!send) return { ok: false, reason: "找不到 .send-btn" };
+      if (send.disabled) return { ok: false, reason: "send disabled" };
       send.click();
       return { ok: true };
     })()`);

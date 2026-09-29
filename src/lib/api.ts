@@ -83,10 +83,17 @@ export const api = {
   topicList: () => invoke<TopicSummary[]>("topic_list"),
   topicSearch: (query: string, limit?: number) =>
     invoke<TopicMatch[]>("topic_search", { query, limit: limit ?? 20 }),
-  topicCreate: (name: string, description?: string, emoji?: string) =>
-    invoke<TopicDetail>("topic_create", { name, description: description ?? null, emoji: emoji ?? null }),
+  topicCreate: (name: string, description?: string, emoji?: string, parent?: string | null) =>
+    invoke<TopicDetail>("topic_create", {
+      name,
+      description: description ?? null,
+      emoji: emoji ?? null,
+      parent: parent ?? null,
+    }),
   topicGet: (slug: string) => invoke<TopicDetail>("topic_get", { slug }),
   topicOpen: (slug: string) => invoke<TopicDetail>("topic_open", { slug }),
+  topicSetParent: (slug: string, parent: string | null) =>
+    invoke<TopicDetail>("topic_set_parent", { slug, parent }),
   topicUpdate: (
     slug: string,
     patch: { name?: string; description?: string; emoji?: string; tags?: string[]; stage?: StudyStage },

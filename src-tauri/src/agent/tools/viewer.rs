@@ -18,6 +18,29 @@ use std::time::Duration;
 /// 等前端上报快照的最长时间。
 const SNAPSHOT_WAIT: Duration = Duration::from_secs(8);
 
+/// 把「主题名/materials/xx.pdf」拆成 (所属主题, 主题内路径)。
+///
+/// 继承来的资料在提示词里就是这种带主题前缀的写法（引用时要照抄），
+/// 所以这里替模型兜住：不传 topic 也能按前缀认出来，省得它同时写错两个参数。
+fn topic_and_rel(
+    ctx: &ToolCtx,
+    raw: &str,
+    topic_arg: Option<&str>,
+) -> AppResult<(crate::domain::topic::Topic, String)> {
+    let want = topic_arg.map(str::trim).filter(|s| !s.is_empty());
+    if want.is_none() {
+        if let Some((head, rest)) = raw.split_once(['/', '\\']) {
+            let ws = ctx.core.workspace();
+            if ws.topic_dir(head).is_dir() && !rest.trim().is_empty() {
+                if let Ok(topic) = ws.resolve(head) {
+                    return Ok((topic, rest.to_string()));
+                }
+            }
+        }
+    }
+    Ok((ctx.topic_or(want)?, raw.to_string()))
+}
+
 /// 确保标签页有可读文本，返回是否成功拿到。
 async fn ensure_content(ctx: &ToolCtx, tab: &ViewerTab) -> AppResult<ViewerTab> {
     if !tab.content.trim().is_empty() {
@@ -98,7 +121,9 @@ impl Tool for ViewerOpen {
     fn description(&self) -> &'static str {
         "在内置浏览器里打开一个文件或网页，让用户看到你正在讲的东西。\
          本地文件传相对主题目录的 path（PDF、Markdown、图片、代码都行）；网页传 url。\
-         讲解 PDF 的某一页时用 page 直接跳过去。"
+         讲解 PDF 的某一页时用 page 直接跳过去。\
+         要打开**别的主题**（比如父主题里那份整门课的讲义）的文件时，把 path 写成\
+         「主题名/materials/xx.pdf」并传 topic，或直接传该主题内相对路径 + topic。"
     }
 
     fn schema(&self) -> Value {
@@ -106,6 +131,7 @@ impl Tool for ViewerOpen {
             json!({
                 "path": str_prop("相对主题目录的文件路径，例如 materials/ch1.pdf"),
                 "url": str_prop("网页地址，例如 https://example.com/article"),
+                "topic": str_prop("文件所属主题（默认当前主题）；打开父主题的资料时传它"),
                 "title": str_prop("标签页标题（可选）"),
                 "page": num_prop("打开后跳到第几页（PDF 用）"),
                 "new_tab": bool_prop("是否强制新开标签，默认复用同名标签"),
@@ -126,19 +152,20 @@ impl Tool for ViewerOpen {
     }
 
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
-        let path = arg_str(&input, "path");
+        let mut path = arg_str(&input, "path");
         let url = arg_str(&input, "url");
         if path.is_none() && url.is_none() {
             return Err(AppError::invalid("需要 path 或 url 之一"));
         }
 
         // 本地文件先确认存在，避免前端开个空白页
-        let topic_slug = if let Some(rel) = &path {
-            let topic = ctx.topic()?;
-            let abs = crate::paths::resolve_in_root(&topic.dir, rel)?;
+        let topic_slug = if let Some(rel) = path.clone() {
+            let (topic, rel) = topic_and_rel(ctx, &rel, arg_str(&input, "topic").as_deref())?;
+            let abs = crate::paths::resolve_in_root(&topic.dir, &rel)?;
             if !abs.exists() {
                 return Err(AppError::NotFound(format!("文件不存在：{rel}")));
             }
+            path = Some(rel);
             Some(topic.slug())
         } else {
             None

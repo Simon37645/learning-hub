@@ -133,6 +133,7 @@ pub fn run() {
             commands::topic::topic_get,
             commands::topic::topic_open,
             commands::topic::topic_update,
+            commands::topic::topic_set_parent,
             commands::topic::topic_delete,
             commands::topic::note_list,
             commands::topic::note_get,

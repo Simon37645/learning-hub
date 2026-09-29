@@ -179,11 +179,22 @@ async fn extract(path: &Path) -> AppResult<Vec<(u32, String)>> {
 }
 
 /// 构建（或增量刷新）主题的知识库索引。
-pub async fn build(topic_dir: &Path, force: bool) -> AppResult<KbIndex> {
+///
+/// `inherited` 是祖先主题的 (名字, 目录)：学一门课里的某一章时，讲义在父主题里，
+/// 索引要把它们一起收进来，否则 agent 检索不到老师划的重点。
+/// 继承文件的引用路径写成「父主题名/materials/xx.pdf」（相对工作区根），
+/// 这样它在回复里是自带出处的，用户点了也能跳到父主题的那份文件。
+pub async fn build(
+    topic_dir: &Path,
+    inherited: &[(String, PathBuf)],
+    force: bool,
+) -> AppResult<KbIndex> {
     let mut index = if force { KbIndex::default() } else { load_index(topic_dir) };
 
-    // 收集要索引的文件：materials/（讲义资料）、kb/（用户自己丢进来的）、notes/（笔记）
-    let mut targets: Vec<PathBuf> = Vec::new();
+    // (引用路径, 绝对路径)
+    let mut targets: Vec<(String, PathBuf)> = Vec::new();
+
+    // 自己的：materials/（讲义资料）、kb/（用户自己丢进来的）、notes/（笔记）
     for sub in [
         crate::domain::topic::DIR_MATERIALS,
         crate::domain::topic::DIR_KB,
@@ -191,21 +202,37 @@ pub async fn build(topic_dir: &Path, force: bool) -> AppResult<KbIndex> {
     ] {
         for f in store::walk_files(&topic_dir.join(sub), 5) {
             if is_indexable(&f) {
-                targets.push(f);
+                targets.push((crate::paths::rel_in_root(topic_dir, &f), f));
             }
         }
     }
     // 主题根目录下的 README 也算
     let readme = topic_dir.join("README.md");
     if readme.is_file() {
-        targets.push(readme);
+        targets.push(("README.md".to_string(), readme));
+    }
+
+    // 祖先主题的资料与讲义（笔记也算：预习要拿你以前学过的东西当框架）
+    if let Some(root) = topic_dir.parent() {
+        for (_name, dir) in inherited {
+            for sub in [
+                crate::domain::topic::DIR_MATERIALS,
+                crate::domain::topic::DIR_KB,
+                crate::domain::topic::DIR_NOTES,
+            ] {
+                for f in store::walk_files(&dir.join(sub), 5) {
+                    if is_indexable(&f) {
+                        targets.push((crate::paths::rel_in_root(root, &f), f));
+                    }
+                }
+            }
+        }
     }
 
     let mut files: Vec<KbFile> = Vec::new();
     let mut chunks: Vec<KbChunk> = Vec::new();
 
-    for path in targets {
-        let rel = crate::paths::rel_in_root(topic_dir, &path);
+    for (rel, path) in targets {
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(_) => continue,

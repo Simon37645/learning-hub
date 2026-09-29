@@ -33,15 +33,18 @@ impl Tool for TopicCreate {
 
     fn description(&self) -> &'static str {
         "新建一个学习主题（会在工作区里创建一个目录，内含 notes/materials/cards/plan/sessions 骨架）。\
-         当用户表达出「想系统学某样东西」时主动提议并创建。"
+         当用户表达出「想系统学某样东西」时主动提议并创建。\
+         如果用户只想学某门课里的**一章**，用 parent 参数把它建成那门课的子主题：\
+         子主题会继承父主题的讲义与资料（只读），但笔记、卡片、计划都独立。"
     }
 
     fn schema(&self) -> Value {
         object_schema(
             json!({
-                "name": str_prop("主题名，会成为目录名，例如「线性代数」「React 源码」"),
+                "name": str_prop("主题名，会成为目录名，例如「线性代数」「第三章 特征值」"),
                 "description": str_prop("一句话说明学它做什么（写进主题简介，agent 每次都看得到）"),
                 "emoji": str_prop("可选的表情符号，用于侧栏展示"),
+                "parent": str_prop("可选。父主题（主题名或 id）：本主题将是它的一个章节，读得到它的资料"),
             }),
             &["name"],
         )
@@ -59,11 +62,17 @@ impl Tool for TopicCreate {
         let name = arg_str_req(&input, "name")?;
         let desc = arg_str(&input, "description").unwrap_or_default();
         let emoji = arg_str(&input, "emoji");
+        let parent = arg_str(&input, "parent");
         let ws = ctx.core.workspace();
-        let topic = ws.create(&name, &desc, emoji)?;
+        let topic = ws.create(&name, &desc, emoji, parent.as_deref())?;
         ctx.core.emit_topics_created(&topic);
+        let parent_line = ws
+            .ancestors(&topic)
+            .first()
+            .map(|p| format!("它是「{}」的子主题，可以读父主题的讲义与资料（只读）。\n", p.meta.name))
+            .unwrap_or_default();
         Ok(ToolOutput::ok(format!(
-            "已创建主题「{}」（目录：{}）。\n\n{}\n\n可以用 topic_info 查看结构，或直接开始预习阶段。",
+            "已创建主题「{}」（目录：{}）。\n{parent_line}\n{}\n\n可以用 topic_info 查看结构，或直接开始预习阶段。",
             topic.meta.name,
             topic.meta.name,
             skeleton_hint(&topic)
@@ -249,6 +258,7 @@ impl Tool for NoteCreate {
                 "content": str_prop("Markdown 正文（不要重复写一级标题）"),
                 "tags": str_array_prop("标签，例如 [\"线代\", \"矩阵\"]"),
                 "dir": str_prop("放在 notes 下的子目录，例如「第三章」，默认直接放 notes/"),
+                "topic": str_prop("写进哪个主题的笔记，默认当前主题"),
             }),
             &["title", "content"],
         )
@@ -263,7 +273,7 @@ impl Tool for NoteCreate {
     }
 
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
-        let topic = ctx.topic()?;
+        let topic = ctx.topic_or(arg_str(&input, "topic").as_deref())?;
         let title = arg_str_req(&input, "title")?;
         let content = arg_str(&input, "content").unwrap_or_default();
         let tags = arg_str_array(&input, "tags");

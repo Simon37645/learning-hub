@@ -31,12 +31,20 @@ pub struct TopicDetail {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialItem {
+    /// 相对**所属主题**的路径（继承来的资料就是相对父主题）
     pub path: String,
     pub name: String,
     pub size: u64,
     pub size_text: String,
     pub kind: String,
     pub modified_at: DateTime<Utc>,
+    /// 所属主题的 slug：打开这份资料要用它，而不是当前主题
+    pub topic: String,
+    /// 来源主题名；本主题自己的资料为 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// 继承自父主题的资料（只读，不能在这里改名/删除）
+    pub inherited: bool,
 }
 
 #[tauri::command]
@@ -59,12 +67,26 @@ pub async fn topic_create(
     name: String,
     description: Option<String>,
     emoji: Option<String>,
+    parent: Option<String>,
 ) -> AppResult<TopicDetail> {
     let core = state.0.clone();
     let topic = core
         .workspace()
-        .create(&name, description.as_deref().unwrap_or(""), emoji)?;
+        .create(&name, description.as_deref().unwrap_or(""), emoji, parent.as_deref())?;
     core.emit_topics_created(&topic);
+    detail_of(&core, topic, true)
+}
+
+/// 改父子关系：把主题挂到另一个主题下面（或传 null 移出来）。
+#[tauri::command]
+pub async fn topic_set_parent(
+    state: State<'_, AppState>,
+    slug: String,
+    parent: Option<String>,
+) -> AppResult<TopicDetail> {
+    let core = state.0.clone();
+    let topic = core.workspace().set_parent(&slug, parent.as_deref())?;
+    core.emit_topics_updated(&topic);
     detail_of(&core, topic, true)
 }
 
@@ -148,20 +170,40 @@ pub async fn topic_update(
 }
 
 /// 删除主题：移进工作区内的回收站，不真删。
+///
+/// 子主题一起进回收站——它们本来就是为这门课建的章节，
+/// 留下孤零零的子主题既看不懂也找不回来。回收站里的目录名带时间戳，
+/// 需要时手动搬回工作区即可恢复（父子关系记在各自的 topic.json 里，不会丢）。
 #[tauri::command]
 pub async fn topic_delete(state: State<'_, AppState>, slug: String) -> AppResult<String> {
     let core = state.0.clone();
-    let topic = core.workspace().resolve(&slug)?;
-    let trash = core.workspace().root.join(crate::domain::topic::DIR_INTERNAL).join("trash");
+    let ws = core.workspace();
+    let topic = ws.resolve(&slug)?;
+    let children = ws.descendants(&topic);
+    let trash = ws.root.join(crate::domain::topic::DIR_INTERNAL).join("trash");
+
     let dest = store::move_to_trash(&trash, &topic.dir)?;
-    core.emit_topics(crate::agent::event::TopicsEvent::Deleted { slug: topic.slug() });
+    core.emit_topics(crate::agent::event::TopicsEvent::Deleted {
+        slug: topic.slug(),
+    });
+    for child in children {
+        match store::move_to_trash(&trash, &child.dir) {
+            Ok(_) => core.emit_topics(crate::agent::event::TopicsEvent::Deleted {
+                slug: child.slug(),
+            }),
+            // 个别子主题搬不动（被占用等）不该让整次删除失败：父主题已经进去了，
+            // 剩下的报给用户让他手动处理，比回滚一半更清楚。
+            Err(e) => eprintln!("[topic] 子主题 {} 移入回收站失败：{e}", child.dir.display()),
+        }
+    }
     Ok(dest.to_string_lossy().to_string())
 }
 
 fn detail_of(core: &std::sync::Arc<crate::state::AppCore>, topic: Topic, with_notes: bool) -> AppResult<TopicDetail> {
     let stats = topic.stats()?;
+    let ancestors = core.workspace().ancestors(&topic);
     let notes = if with_notes { collect_notes(&topic).unwrap_or_default() } else { Vec::new() };
-    let materials = collect_materials(&topic).unwrap_or_default();
+    let materials = collect_materials(&topic, &ancestors).unwrap_or_default();
     let sessions = collect_sessions(&topic).unwrap_or_default();
     let chats = crate::agent::list_transcripts(core, Some(&topic.slug())).unwrap_or_default();
     let readme = store::read_text_opt(&topic.dir.join("README.md")).ok().flatten();
@@ -194,29 +236,49 @@ fn collect_notes(topic: &Topic) -> AppResult<Vec<NoteSummary>> {
     Ok(items)
 }
 
-fn collect_materials(topic: &Topic) -> AppResult<Vec<MaterialItem>> {
-    let mut items: Vec<MaterialItem> = store::walk_files(&topic.materials_dir(), 4)
-        .into_iter()
-        .map(|f| {
+/// 资料清单 = 本主题的 + 祖先主题的（只读继承）。
+///
+/// 典型场景：一门课的资料（讲义、真题）放在父主题里，学某一章时不必重新导入，
+/// 打开时用「所属主题 + 主题内相对路径」定位，所以这里每项都带上 `topic`。
+fn collect_materials(topic: &Topic, ancestors: &[Topic]) -> AppResult<Vec<MaterialItem>> {
+    let mut items: Vec<MaterialItem> = Vec::new();
+
+    let push = |owner: &Topic, origin: Option<String>, inherited: bool, items: &mut Vec<MaterialItem>| {
+        for f in store::walk_files(&owner.materials_dir(), 4) {
             let meta = std::fs::metadata(&f).ok();
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
             let ext = f
                 .extension()
                 .map(|e| e.to_string_lossy().to_ascii_lowercase())
                 .unwrap_or_default();
-            MaterialItem {
-                path: topic.rel(&f),
+            items.push(MaterialItem {
+                path: owner.rel(&f),
                 name: f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
                 size,
                 size_text: human_size(size),
                 kind: ext,
                 modified_at: store::modified_at(&f),
-            }
-        })
-        .collect();
-    items.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+                topic: owner.slug(),
+                origin: origin.clone(),
+                inherited,
+            });
+        }
+    };
+
+    push(topic, None, false, &mut items);
+    for a in ancestors {
+        push(a, Some(a.meta.name.clone()), true, &mut items);
+    }
+    // 自己的资料排在前面，继承的按来源顺序跟在后面；组内按修改时间
+    items.sort_by(|a, b| {
+        a.inherited
+            .cmp(&b.inherited)
+            .then(a.origin.cmp(&b.origin))
+            .then(a.modified_at.cmp(&b.modified_at))
+    });
     Ok(items)
 }
+
 
 fn collect_sessions(topic: &Topic) -> AppResult<Vec<StudySession>> {
     let mut items = Vec::new();
@@ -347,8 +409,10 @@ pub async fn note_delete(state: State<'_, AppState>, slug: String, path: String)
 
 #[tauri::command]
 pub async fn material_list(state: State<'_, AppState>, slug: String) -> AppResult<Vec<MaterialItem>> {
-    let topic = state.0.workspace().resolve(&slug)?;
-    collect_materials(&topic)
+    let ws = state.0.workspace();
+    let topic = ws.resolve(&slug)?;
+    let ancestors = ws.ancestors(&topic);
+    collect_materials(&topic, &ancestors)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -404,6 +468,9 @@ pub async fn material_import(
                         .map(|e| e.to_string_lossy().to_ascii_lowercase())
                         .unwrap_or_default(),
                     modified_at: store::modified_at(&dest),
+                    topic: topic.slug(),
+                    origin: None,
+                    inherited: false,
                 });
             }
             Err(e) => {

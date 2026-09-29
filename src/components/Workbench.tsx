@@ -2,11 +2,20 @@
 //
 // 这里是「学习资产」的管理界面——agent 在对话里产出的东西，都在这里被查看、编辑、复习。
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../lib/api";
 import { dueLabel, fmtDate, fmtDateTime, humanBytes, relTime } from "../lib/format";
-import { CARD_KIND_LABEL, STAGE_LABEL, type Card, type CardKind, type Grade, type StudyStage } from "../lib/types";
+import {
+  CARD_KIND_LABEL,
+  STAGE_LABEL,
+  type Card,
+  type CardKind,
+  type Grade,
+  type MaterialItem,
+  type StudyStage,
+  type TopicSummary,
+} from "../lib/types";
 import { useApp } from "../store/app";
 import { Dropdown, Empty, Field, Icon, MenuItem, MenuSep, Modal, Segmented, Spinner, Switch } from "./ui";
 import { Markdown } from "./Chat";
@@ -28,14 +37,39 @@ const PANES: { key: PaneKey; label: string }[] = [
 
 export function Workbench() {
   const topic = useApp((s) => s.topic)!;
+  const topics = useApp((s) => s.topics);
+  const openTopic = useApp((s) => s.openTopic);
   const [pane, setPane] = useState<PaneKey>("overview");
+  const inheritedCount = topic.materials.filter((m) => m.inherited).length;
+
+  // 父主题链：子主题（一章）要能一眼看出属于哪门课，并且点回去
+  const ancestors = useMemo(() => {
+    const byId = new Map(topics.map((t) => [t.meta.id, t]));
+    const out: TopicSummary[] = [];
+    let cursor = topic.meta.parent ?? null;
+    while (cursor && out.length < 8) {
+      const parent = byId.get(cursor);
+      if (!parent) break;
+      out.unshift(parent);
+      cursor = parent.meta.parent ?? null;
+    }
+    return out;
+  }, [topics, topic.meta.parent]);
 
   return (
     <div className="workbench">
       <div className="wb-head">
         <div className="wb-title-row">
           <div className="wb-title">
-            <span>{topic.meta.emoji ?? "📘"}</span>
+            <span>{topic.meta.emoji ?? (topic.meta.parent ? "📄" : "📘")}</span>
+            {ancestors.map((a) => (
+              <Fragment key={a.slug}>
+                <button className="crumb" onClick={() => void openTopic(a.slug)} title={`打开 ${a.meta.name}`}>
+                  {a.meta.name}
+                </button>
+                <span className="crumb-sep">›</span>
+              </Fragment>
+            ))}
             <span>{topic.meta.name}</span>
           </div>
           <span className="tag">{STAGE_LABEL[topic.meta.stage]}</span>
@@ -53,6 +87,7 @@ export function Workbench() {
           </span>
           <span>
             资料 <b>{topic.stats.materials}</b>
+            {inheritedCount > 0 && <span className="muted">（+父主题 {inheritedCount}）</span>}
           </span>
           <span>
             卡片 <b>{topic.stats.cards}</b>
@@ -418,6 +453,18 @@ function MaterialsPane() {
   const toast = useApp((s) => s.toast);
   const [busy, setBusy] = useState(false);
 
+  // 本主题的资料 + 从父主题继承来的（父主题的只读，分组显示）
+  const own = topic.materials.filter((m) => !m.inherited);
+  const inheritedBy = useMemo(() => {
+    const groups = new Map<string, MaterialItem[]>();
+    for (const m of topic.materials) {
+      if (!m.inherited) continue;
+      const key = m.origin ?? "父主题";
+      groups.set(key, [...(groups.get(key) ?? []), m]);
+    }
+    return [...groups.entries()];
+  }, [topic.materials]);
+
   async function importFiles() {
     try {
       const picked = await openDialog({ multiple: true, title: "选择资料（会复制到 materials/）" });
@@ -432,11 +479,32 @@ function MaterialsPane() {
     }
   }
 
+  /** 点开一份资料：继承来的要用它自己所属主题去开（浏览器标签也是那个主题的） */
+  const open = (m: MaterialItem) => void openFile(m.path, m.name, undefined, m.topic);
+
+  const row = (m: MaterialItem) => (
+    <div key={`${m.topic}/${m.path}`} className="list-row" onClick={() => open(m)}>
+      <Icon name={m.kind === "pdf" || m.kind === "md" ? "file" : "layers"} size={14} />
+      <div className="li-main">
+        <div className="li-title">{m.name}</div>
+        <div className="li-sub mono">{m.path}</div>
+      </div>
+      <span className="tag">{m.kind || "文件"}</span>
+      <span className="muted mono" style={{ fontSize: 11 }}>
+        {m.sizeText}
+      </span>
+      <span className="muted" style={{ fontSize: 11 }}>
+        {relTime(m.modifiedAt)}
+      </span>
+    </div>
+  );
+
   return (
     <div className="wb-pane">
       <div className="row">
         <span className="sub" style={{ fontSize: 12.5 }}>
           资料保存在主题的 <code className="mono">materials/</code> 目录，agent 可以直接读 PDF 的文字。
+          {inheritedBy.length > 0 && " 带「继承」标记的来自父主题，点开就能看，原件不用复制过来。"}
         </span>
         <div className="grow" />
         <button className="btn primary" onClick={importFiles} disabled={busy}>
@@ -455,23 +523,22 @@ function MaterialsPane() {
           </div>
         </div>
       ) : (
-        <div className="col" style={{ gap: 4 }}>
-          {topic.materials.map((m) => (
-            <div key={m.path} className="list-row" onClick={() => void openFile(m.path, m.name)}>
-              <Icon name={m.kind === "pdf" ? "file" : m.kind === "md" ? "file" : "layers"} size={14} />
-              <div className="li-main">
-                <div className="li-title">{m.name}</div>
-                <div className="li-sub mono">{m.path}</div>
+        <div className="col" style={{ gap: 10 }}>
+          {own.length > 0 && <div className="col" style={{ gap: 4 }}>{own.map(row)}</div>}
+          {inheritedBy.map(([source, items]) => (
+            <div key={source} className="col" style={{ gap: 4 }}>
+              <div className="group-head">
+                <Icon name="layers" size={12} /> 继承自「{source}」
+                <span className="muted">（只读）</span>
               </div>
-              <span className="tag">{m.kind || "文件"}</span>
-              <span className="muted mono" style={{ fontSize: 11 }}>
-                {m.sizeText}
-              </span>
-              <span className="muted" style={{ fontSize: 11 }}>
-                {relTime(m.modifiedAt)}
-              </span>
+              {items.map(row)}
             </div>
           ))}
+          {own.length === 0 && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              本主题还没有自己的资料——上面这些是父主题的，想单独放就点「导入资料」。
+            </div>
+          )}
         </div>
       )}
     </div>

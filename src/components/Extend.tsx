@@ -215,7 +215,13 @@ function SkillGroup({
               <span className="tag">{s.source}</span>
               {s.disabledBy && (
                 <span className="tag" style={{ color: "var(--warn)" }}>
-                  {s.disabledBy === "topic" ? "本主题已关" : s.disabledBy === "global" ? "全局已关" : "总开关已关"}
+                  {s.disabledBy === "topic"
+                    ? "本主题已关"
+                    : s.disabledBy === "parent"
+                      ? "父主题已关"
+                      : s.disabledBy === "global"
+                        ? "全局已关"
+                        : "总开关已关"}
                 </span>
               )}
               <div className="grow" />

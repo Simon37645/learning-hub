@@ -107,6 +107,16 @@ const SCENES = {
     await sleep(2600);
     await p.shot(`${OUT}/quiz.png`);
   },
+  /** 章节（子主题）：侧栏树 + 面包屑 + 继承自父主题的资料 */
+  chapters: async (p) => {
+    await ensureWorkbench(p);
+    await openTopic(p, "第三章 特征值");
+    await clickText(p, ".segmented button", "工作台");
+    await sleep(700);
+    await clickText(p, ".wb-tab", "资料");
+    await sleep(1100);
+    await p.shot(`${OUT}/chapters.png`);
+  },
   mcp: async (p) => {
     await clickText(p, ".sidebar-top .side-item", "MCP");
     await sleep(1400);

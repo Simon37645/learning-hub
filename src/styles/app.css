@@ -335,6 +335,57 @@ a:hover {
   display: none;
 }
 
+/* 子主题（章节）：缩进一级，左侧一条浅线表示归属 */
+.topic-row.child {
+  box-shadow: inset 2px 0 0 var(--border);
+}
+
+.topic-chev {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.topic-chev-space {
+  width: 16px;
+  flex: none;
+}
+
+/* 工作台标题里的父主题层级 */
+.crumb {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-sub);
+  cursor: pointer;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  color: var(--text-faint);
+  margin: 0 2px;
+}
+
+/* 资料面板里「继承自某主题」的分组标题 */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-sub);
+  padding: 2px 2px 0;
+}
+
 .badge-dot {
   display: inline-flex;
   align-items: center;

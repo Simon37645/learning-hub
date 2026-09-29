@@ -100,6 +100,27 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
             p.push_str(&format!("- 当前阶段：{}（{}）\n", stage.label(), stage.slug()));
             p.push_str(&format!("- 创建于：{}\n", topic.meta.created_at.format("%Y-%m-%d")));
 
+            // 父子主题：子主题是「这门课里的一章」，读得到父主题的资料与讲义
+            let ws = topic
+                .dir
+                .parent()
+                .map(|p| crate::domain::topic::Workspace::new(p.to_path_buf()));
+            let ancestors = ws.as_ref().map(|w| w.ancestors(topic)).unwrap_or_default();
+            if let Some(parent) = ancestors.first() {
+                p.push_str(&format!(
+                    "- 上级主题：{}（本主题是它的一章；父主题的讲义与资料可以直接读，\
+                     但笔记、卡片、计划只写进本主题）\n",
+                    parent.meta.name
+                ));
+            }
+            if let Some(w) = ws.as_ref() {
+                let children = w.descendants(topic);
+                if !children.is_empty() {
+                    let names: Vec<String> = children.iter().take(12).map(|c| c.meta.name.clone()).collect();
+                    p.push_str(&format!("- 子主题：{}\n", names.join("、")));
+                }
+            }
+
             if let Ok(stats) = topic.stats() {
                 p.push_str(&format!(
                     "- 规模：笔记 {} 篇 / 资料 {} 份 / 卡片 {} 张（待复习 {} 张）/ 未完成任务 {} 个\n",
@@ -157,6 +178,36 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
                 }
             }
 
+            // 继承来的资料：父主题（乃至更上层）的 materials/、kb/、notes/。
+            // 学「某一章」时这就是老师那份整门课的讲义 + 你以前学过的笔记，属于必看内容。
+            if !ancestors.is_empty() {
+                if let Some(root) = topic.dir.parent() {
+                    let mut listed: Vec<String> = Vec::new();
+                    for a in ancestors.iter().take(3) {
+                        for sub in [
+                            crate::domain::topic::DIR_MATERIALS,
+                            crate::domain::topic::DIR_KB,
+                            crate::domain::topic::DIR_NOTES,
+                        ] {
+                            for f in store::walk_files(&a.dir.join(sub), 3).into_iter().take(20) {
+                                listed.push(crate::paths::rel_in_root(root, &f));
+                            }
+                        }
+                    }
+                    if !listed.is_empty() {
+                        p.push_str(
+                            "\n### 继承的资料（来自父主题，只读）\n\
+                             这些是上级主题的资料、讲义和笔记，本主题可以直接读；\
+                             引用时把路径**照原样写全**（含主题名前缀），用户点得动。\
+                             不要改或删父主题里的文件——要记东西就写进本主题的 notes/。\n",
+                        );
+                        for l in listed.iter().take(24) {
+                            p.push_str(&format!("- {l}\n"));
+                        }
+                    }
+                }
+            }
+
             // 知识库索引摘要（标题级），让模型知道每份资料大概讲了什么
             let index = crate::kb::load_index(&topic.dir);
             if !index.files.is_empty() {
@@ -177,7 +228,7 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
 
             // 其它主题：预习时要指出「哪些前置知识你已经学过了」
             if let Some(root) = topic.dir.parent() {
-                if let Some(others) = other_topics_digest(root, &topic.slug()) {
+                if let Some(others) = other_topics_digest(root, topic) {
                     p.push_str("\n### 用户学过的其它主题（写前置知识、做类比时用得上）\n");
                     p.push_str(&others);
                     p.push_str(
@@ -235,17 +286,26 @@ pub fn current_date_line() -> String {
 ///
 /// 预习时要回答「这个东西需要哪些前置、我学过没有」，靠的就是这段。
 /// 只给标题级信息（不给正文），细节让模型自己用 kb_search / fs_read 去取。
-fn other_topics_digest(root: &std::path::Path, current_slug: &str) -> Option<String> {
+/// 本主题的父/子主题照样列（它们通常最相关），但标注清楚关系，
+/// 免得模型把「同一门课的另一章」当成两门不相干的课。
+fn other_topics_digest(root: &std::path::Path, current: &Topic) -> Option<String> {
     let ws = crate::domain::topic::Workspace::new(root.to_path_buf());
     let mut out = String::new();
     for summary in ws.list().ok()?.into_iter().take(12) {
-        if summary.slug == current_slug {
+        if summary.slug == current.slug() {
             continue;
         }
         // 卡片数为 0 且没有笔记的主题多半只是刚建的空壳，不值得列
         if summary.stats.notes == 0 && summary.stats.cards == 0 {
             continue;
         }
+        let relation = if summary.meta.parent.as_deref() == Some(current.meta.id.as_str()) {
+            "（本主题的子主题）"
+        } else if current.meta.parent.as_deref() == Some(summary.meta.id.as_str()) {
+            "（本主题的父主题）"
+        } else {
+            ""
+        };
         let Ok(topic) = ws.load(&summary.slug) else { continue };
         let notes: Vec<String> = store::walk_files(&topic.notes_dir(), 3)
             .into_iter()
@@ -260,7 +320,7 @@ fn other_topics_digest(root: &std::path::Path, current_slug: &str) -> Option<Str
             .filter(|s| !s.is_empty())
             .collect();
         out.push_str(&format!(
-            "- 「{}」（{}阶段，{} 张卡片）",
+            "- 「{}」{relation}（{}阶段，{} 张卡片）",
             summary.meta.name,
             summary.meta.stage.label(),
             summary.stats.cards
@@ -277,5 +337,50 @@ fn other_topics_digest(root: &std::path::Path, current_slug: &str) -> Option<Str
         None
     } else {
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::topic::Workspace;
+
+    /// 子主题（「一门课的一章」）的系统提示词：
+    /// 要写明上级主题、把父主题的资料列成「继承的资料」并带主题名前缀（这样引用可点击），
+    /// 还要在其它主题清单里标明父子关系，免得模型当成两门不相干的课。
+    #[test]
+    fn prompt_includes_inherited_materials_for_subtopic() {
+        let tmp = std::env::temp_dir().join(format!("lh-prompt-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let parent = ws.create("线性代数", "整门课", None, None).unwrap();
+        std::fs::write(parent.materials_dir().join("lecture1.md"), "# 特征值\n定义：$Av=\\lambda v$").unwrap();
+        std::fs::write(parent.notes_dir().join("第一讲.md"), "# 第一讲\n").unwrap();
+        std::fs::write(parent.dir.join("README.md"), "整门课的说明").unwrap();
+        let child = ws.create("第三章 特征值", "只学这章", None, Some("线性代数")).unwrap();
+
+        let cfg = AppConfig::bootstrap(tmp.clone());
+        let prompt = build_system_prompt(&PromptInputs {
+            config: &cfg,
+            topic: Some(&child),
+            stage: None,
+            supports_tools: true,
+            tool_catalog: String::new(),
+            tool_names: Vec::new(),
+            skill_catalog: String::new(),
+        });
+
+        assert!(prompt.contains("- 上级主题：线性代数"), "缺少上级主题行");
+        assert!(prompt.contains("### 继承的资料（来自父主题，只读）"), "缺少继承资料段");
+        assert!(
+            prompt.contains("线性代数/materials/lecture1.md"),
+            "继承资料的引用路径必须带主题名前缀"
+        );
+        assert!(prompt.contains("线性代数/notes/第一讲.md"), "父主题的笔记也该列出来");
+        // 父主题在「其它主题」清单里要被标注成父主题
+        assert!(prompt.contains("（本主题的父主题）"), "其它主题清单没标出父子关系");
+        // 父主题自己的资料不该被当成「本主题」的资料重复列一遍
+        assert!(!prompt.contains("### 主题资料（可以用 viewer_open 打开、用 viewer_read 阅读）"));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

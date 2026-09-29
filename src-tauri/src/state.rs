@@ -174,31 +174,62 @@ impl AppCore {
             *self.skills_cache.write() = Vec::new();
             return 0;
         }
-        let found = crate::skills::discover(Some(&cfg.workspace_root), None, &cfg.agent.extra_skill_dirs);
+        let found = crate::skills::discover(Some(&cfg.workspace_root), &[], &cfg.agent.extra_skill_dirs);
         let n = found.len();
         *self.skills_cache.write() = found;
         n
     }
 
-    /// **在某个主题下真正生效**的技能：全局 + 该主题私有，再剪掉两级禁用。
+    /// 一个主题可见的技能目录：自己的在前，父主题的在后（父主题私有技能子主题也能用）。
+    fn skill_dirs_for(&self, topic: &crate::domain::topic::Topic) -> Vec<std::path::PathBuf> {
+        let ws = self.workspace();
+        let mut dirs = vec![topic.dir.clone()];
+        dirs.extend(ws.ancestors(topic).into_iter().map(|a| a.dir));
+        dirs
+    }
+
+    /// **在某个主题下真正生效**的技能：全局 + 该主题私有 + 父主题私有，
+    /// 再剪掉禁用——禁用是**沿父子链取并集**的：父主题关掉的，子主题也关。
     pub fn skills_for(&self, topic: Option<&crate::domain::topic::Topic>) -> Vec<crate::skills::Skill> {
         let cfg = self.config_read();
         if !cfg.agent.skills_enabled {
             return Vec::new();
         }
-        let all = crate::skills::discover(
-            Some(&cfg.workspace_root),
-            topic.map(|t| t.dir.as_path()),
-            &cfg.agent.extra_skill_dirs,
-        );
+        let dirs = topic.map(|t| self.skill_dirs_for(t)).unwrap_or_default();
+        let all = crate::skills::discover(Some(&cfg.workspace_root), &dirs, &cfg.agent.extra_skill_dirs);
+
+        let mut disabled = cfg.agent.disabled_skills.clone();
+        if let Some(t) = topic {
+            disabled.extend(t.meta.tools.disabled_skills.iter().cloned());
+            for a in self.workspace().ancestors(t) {
+                disabled.extend(a.meta.tools.disabled_skills.iter().cloned());
+            }
+        }
         all.into_iter()
-            .filter(|s| !cfg.agent.disabled_skills.iter().any(|d| d == &s.id))
-            .filter(|s| {
-                topic
-                    .map(|t| t.meta.tools.skill_enabled(&s.id))
-                    .unwrap_or(true)
-            })
+            .filter(|s| !disabled.iter().any(|d| d == &s.id))
             .collect()
+    }
+
+    /// 某个技能在指定主题下是否被**主题层面**关着，以及是谁关的。
+    /// 返回 `None` 表示没被主题/父主题关（还要再看全局开关）。
+    pub fn skill_disabled_by_topic(
+        &self,
+        id: &str,
+        topic: Option<&crate::domain::topic::Topic>,
+    ) -> Option<&'static str> {
+        let t = topic?;
+        if !t.meta.tools.skill_enabled(id) {
+            return Some("topic");
+        }
+        if self
+            .workspace()
+            .ancestors(t)
+            .iter()
+            .any(|a| !a.meta.tools.skill_enabled(id))
+        {
+            return Some("parent");
+        }
+        None
     }
 
     /// 需要连接的 MCP 服务器：全局的 + 各主题私有的（同名去重，全局优先）。
@@ -224,6 +255,8 @@ impl AppCore {
     }
 
     /// 某个 MCP 服务器在指定主题下是否可用。
+    ///
+    /// 禁用同样沿父子链取并集：父主题（整门课）关掉的服务器，学某一章时也不会冒出来。
     pub fn mcp_enabled_for_topic(
         &self,
         name: &str,
@@ -236,9 +269,15 @@ impl AppCore {
                 return false;
             }
         }
-        topic
-            .map(|t| t.meta.tools.mcp_enabled(name))
-            .unwrap_or(true)
+        let Some(t) = topic else { return true };
+        if !t.meta.tools.mcp_enabled(name) {
+            return false;
+        }
+        !self
+            .workspace()
+            .ancestors(t)
+            .iter()
+            .any(|a| !a.meta.tools.mcp_enabled(name))
     }
 
     /// 工具名（mcp__服务器__工具）在当前主题下是否该暴露给模型。

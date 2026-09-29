@@ -12,7 +12,11 @@ export default defineConfig({
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
-    watch: { ignored: ["**/src-tauri/**"] },
+    // workspace/ 是应用的数据目录，不该被前端 HMR 监视：
+    // 在 Windows 上 chokidar 会对被监视的目录持有句柄，导致开发模式下
+    // 「删除主题」这类目录改名操作直接失败（EPERM 拒绝访问）。
+    // src-tauri 同理（Rust 由 tauri dev 自己监视）。
+    watch: { ignored: ["**/src-tauri/**", "**/workspace/**"] },
   },
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: {

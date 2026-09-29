@@ -80,6 +80,28 @@ notes, materials, cards due today, open tasks, sessions.
 Create one with **New topic**, search across every note with **Ctrl+K**, and drag files from Explorer
 straight into the window to import them into that topic's `materials/`.
 
+#### Only studying one chapter? Make it a sub-topic
+
+Often you do not want the whole course — just chapter 3. Pick **More → New sub-topic (study one chapter)**
+on a topic and it becomes a *chapter* of that course:
+
+- It shows up indented and collapsible in the sidebar, with a `Linear Algebra › Chapter 3` breadcrumb in
+  the header that jumps back to the parent.
+- **Materials come along**: the parent's handouts, `kb/` files and notes are readable, listed in their own
+  group marked *inherited from "Linear Algebra" (read-only)* — no re-importing the same PDF.
+- **Narrower context**: the agent's main line becomes this chapter, and the course material becomes
+  background. The knowledge base indexes the parent's handouts too, and cites them as
+  `Linear Algebra/materials/lecture1.pdf p.12` — click it and that file opens.
+- **Independent state**: notes, cards, review queue and plan stay per chapter, so "this chapter's review
+  queue" really only contains this chapter's cards.
+- Per-topic skill/MCP switches are inherited down the chain, and deleting a parent moves its chapters to
+  the trash with it (restore the folders and the relationships come back).
+
+(The hierarchy lives in `parent` inside `topic.json`; the directories stay flat under the workspace root,
+so the file layout stays obvious in Explorer.)
+
+<img src="docs/images/chapters.png" alt="Sub-topic: breadcrumb and inherited materials" width="820" />
+
 ### 2. Chat that actually does things
 
 The agent has 43 built-in tools grouped by purpose: files, study assets, the built-in browser, web
@@ -292,7 +314,7 @@ Data layout — all plain files:
 
 ```
 <workspace>/<topic>/
-├── topic.json          metadata (stage, tags, per-topic tool switches)
+├── topic.json          metadata (stage, tags, per-topic tool switches, parent topic id)
 ├── README.md           background the agent reads every turn
 ├── notes/  materials/  kb/  lessons/  cards/  plan/  sessions/  quizzes/
 └── .hub/               chats, knowledge-base cache, trash, skills

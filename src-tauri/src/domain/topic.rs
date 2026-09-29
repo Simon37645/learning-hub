@@ -100,6 +100,14 @@ pub struct TopicMeta {
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub last_opened_at: Option<DateTime<Utc>>,
+    /// 父主题的 **id**（不是目录名）：改名不影响父子关系。
+    ///
+    /// 为什么父子主题不做成目录嵌套：工作区根的**一级子目录就是主题**这条约定
+    /// 被扫目录、slug、会话记录、浏览器标签页到处依赖；一旦嵌套，slug 要变成
+    /// 相对路径，全是连带改动。所以子主题仍然是根目录下的一层目录，
+    /// 层级关系只记在这里。没有这个字段（或指向的主题已不在工作区）就是根主题。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// 主题级的技能 / MCP 开关
     #[serde(default)]
     pub tools: TopicTools,
@@ -118,6 +126,7 @@ impl TopicMeta {
             created_at: now,
             updated_at: now,
             last_opened_at: None,
+            parent: None,
             tools: TopicTools::default(),
         }
     }
@@ -344,6 +353,124 @@ impl Workspace {
         Ok(Topic { meta, dir })
     }
 
+    /// 轻量清单：只读 topic.json，不算统计。
+    ///
+    /// `list()` 会为每个主题扫笔记/卡片/任务，拿来解析父子关系太贵；
+    /// 这里只要 id 与 parent 两个字段。
+    pub fn catalog(&self) -> AppResult<Vec<(String, TopicMeta)>> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&self.root).ctx(self.root.display())? {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if let Ok(meta) = self.read_or_adopt_meta(&path, &name) {
+                out.push((name, meta));
+            }
+        }
+        Ok(out)
+    }
+
+    /// 父主题链（父亲在前，依次往上）。
+    ///
+    /// 两种情况会安全停下：父主题已经不在工作区里（用户手动删了目录），
+    /// 或者有人把 parent 改成了环。都不会死循环。
+    pub fn ancestors(&self, topic: &Topic) -> Vec<Topic> {
+        let mut out = Vec::new();
+        let Ok(catalog) = self.catalog() else {
+            return out;
+        };
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(topic.meta.id.clone());
+
+        let mut cursor = topic.meta.parent.clone();
+        while let Some(id) = cursor.take() {
+            if !seen.insert(id.clone()) {
+                break;
+            }
+            let Some((slug, meta)) = catalog.iter().find(|(_, m)| m.id == id) else {
+                break;
+            };
+            cursor = meta.parent.clone();
+            out.push(Topic {
+                meta: meta.clone(),
+                dir: self.topic_dir(slug),
+            });
+        }
+        out
+    }
+
+    /// 所有子主题（含孙辈），广度优先。
+    pub fn descendants(&self, topic: &Topic) -> Vec<Topic> {
+        let mut out = Vec::new();
+        let Ok(catalog) = self.catalog() else {
+            return out;
+        };
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(topic.meta.id.clone());
+        let mut frontier = vec![topic.meta.id.clone()];
+
+        while let Some(parent_id) = frontier.pop() {
+            for (slug, meta) in catalog.iter() {
+                if meta.parent.as_deref() != Some(parent_id.as_str()) {
+                    continue;
+                }
+                if !seen.insert(meta.id.clone()) {
+                    continue;
+                }
+                out.push(Topic {
+                    meta: meta.clone(),
+                    dir: self.topic_dir(slug),
+                });
+                frontier.push(meta.id.clone());
+            }
+        }
+        out
+    }
+
+    /// 改父子关系。`parent` 传主题 id / 目录名 / 显示名，`None` 表示移出父主题。
+    pub fn set_parent(&self, slug: &str, parent: Option<&str>) -> AppResult<Topic> {
+        let mut topic = self.resolve(slug)?;
+        let new_parent = match parent.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(needle) => {
+                let p = self.resolve(needle)?;
+                if p.meta.id == topic.meta.id {
+                    return Err(AppError::invalid("主题不能作为自己的父主题"));
+                }
+                // 防成环：「线性代数」不能挂到它自己的「第三章」下面
+                if self.descendants(&topic).iter().any(|d| d.meta.id == p.meta.id) {
+                    return Err(AppError::invalid(format!(
+                        "「{}」已经是本主题的子主题，不能反过来当父主题",
+                        p.meta.name
+                    )));
+                }
+                Some(p.meta.id)
+            }
+            None => None,
+        };
+        topic.meta.parent = new_parent;
+        topic.save_meta()?;
+        Ok(topic)
+    }
+
+    /// 继承用的 `(主题名, 目录)` 列表：祖先链，父主题在前。
+    ///
+    /// 知识库索引、提示词注入都拿它去读父主题的资料与讲义。
+    pub fn inherited_dirs(&self, topic: &Topic) -> Vec<(String, PathBuf)> {
+        self.ancestors(topic)
+            .into_iter()
+            .map(|t| (t.meta.name.clone(), t.dir.clone()))
+            .collect()
+    }
+
     /// 按 id / 目录名 / 显示名 找主题。agent 传进来的引用都走这里。
     pub fn resolve(&self, needle: &str) -> AppResult<Topic> {
         let needle = needle.trim();
@@ -369,12 +496,27 @@ impl Workspace {
     }
 
     /// 新建主题：建目录骨架 + topic.json + README 模板。
-    pub fn create(&self, name: &str, description: &str, emoji: Option<String>) -> AppResult<Topic> {
+    ///
+    /// `parent` 是父主题的引用（id / 目录名 / 显示名），用来建「章节级」子主题；
+    /// 传 None 就是顶层主题。
+    pub fn create(
+        &self,
+        name: &str,
+        description: &str,
+        emoji: Option<String>,
+        parent: Option<&str>,
+    ) -> AppResult<Topic> {
         self.ensure()?;
         let name = name.trim();
         if name.is_empty() {
             return Err(AppError::invalid("主题名不能为空"));
         }
+        // 先解析父主题：父主题不存在时不该留下一个建了一半的目录
+        let parent_id = match parent.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(needle) => Some(self.resolve(needle)?.meta.id),
+            None => None,
+        };
+
         let slug = sanitize_dir_name(name);
         // 同名目录已存在时自动加序号，保证「一个主题一个目录」
         let dir = if self.topic_dir(&slug).exists() {
@@ -399,6 +541,7 @@ impl Workspace {
 
         let mut meta = TopicMeta::new(name, description);
         meta.emoji = emoji;
+        meta.parent = parent_id;
         meta.last_opened_at = Some(store::now());
         let topic = Topic { meta, dir };
 
@@ -521,7 +664,7 @@ mod tests {
     fn create_and_resolve() {
         let tmp = std::env::temp_dir().join(format!("lh-test-{}", uuid::Uuid::new_v4()));
         let ws = Workspace::new(&tmp);
-        let t = ws.create("线性代数", "考试用", None).unwrap();
+        let t = ws.create("线性代数", "考试用", None, None).unwrap();
         assert!(t.dir.join("notes").is_dir());
         assert!(t.dir.join("cards/cards.jsonl").exists());
 
@@ -534,6 +677,97 @@ mod tests {
         assert_eq!(list.len(), 1);
         let s = ws.search("线性", 10).unwrap();
         assert_eq!(s.len(), 1);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 子主题：目录仍在工作区第一层，父子关系记在 topic.json 里。
+    #[test]
+    fn subtopic_tree() {
+        let tmp = std::env::temp_dir().join(format!("lh-test-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let course = ws.create("线性代数", "整门课", None, None).unwrap();
+        let ch3 = ws.create("第三章 特征值", "只学这章", None, Some("线性代数")).unwrap();
+        let ch3_1 = ws.create("3.1 定义", "", None, Some(&ch3.meta.id)).unwrap();
+
+        // 目录是平铺的，不嵌套
+        assert!(tmp.join("第三章 特征值").is_dir());
+        assert!(!course.dir.join("第三章 特征值").exists());
+        assert_eq!(ch3.meta.parent.as_deref(), Some(course.meta.id.as_str()));
+
+        // 祖先链：父在前，依次往上
+        let anc = ws.ancestors(&ch3_1);
+        assert_eq!(anc.len(), 2);
+        assert_eq!(anc[0].meta.id, ch3.meta.id);
+        assert_eq!(anc[1].meta.id, course.meta.id);
+
+        // 子孙：孙辈也算，含自己以外所有
+        let mut ids: Vec<String> = ws.descendants(&course).iter().map(|t| t.meta.id.clone()).collect();
+        ids.sort();
+        let mut want = vec![ch3.meta.id.clone(), ch3_1.meta.id.clone()];
+        want.sort();
+        assert_eq!(ids, want);
+        assert!(ws.descendants(&ch3_1).is_empty());
+
+        // 父主题改名：目录跟着改，但父子关系靠 id，不受影响
+        let parent_dir = course.dir.parent().unwrap().to_path_buf();
+        let renamed = parent_dir.join("线性代数（期末）");
+        std::fs::rename(&course.dir, &renamed).unwrap();
+        let course2 = ws.load("线性代数（期末）").unwrap();
+        assert_eq!(course2.meta.id, course.meta.id);
+        assert_eq!(ws.ancestors(&ws.load("第三章 特征值").unwrap())[0].meta.id, course2.meta.id);
+
+        // 断链（父主题的目录被用户手动删了）不能让祖先解析炸掉或死循环
+        std::fs::remove_dir_all(&course2.dir).unwrap();
+        let orphan = ws.load("第三章 特征值").unwrap();
+        assert_eq!(ws.ancestors(&orphan).len(), 0);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn set_parent_rejects_cycles() {
+        let tmp = std::env::temp_dir().join(format!("lh-test-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let a = ws.create("A", "", None, None).unwrap();
+        let b = ws.create("B", "", None, Some("A")).unwrap();
+
+        // 不能当自己的父主题
+        assert!(ws.set_parent("A", Some("A")).is_err());
+        // 不能把 A 挂到自己的子主题 B 下面（会成环）
+        assert!(ws.set_parent("A", Some("B")).is_err());
+        assert!(ws.ancestors(&a).is_empty());
+
+        // 移出父主题 → 变回顶层
+        let b2 = ws.set_parent("B", None).unwrap();
+        assert!(b2.meta.parent.is_none());
+        assert!(ws.descendants(&a).is_empty());
+
+        // 再挂回去（用 id 引用）
+        ws.set_parent("B", Some(&a.meta.id)).unwrap();
+        assert_eq!(ws.ancestors(&ws.load("B").unwrap()).len(), 1);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 老的 topic.json（没有 parent 字段）要能照常读出来。
+    #[test]
+    fn legacy_meta_without_parent() {
+        let tmp = std::env::temp_dir().join(format!("lh-test-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let dir = tmp.join("旧主题");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(TOPIC_FILE),
+            r#"{"id":"legacy-1","name":"旧主题","description":"","tags":[],
+                "stage":"preview","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let t = ws.load("旧主题").unwrap();
+        assert!(t.meta.parent.is_none());
+        assert_eq!(t.meta.id, "legacy-1");
+        assert!(ws.ancestors(&t).is_empty());
 
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -68,6 +68,8 @@ export interface TopicMeta {
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string | null;
+  /** 父主题的 id（不是目录名）。没有就是顶层主题。子主题=这门课的一章，能读父主题的资料 */
+  parent?: string | null;
 }
 
 export interface TopicStats {
@@ -108,12 +110,19 @@ interface NoteSummaryShape {
 }
 
 export interface MaterialItem {
+  /** 相对**所属主题**的路径（继承来的资料就是相对父主题） */
   path: string;
   name: string;
   size: number;
   sizeText: string;
   kind: string;
   modifiedAt: string;
+  /** 所属主题的 slug：打开它要用这个主题，而不是当前主题 */
+  topic: string;
+  /** 来源主题名；本主题自己的资料没有这个字段 */
+  origin?: string | null;
+  /** 继承自父主题（只读） */
+  inherited: boolean;
 }
 
 export interface StudySession {

@@ -1,12 +1,47 @@
-// 左侧栏：新建主题 / 搜索主题（上），主题列表（下），用户与设置（最底）。
+// 左侧栏：新建主题 / 搜索主题（上），主题树（下），用户与设置（最底）。
+//
+// 主题可以是「整门课」，也可以是它下面的「一章」（父主题里记 id）。
+// 一章仍占工作区根下的一个目录，只是侧栏里缩进显示——这样学一章节时
+// 既能收窄上下文，又不用把讲义重新导入一遍。
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useApp } from "../store/app";
-import { STAGE_LABEL, THEME_LABEL, type StudyStage } from "../lib/types";
+import { STAGE_LABEL, THEME_LABEL, type StudyStage, type TopicSummary } from "../lib/types";
 import { hotkey, relTime } from "../lib/format";
 import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal } from "./ui";
 import { McpDialog, SkillsDialog } from "./Extend";
 import { api } from "../lib/api";
+
+/** 折叠状态存本地：章节多了以后默认全展开太挤 */
+const TREE_KEY = "hub.sidebar.collapsed";
+
+interface TopicTreeNode {
+  topic: TopicSummary;
+  children: TopicTreeNode[];
+}
+
+/** 平铺列表拼成树。parent 存的是父主题 id；父主题不在了（被删或移出工作区）就当顶层，不让它消失。 */
+function buildTopicTree(topics: TopicSummary[]): TopicTreeNode[] {
+  const nodes = new Map<string, TopicTreeNode>();
+  for (const t of topics) nodes.set(t.meta.id, { topic: t, children: [] });
+  const roots: TopicTreeNode[] = [];
+  for (const t of topics) {
+    const node = nodes.get(t.meta.id)!;
+    const parent = t.meta.parent ? nodes.get(t.meta.parent) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+function loadCollapsed(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TREE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 export function Sidebar() {
   const topics = useApp((s) => s.topics);
@@ -19,6 +54,7 @@ export function Sidebar() {
   const toast = useApp((s) => s.toast);
 
   const [newOpen, setNewOpen] = useState(false);
+  const [newParent, setNewParent] = useState<{ slug: string; name: string } | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [skillCount, setSkillCount] = useState(0);
@@ -26,6 +62,7 @@ export function Sidebar() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [creating, setCreating] = useState(false);
+  const [collapsed, setCollapsed] = useState<string[]>(loadCollapsed);
 
   const sorted = useMemo(
     () =>
@@ -36,6 +73,19 @@ export function Sidebar() {
       }),
     [topics],
   );
+  const tree = useMemo(() => buildTopicTree(sorted), [sorted]);
+
+  const toggleCollapse = (id: string) => {
+    setCollapsed((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      try {
+        localStorage.setItem(TREE_KEY, JSON.stringify(next));
+      } catch {
+        /* 隐私模式下写不了，不影响使用 */
+      }
+      return next;
+    });
+  };
 
   const totalDue = sorted.reduce((n, t) => n + t.stats.cardsDue, 0);
 
@@ -58,23 +108,59 @@ export function Sidebar() {
     void load();
   }, [activeSlug, topics]);
 
-  async function submitNew() {
+  const submitNew = async () => {
     if (!name.trim() || creating) return;
     setCreating(true);
-    const created = await useApp.getState().createTopic(name.trim(), desc.trim());
+    const created = await useApp.getState().createTopic(name.trim(), desc.trim(), newParent?.slug ?? null);
     setCreating(false);
     if (created) {
       setNewOpen(false);
       setName("");
       setDesc("");
+      setNewParent(null);
       await openTopic(created.slug);
     }
-  }
+  };
+
+  const openNew = (parent?: { slug: string; name: string }) => {
+    setNewParent(parent ?? null);
+    setNewOpen(true);
+  };
+
+  /** 递归渲染主题树；子主题缩进一级，父主题可折叠 */
+  const renderNode = (node: TopicTreeNode, depth: number) => {
+    const t = node.topic;
+    const hasChildren = node.children.length > 0;
+    const isCollapsed = collapsed.includes(t.meta.id);
+    return (
+      <Fragment key={t.slug}>
+        <TopicRow
+          slug={t.slug}
+          name={t.meta.name}
+          emoji={t.meta.emoji ?? null}
+          stage={t.meta.stage}
+          due={t.stats.cardsDue}
+          cards={t.stats.cards}
+          notes={t.stats.notes}
+          tasks={t.stats.tasksOpen}
+          active={t.slug === activeSlug}
+          depth={depth}
+          childCount={node.children.length}
+          collapsed={isCollapsed}
+          parentSlug={t.meta.parent ?? null}
+          onToggle={() => toggleCollapse(t.meta.id)}
+          onNewSubtopic={() => openNew({ slug: t.slug, name: t.meta.name })}
+          onClick={() => openTopic(t.slug)}
+        />
+        {hasChildren && !isCollapsed && node.children.map((c) => renderNode(c, depth + 1))}
+      </Fragment>
+    );
+  };
 
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
-        <button className="side-item primary" onClick={() => setNewOpen(true)}>
+        <button className="side-item primary" onClick={() => openNew()}>
           <Icon name="plus" />
           <span className="grow">新建主题</span>
         </button>
@@ -133,21 +219,7 @@ export function Sidebar() {
             点上面的「新建主题」，或者直接跟 agent 说你想学什么。
           </div>
         ) : (
-          sorted.map((t) => (
-            <TopicRow
-              key={t.slug}
-              slug={t.slug}
-              name={t.meta.name}
-              emoji={t.meta.emoji ?? null}
-              stage={t.meta.stage}
-              due={t.stats.cardsDue}
-              cards={t.stats.cards}
-              notes={t.stats.notes}
-              tasks={t.stats.tasksOpen}
-              active={t.slug === activeSlug}
-              onClick={() => openTopic(t.slug)}
-            />
-          ))
+          tree.map((n) => renderNode(n, 0))
         )}
       </div>
 
@@ -190,15 +262,24 @@ export function Sidebar() {
 
       {newOpen && (
         <Modal
-          title="新建主题"
+          title={newParent ? "新建子主题" : "新建主题"}
           icon="plus"
-          onClose={() => setNewOpen(false)}
+          onClose={() => {
+            setNewOpen(false);
+            setNewParent(null);
+          }}
           footer={
             <>
               <span className="left muted" style={{ fontSize: 11.5 }}>
-                会在工作区里创建一个同名目录
+                {newParent ? "会读得到父主题的资料与讲义（只读）" : "会在工作区里创建一个同名目录"}
               </span>
-              <button className="btn" onClick={() => setNewOpen(false)}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setNewOpen(false);
+                  setNewParent(null);
+                }}
+              >
                 取消
               </button>
               <button className="btn primary" onClick={submitNew} disabled={!name.trim() || creating}>
@@ -207,12 +288,30 @@ export function Sidebar() {
             </>
           }
         >
-          <Field label="主题名" hint="会成为目录名，建议用「学科/主题」的形式，例如「线性代数」「React 源码」">
+          {newParent && (
+            <div className="sub" style={{ marginBottom: 10 }}>
+              上级主题：<b>{newParent.name}</b>
+              <button className="btn sm ghost" style={{ marginLeft: 8 }} onClick={() => setNewParent(null)}>
+                改成顶层主题
+              </button>
+              <div style={{ marginTop: 4 }}>
+                章节主题适合「这门课我只学这几章」：资料沿用父主题的，笔记、卡片、计划各自独立。
+              </div>
+            </div>
+          )}
+          <Field
+            label="主题名"
+            hint={
+              newParent
+                ? "建议写清是哪一章，例如「第三章 特征值」「第 5 讲 递归」"
+                : "会成为目录名，建议用「学科/主题」的形式，例如「线性代数」「React 源码」"
+            }
+          >
             <input
               className="input"
               autoFocus
               value={name}
-              placeholder="想学什么？"
+              placeholder={newParent ? "这一章叫什么？" : "想学什么？"}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitNew()}
             />
@@ -263,6 +362,12 @@ function TopicRow({
   notes,
   tasks,
   active,
+  depth,
+  childCount,
+  collapsed,
+  parentSlug,
+  onToggle,
+  onNewSubtopic,
   onClick,
 }: {
   slug: string;
@@ -274,19 +379,55 @@ function TopicRow({
   notes: number;
   tasks: number;
   active: boolean;
+  /** 缩进层级：0 = 顶层主题，1+ = 章/节 */
+  depth: number;
+  childCount: number;
+  collapsed: boolean;
+  parentSlug: string | null;
+  onToggle: () => void;
+  onNewSubtopic: () => void;
   onClick: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const updateTopic = useApp((s) => s.updateTopic);
   const deleteTopic = useApp((s) => s.deleteTopic);
+  const parentName = useApp((s) =>
+    parentSlug ? (s.topics.find((t) => t.slug === parentSlug)?.meta.name ?? parentSlug) : null,
+  );
 
   return (
     <>
-      <div className={"topic-row" + (active ? " active" : "")} onClick={onClick} title={name}>
-        <span style={{ flex: "none", fontSize: 13 }}>{emoji ?? "📘"}</span>
+      <div
+        className={"topic-row" + (active ? " active" : "") + (depth > 0 ? " child" : "")}
+        style={depth > 0 ? { paddingLeft: 9 + depth * 14 } : undefined}
+        onClick={onClick}
+        title={name}
+      >
+        {/* 折叠箭头：只有带子主题的行才占位，其它行留出等宽空白保证对齐 */}
+        {childCount > 0 ? (
+          <button
+            className="icon-btn topic-chev"
+            title={collapsed ? `展开 ${childCount} 个子主题` : "收起子主题"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+          >
+            <Icon name={collapsed ? "chevron-right" : "chevron-down"} size={12} />
+          </button>
+        ) : (
+          <span className="topic-chev-space" />
+        )}
+        <span style={{ flex: "none", fontSize: 13 }}>{emoji ?? (depth > 0 ? "📄" : "📘")}</span>
         <span className="topic-name">{name}</span>
 
         <span className="topic-badges">
+          {depth === 0 && childCount > 0 && (
+            <span className="badge-dot" title={`${childCount} 个子主题（章节）`}>
+              <Icon name="layers" size={11} />
+              {childCount}
+            </span>
+          )}
           {due > 0 && (
             <span className="badge-dot badge-due" title={`${due} 张卡片待复习`}>
               <Icon name="target" size={11} />
@@ -311,7 +452,28 @@ function TopicRow({
           >
             {(close) => (
               <>
-                <MenuLabel>{STAGE_LABEL[stage]}阶段 · {notes} 笔记 / {cards} 卡片</MenuLabel>
+                <MenuLabel>
+                  {STAGE_LABEL[stage]}阶段 · {notes} 笔记 / {cards} 卡片
+                </MenuLabel>
+                <MenuSep />
+                <MenuItem
+                  onClick={() => {
+                    onNewSubtopic();
+                    close();
+                  }}
+                >
+                  <Icon name="plus" size={13} /> 新建子主题（只学其中一章）
+                </MenuItem>
+                {parentName && (
+                  <MenuItem
+                    onClick={() => {
+                      void useApp.getState().setTopicParent(slug, null);
+                      close();
+                    }}
+                  >
+                    <Icon name="arrow-up" size={13} /> 移出「{parentName}」
+                  </MenuItem>
+                )}
                 <MenuSep />
                 {(Object.keys(STAGE_LABEL) as StudyStage[]).map((s) => (
                   <MenuItem
@@ -393,10 +555,20 @@ function TopicRow({
             </>
           }
         >
-          <div className="sub">
-            不会真删。整个目录会被移动到 <code className="mono">工作区/.hub/trash/</code>，
-            需要时手动搬回来即可。
-          </div>
+          {childCount > 0 ? (
+            <>
+              这个主题下有 <b>{childCount}</b> 个子主题（章节），它们会一起被移入回收站。
+              <div className="sub" style={{ marginTop: 6 }}>
+                不会真删。整个目录会被移动到 <code className="mono">工作区/.hub/trash/</code>，
+                需要时手动搬回来即可（父子关系记在各自的 topic.json 里，搬回来还在）。
+              </div>
+            </>
+          ) : (
+            <div className="sub">
+              不会真删。整个目录会被移动到 <code className="mono">工作区/.hub/trash/</code>，
+              需要时手动搬回来即可。
+            </div>
+          )}
         </Modal>
       )}
     </>
@@ -451,9 +623,21 @@ export function SearchPalette() {
 
   if (!open) return null;
 
+  // 子主题在搜索结果里带上父主题名，免得「第三章」这类名字看不出是哪门课的
+  const byId = new Map(topics.map((t) => [t.meta.id, t]));
+  const withParent = (slug: string, name: string) => {
+    const t = topics.find((x) => x.slug === slug);
+    const parent = t?.meta.parent ? byId.get(t.meta.parent) : undefined;
+    return parent ? `${parent.meta.name} › ${name}` : name;
+  };
+
   const list = matches.length > 0
-    ? matches
-    : topics.map((t) => ({ slug: t.slug, name: t.meta.name, hits: [relTime(t.meta.lastOpenedAt ?? t.meta.updatedAt)] }));
+    ? matches.map((m) => ({ ...m, name: withParent(m.slug, m.name) }))
+    : topics.map((t) => ({
+        slug: t.slug,
+        name: withParent(t.slug, t.meta.name),
+        hits: [relTime(t.meta.lastOpenedAt ?? t.meta.updatedAt)],
+      }));
 
   const choose = (i: number) => {
     const item = list[i];

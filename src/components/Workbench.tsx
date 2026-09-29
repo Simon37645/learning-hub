@@ -17,7 +17,7 @@ import {
   type TopicSummary,
 } from "../lib/types";
 import { useApp } from "../store/app";
-import { Dropdown, Empty, Field, Icon, MenuItem, MenuSep, Modal, Segmented, Spinner, Switch } from "./ui";
+import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, Segmented, Spinner, Switch } from "./ui";
 import { Markdown } from "./Chat";
 import { NoteEditor } from "./NoteEditor";
 import { QuizPane } from "./Quiz";
@@ -547,6 +547,19 @@ function MaterialsPane() {
 
 // ---------------------------------------------------------------- 卡片
 
+/** 复习间隔的显示文案：10 分钟 / 3 小时 / 12 天 / 2.5 个月 */
+function intervalText(secs: number): string {
+  const minutes = secs / 60;
+  if (minutes < 60) return `${Math.max(1, Math.round(minutes))} 分钟`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.round(hours)} 小时`;
+  const days = hours / 24;
+  if (days < 31) return `${Math.round(days)} 天`;
+  const months = days / 30.4;
+  if (months < 12) return `${months.toFixed(1)} 个月`;
+  return `${(days / 365).toFixed(1)} 年`;
+}
+
 function CardsPane() {
   const topic = useApp((s) => s.topic)!;
   const cards = useApp((s) => s.cards);
@@ -598,6 +611,37 @@ function CardsPane() {
     }
   }
 
+  // 键盘操作（Anki 的手感）：空格/回车翻面，1~4 打分，Esc 结束
+  useEffect(() => {
+    if (!reviewing) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        setShowBack(true);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        void exitReview();
+        return;
+      }
+      const map: Record<string, Grade> = { "1": "again", "2": "hard", "3": "good", "4": "easy" };
+      const g = map[e.key];
+      if (showBack && g) {
+        e.preventDefault();
+        void grade(g);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewing, showBack, current?.id]);
+
+  /** 把后端算好的间隔秒数写成「10 分钟 / 3 小时 / 12 天 / 2 个月」 */
+  const label = (secs?: number, fallback = "") => (secs && secs > 0 ? intervalText(secs) : fallback);
+
   return (
     <div className="wb-pane">
       <div className="row">
@@ -612,45 +656,63 @@ function CardsPane() {
         <button className="btn" onClick={() => setAdding(true)}>
           <Icon name="plus" size={13} /> 新建卡片
         </button>
-        <button
-          className="btn"
-          title="把还没同步过的卡片推进 Anki 牌组（需要 Anki 开着并装了 AnkiConnect 插件）"
-          onClick={async () => {
-            try {
-              const r = await api.ankiSync(topic.slug);
-              if (r.added === 0 && r.failed.length === 0) {
-                toast("info", `没有需要同步的新卡片（已跳过 ${r.skipped} 张）`);
-              } else {
-                toast(
-                  "success",
-                  `已同步 ${r.added} 张到牌组「${r.deck}」` +
-                    (r.skipped ? `，跳过 ${r.skipped} 张已同步的` : "") +
-                    (r.failed.length ? `，${r.failed.length} 张失败` : ""),
-                );
-              }
-              if (r.failed.length) console.warn("Anki 同步失败项：", r.failed);
-              void loadCards({ dueOnly });
-            } catch (e) {
-              toast("error", errText(e));
-            }
-          }}
+        {/* 外部 Anki 是可选项：复习与调度都在本应用内完成，这里的入口只是
+            给「手机上也装了 Anki」的人留的通道，不点它不影响任何功能 */}
+        <Dropdown
+          up={false}
+          trigger={() => (
+            <button className="btn" title="与外部 Anki 交换卡片（可选，不装也能在本应用里复习）">
+              <Icon name="external" size={13} /> Anki <Icon name="chevron-down" size={11} />
+            </button>
+          )}
         >
-          <Icon name="external" size={13} /> 同步到 Anki
-        </button>
-        <button
-          className="btn"
-          title="导出为 Anki 可导入的 TSV（不依赖 AnkiConnect）"
-          onClick={async () => {
-            try {
-              const r = await api.cardExportAnki(topic.slug);
-              toast("success", `已导出 ${r.count} 张到 ${r.path}`);
-            } catch (e) {
-              toast("error", errText(e));
-            }
-          }}
-        >
-          <Icon name="download" size={13} /> 导出 TSV
-        </button>
+          {(close) => (
+            <>
+              <MenuLabel>可选：与外部 Anki 交换卡片</MenuLabel>
+              <MenuItem
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const r = await api.ankiSync(topic.slug);
+                      if (r.added === 0 && r.failed.length === 0) {
+                        toast("info", `没有需要同步的新卡片（已跳过 ${r.skipped} 张）`);
+                      } else {
+                        toast(
+                          "success",
+                          `已同步 ${r.added} 张到牌组「${r.deck}」` +
+                            (r.skipped ? `，跳过 ${r.skipped} 张已同步的` : "") +
+                            (r.failed.length ? `，${r.failed.length} 张失败` : ""),
+                        );
+                      }
+                      if (r.failed.length) console.warn("Anki 同步失败项：", r.failed);
+                      void loadCards({ dueOnly });
+                    } catch (e) {
+                      toast("error", errText(e));
+                    }
+                  })();
+                  close();
+                }}
+              >
+                <Icon name="external" size={13} /> 同步到 Anki 牌组（需要 Anki 开着）
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const r = await api.cardExportAnki(topic.slug);
+                      toast("success", `已导出 ${r.count} 张到 ${r.path}`);
+                    } catch (e) {
+                      toast("error", errText(e));
+                    }
+                  })();
+                  close();
+                }}
+              >
+                <Icon name="download" size={13} /> 导出 TSV（Anki 可导入，不需要插件）
+              </MenuItem>
+            </>
+          )}
+        </Dropdown>
       </div>
 
       {reviewing ? (
@@ -675,7 +737,7 @@ function CardsPane() {
                 </div>
               ) : (
                 <div className="muted" style={{ fontSize: 12 }}>
-                  先自己回想一遍，然后点这里看答案
+                  先自己回想一遍，然后点这里看答案（或按空格）
                 </div>
               )}
             </div>
@@ -683,16 +745,16 @@ function CardsPane() {
             {showBack ? (
               <div className="grade-row">
                 <button className="grade-btn" onClick={() => void grade("again")}>
-                  忘了 <small>10 分钟后</small>
+                  忘了 <small>1 · {label(current.preview?.again, "10 分钟")}</small>
                 </button>
                 <button className="grade-btn" onClick={() => void grade("hard")}>
-                  吃力 <small>缩短间隔</small>
+                  吃力 <small>2 · {label(current.preview?.hard, "缩短间隔")}</small>
                 </button>
                 <button className="grade-btn" onClick={() => void grade("good")}>
-                  记得 <small>正常推进</small>
+                  记得 <small>3 · {label(current.preview?.good, "正常推进")}</small>
                 </button>
                 <button className="grade-btn" onClick={() => void grade("easy")}>
-                  太简单 <small>拉长间隔</small>
+                  太简单 <small>4 · {label(current.preview?.easy, "拉长间隔")}</small>
                 </button>
               </div>
             ) : (
@@ -721,7 +783,8 @@ function CardsPane() {
         <Empty icon="layers">
           还没有卡片。
           <br />
-          让 agent 在讲完之后「把要点存成卡片」，复习时会按间隔重复推给你。
+          让 agent 在讲完之后「把要点存成卡片」，之后就在这里按间隔重复复习
+          （SM-2 调度在本应用内完成，不需要装 Anki）。
         </Empty>
       ) : (
         <div className="col" style={{ gap: 4 }}>

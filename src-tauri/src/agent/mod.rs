@@ -882,17 +882,21 @@ pub fn read_transcript(core: &AppCore, topic_slug: Option<&str>, chat_id: &str) 
     load_transcript(core, topic.as_ref(), chat_id)
 }
 
-/// 列出某个主题下已有的对话 id（按最近修改排序）。
-pub fn list_transcripts(core: &AppCore, topic_slug: Option<&str>) -> AppResult<Vec<String>> {
-    let topic = resolve_topic_opt(core, topic_slug);
-    let dir = match &topic {
+/// 某个主题（或工作区首页）的对话记录目录。
+pub fn chats_dir_for(core: &AppCore, topic_slug: Option<&str>) -> std::path::PathBuf {
+    match resolve_topic_opt(core, topic_slug) {
         Some(t) => t.chats_dir(),
         None => core
             .workspace()
             .root
             .join(crate::domain::topic::DIR_INTERNAL)
             .join("chats"),
-    };
+    }
+}
+
+/// 列出某个主题下已有的对话 id（按最近修改排序）。
+pub fn list_transcripts(core: &AppCore, topic_slug: Option<&str>) -> AppResult<Vec<String>> {
+    let dir = chats_dir_for(core, topic_slug);
     if !dir.is_dir() {
         return Ok(Vec::new());
     }

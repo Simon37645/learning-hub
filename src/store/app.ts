@@ -18,6 +18,7 @@ import type {
   AgendaBucket,
   Card,
   ChatMessage,
+  ChatOverviewItem,
   ConfigPatch,
   DailyBrief,
   Note,
@@ -95,6 +96,8 @@ interface AppStore {
 
   // --- 对话 ---
   chatId: string | null;
+  /** 每个主题的对话清单（侧栏把对话挂在对应主题下面）。键是主题 slug，首页对话用空串 */
+  chatIndex: Record<string, ChatOverviewItem[]>;
   messages: ChatMessage[];
   streaming: { turnId: string; text: string; thinking: string } | null;
   activities: ToolActivity[];
@@ -138,6 +141,8 @@ interface AppStore {
 
   newChat: () => Promise<void>;
   loadChat: (chatId: string) => Promise<void>;
+  /** 读某个主题的对话清单（不传就是当前主题）；侧栏树展开时按需调用 */
+  loadChats: (slug?: string | null) => Promise<void>;
   send: (text: string, attachments?: string[]) => Promise<void>;
   stop: () => Promise<void>;
   approve: (allow: boolean, always: boolean) => Promise<void>;
@@ -214,6 +219,7 @@ export const useApp = create<AppStore>((set, get) => ({
   agenda: [],
 
   chatId: null,
+  chatIndex: {},
   messages: [],
   streaming: null,
   activities: [],
@@ -300,6 +306,7 @@ export const useApp = create<AppStore>((set, get) => ({
       // 优先续上最近一次对话，没有就新开
       if (chats.length > 0) await get().loadChat(chats[0]);
       else await get().newChat();
+      void get().loadChats(detail.slug);
       void get().loadCards();
       void get().loadTasks();
     } catch (e) {
@@ -311,6 +318,7 @@ export const useApp = create<AppStore>((set, get) => ({
   leaveTopic() {
     set({ view: "home", topic: null, messages: [], activities: [], streaming: null });
     void api.viewerSetVisible(false);
+    void get().loadChats(null);
   },
 
   async createTopic(name, description, parent) {
@@ -380,6 +388,7 @@ export const useApp = create<AppStore>((set, get) => ({
   async newChat() {
     const chatId = await api.agentNewChat();
     set({ chatId, messages: [], activities: [], streaming: null, chatError: null, usage: null });
+    void get().loadChats();
   },
 
   async loadChat(chatId) {
@@ -390,6 +399,17 @@ export const useApp = create<AppStore>((set, get) => ({
     } catch (e) {
       set({ chatId, messages: [] });
       console.warn("读取对话失败", e);
+    }
+  },
+
+  /** 刷新侧栏的对话清单（换主题、开新对话、聊完一轮之后都要刷） */
+  async loadChats(slug) {
+    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+    try {
+      const items = await api.chatOverview(target);
+      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
+    } catch (e) {
+      console.warn("读取对话清单失败", e);
     }
   },
 
@@ -961,6 +981,8 @@ function handleAgentEvent(
       set({ streaming: null, iteration: null, approval: null });
       void get().refreshTopics();
       void get().refreshBrief();
+      // 侧栏的对话清单：标题取自第一句话，所以第一轮结束后要刷一次才会出现
+      void get().loadChats();
       break;
     case "failed":
       set({ streaming: null, iteration: null, approval: null, chatError: ev.message });

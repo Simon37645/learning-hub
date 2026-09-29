@@ -277,6 +277,44 @@ a:hover {
   padding: 0 10px 12px;
 }
 
+/* 侧栏里的对话行：挂在所属主题下面，和子主题同一级缩进 */
+.chat-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--text-sub);
+  font-size: 12.5px;
+}
+
+.chat-row:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.chat-row.active {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chat-row .chat-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-row .chat-time {
+  flex: none;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+}
+
 .topic-row {
   display: flex;
   align-items: center;

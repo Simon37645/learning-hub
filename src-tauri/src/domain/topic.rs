@@ -143,6 +143,9 @@ pub struct TopicStats {
     pub tasks_open: usize,
     pub tasks_done: usize,
     pub sessions: usize,
+    /// 对话条数（侧栏把对话挂在主题下面，需要知道有没有、有几条）
+    #[serde(default)]
+    pub chats: usize,
     /// 待复习的最近到期时间（用于排序提醒）
     pub next_due: Option<DateTime<Utc>>,
 }
@@ -245,6 +248,10 @@ impl Topic {
             .map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).count())
             .unwrap_or(0);
 
+        let chats = std::fs::read_dir(self.chats_dir())
+            .map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "jsonl")).count())
+            .unwrap_or(0);
+
         Ok(TopicStats {
             notes,
             materials,
@@ -253,6 +260,7 @@ impl Topic {
             tasks_open,
             tasks_done,
             sessions,
+            chats,
             next_due: due.iter().map(|c| c.srs.due).min(),
         })
     }

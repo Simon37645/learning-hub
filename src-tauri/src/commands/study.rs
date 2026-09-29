@@ -7,11 +7,44 @@ use crate::domain::task::{AgendaBucket, AgendaItem, PlanTask, TaskStatus};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::store;
-use chrono::{Datelike, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 // ============================================================ 卡片
+
+/// 四档评分各自会把下次复习推到多久之后（秒，相对现在）。
+///
+/// 复习界面把它印在按钮上（Anki 也这么做）：点之前就知道代价，
+/// 「吃力」和「太简单」的区别才看得出来。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardPreview {
+    pub again: i64,
+    pub hard: i64,
+    pub good: i64,
+    pub easy: i64,
+}
+
+impl CardPreview {
+    fn of(card: &Card, now: DateTime<Utc>) -> Self {
+        Self {
+            again: card.srs.preview_secs(Grade::Again, now),
+            hard: card.srs.preview_secs(Grade::Hard, now),
+            good: card.srs.preview_secs(Grade::Good, now),
+            easy: card.srs.preview_secs(Grade::Easy, now),
+        }
+    }
+}
+
+/// 卡片本体 + 界面要用的派生信息（flatten 之后前端拿到的还是普通 Card 加一个 preview）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardView {
+    #[serde(flatten)]
+    pub card: Card,
+    pub preview: CardPreview,
+}
 
 #[tauri::command]
 pub async fn card_list(
@@ -19,7 +52,7 @@ pub async fn card_list(
     slug: String,
     due_only: Option<bool>,
     query: Option<String>,
-) -> AppResult<Vec<Card>> {
+) -> AppResult<Vec<CardView>> {
     let topic = state.0.workspace().resolve(&slug)?;
     let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
     let now = Utc::now();
@@ -44,7 +77,13 @@ pub async fn card_list(
         }
     };
     cards.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.srs.due.cmp(&b.srs.due)));
-    Ok(cards)
+    Ok(cards
+        .into_iter()
+        .map(|c| CardView {
+            preview: CardPreview::of(&c, now),
+            card: c,
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Deserialize)]

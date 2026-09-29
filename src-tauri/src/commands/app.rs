@@ -368,7 +368,9 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
         messages: vec![ChatMessage::user("ping")],
         tools: Vec::new(),
         temperature: 0.0,
-        max_tokens: 32,
+        // 32 太小：推理模型会先把思考写进 reasoning_content，预算被吃光后
+        // 正文一个字都留不下，看着像「连上了但没内容」（DeepSeek 系就是这样）。
+        max_tokens: 256,
         reasoning: crate::config::ReasoningConfig::default(),
         timeout: Duration::from_secs(45),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -377,22 +379,48 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
     let started = Instant::now();
     let task = tokio::spawn(async move { provider.stream(req, tx).await });
     let mut text = String::new();
+    let mut thinking = String::new();
+    let mut finish: Option<String> = None;
     while let Some(ev) = rx.recv().await {
-        if let StreamEvent::Text(t) = ev {
-            text.push_str(&t);
+        match ev {
+            StreamEvent::Text(t) => text.push_str(&t),
+            StreamEvent::Thinking(t) => thinking.push_str(&t),
+            StreamEvent::Finish(f) => finish = Some(f),
+            _ => {}
         }
     }
     let latency = started.elapsed().as_millis() as u64;
     match task.await {
-        Ok(Ok(())) => Ok(ProfileTestResult {
-            ok: true,
-            message: if text.trim().is_empty() {
-                format!("连接成功（{}），但返回内容为空", profile.model)
+        Ok(Ok(())) => {
+            let text = text.trim();
+            // 空回复要能自己说清原因，否则用户只能看到「成功但没内容」这种废话
+            let message = if !text.is_empty() {
+                format!("连接成功：{}", crate::agent::provider::truncate(text, 60))
+            } else if !thinking.trim().is_empty() {
+                let cut = if finish.as_deref() == Some("length") {
+                    "；这次回答被 max_tokens 截断了，把「最大输出 tokens」调大些"
+                } else {
+                    ""
+                };
+                format!(
+                    "连接成功，但只返回了思考内容（{} 字），正文是空的{cut}。\
+                     这是推理模型的正常行为——它先想再答；如果对话里也一直只有思考，\
+                     检查模型名是否正确，或把「思考强度」调成关闭再试。",
+                    thinking.chars().count()
+                )
             } else {
-                format!("连接成功：{}", text.trim())
-            },
-            latency_ms: latency,
-        }),
+                format!(
+                    "连上了，但没有任何内容返回（finish_reason: {}）。多半是模型名写错了，\
+                     或这个接口不返回标准 OpenAI 流式格式。",
+                    finish.unwrap_or_else(|| "未知".into())
+                )
+            };
+            Ok(ProfileTestResult {
+                ok: true,
+                message,
+                latency_ms: latency,
+            })
+        }
         Ok(Err(e)) => Ok(ProfileTestResult { ok: false, message: e.to_string(), latency_ms: latency }),
         Err(e) => Ok(ProfileTestResult {
             ok: false,

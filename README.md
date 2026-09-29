@@ -80,6 +80,10 @@ notes, materials, cards due today, open tasks, sessions.
 Create one with **New topic**, search across every note with **Ctrl+K**, and drag files from Explorer
 straight into the window to import them into that topic's `materials/`.
 
+Every topic expands in the sidebar: **its sub-topics and its past conversations hang under it** (a
+parent's conversations under the parent, a chapter's under the chapter). Click one to jump back into
+that chat — no digging through a dropdown in the chat header.
+
 #### Only studying one chapter? Make it a sub-topic
 
 Often you do not want the whole course — just chapter 3. Pick **More → New sub-topic (study one chapter)**
@@ -183,10 +187,14 @@ points you missed. One button then sends every wrong answer back to the chat for
 
 - Three card kinds: **basic**, **reversed**, and **cloze** (`{{c1::...}}` markers, validated before they
   leave the app so you never get blank cards in Anki).
-- Scheduling is an SM-2 variant computed locally; the review queue is snapshotted, so grading a card
-  moves you forward instead of showing the same card again.
-- **AnkiConnect direct sync** pushes only cards that were never synced. If Anki is not running it tells
-  you which plugin to install. A plain TSV export is there too.
+- **Reviewing happens inside the app — Anki is not required.** Scheduling is a local SM-2 variant, the
+  review screen works from the keyboard (space to flip, 1–4 to grade, Esc to stop), and the four grade
+  buttons show the *actual* next interval computed from that card's state ("again · 10 min",
+  "good · 8 days").
+- The review queue is snapshotted, so grading a card moves you forward instead of showing the same card
+  again.
+- External Anki is **optional**: the "Anki" menu on the cards pane can sync to AnkiConnect (Anki desktop
+  + plugin) or export TSV for manual import. Ignoring it costs you nothing.
 
 <img src="docs/images/cards.png" alt="Card review" width="820" />
 

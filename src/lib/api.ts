@@ -7,6 +7,7 @@ import type {
   Bootstrap,
   Card,
   ChatMessage,
+  ChatOverviewItem,
   ConfigPatch,
   DailyBrief,
   Note,
@@ -128,6 +129,8 @@ export const api = {
     invoke<ChatMessage[]>("agent_transcript", { chatId, topicSlug: topicSlug ?? null }),
   agentChats: (topicSlug?: string | null) =>
     invoke<string[]>("agent_chats", { topicSlug: topicSlug ?? null }),
+  chatOverview: (topicSlug?: string | null) =>
+    invoke<ChatOverviewItem[]>("chat_overview", { topicSlug: topicSlug ?? null }),
   agentNewChat: () => invoke<string>("agent_new_chat"),
 
   // ---------------- 内置浏览器 ----------------

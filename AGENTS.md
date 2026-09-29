@@ -106,6 +106,16 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   表现是「点了发送但什么都没发生」——`test:e2e` 已经改成 `document.querySelector('.send-btn')`。
 - **父子主题的坑**：子主题是工作区根下的**平级目录**，不是嵌套目录（见 ARCHITECTURE「主题与章节」）。
   动 `list()` / `slug` 之前先想清楚：所有按 slug 的路径假设都建立在「一层」之上。
+- **InkNote 的样式表是全局的**（`src/inknote/editor.css` 在 `main.tsx` 里引入）：
+  里面那些通用类名会直接盖住应用自己的同名样式，CSS 只看优先级和顺序。
+  真踩过：右下角的操作提示（`.toast`）被它改成了 `fixed + left:50%` 的居中横幅，
+  而且 `bottom` 用了未定义的 `--statusbar-height` 导致 calc 失效，提示有一半跑到窗口外面。
+  往组件里加通用类名前先跑 `node scripts/style-collisions.mjs`（退出码非 0 就是撞了）。
+- **复习是内置的**：卡片调度（SM-2）、复习界面都在本应用里，**不依赖外部 Anki**。
+  AnkiConnect 只是可选的同步通道，导出 TSV 也只是可选的备份方式——
+  改卡片相关 UI 时不要再把「装 Anki」当成使用前提。
+  复习按钮上的「10 分钟 / 4 天」来自后端 `preview_secs`（同一个 `apply` 跑在副本上），
+  别在前端另写一套间隔推算。
 
 ## 当前状态（v1）
 

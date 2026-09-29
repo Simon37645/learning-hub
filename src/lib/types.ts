@@ -80,6 +80,8 @@ export interface TopicStats {
   tasksOpen: number;
   tasksDone: number;
   sessions: number;
+  /** 对话条数（侧栏把对话挂在主题下面，用它决定有没有折叠箭头） */
+  chats?: number;
   nextDue?: string | null;
 }
 
@@ -162,6 +164,15 @@ export interface TopicMatch {
   score: number;
 }
 
+/** 侧栏「对话」列表里的一项 */
+export interface ChatOverviewItem {
+  id: string;
+  /** 第一条用户消息的前 40 字；空串表示还没聊过 */
+  title: string;
+  messages: number;
+  updatedAt: string;
+}
+
 // ---------------------------------------------------------------- 卡片 / 任务
 
 export interface SrsState {
@@ -194,6 +205,8 @@ export interface Card {
   createdAt: string;
   srs: SrsState;
   ankiNoteId?: number | null;
+  /** 四档评分各自会把下次复习推到多久之后（秒）。后端用同一套调度算法算好，界面直接印在按钮上 */
+  preview?: { again: number; hard: number; good: number; easy: number };
 }
 
 export interface AnkiStatus {

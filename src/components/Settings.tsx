@@ -244,12 +244,16 @@ export function Settings() {
           </div>
         </section>
 
-        {/* ---------------- Anki ---------------- */}
+        {/* ---------------- Anki（可选，默认用内置复习） ---------------- */}
         <section className="col">
           <h2>
-            Anki <span className="sub">卡片可以直接同步进 Anki 牌组</span>
+            Anki 同步 <span className="sub">可选 · 复习默认在应用内完成</span>
           </h2>
           <div className="card-box">
+            <div className="sub" style={{ fontSize: 12.5, marginBottom: 10 }}>
+              卡片、间隔重复（SM-2）和复习界面都在本应用里，**不需要安装 Anki**。
+              只有当你还想在 Anki（比如手机端）上复习同一批卡片时，才需要在这里填 AnkiConnect。
+            </div>
             <div className="grid-2">
               <Field label="AnkiConnect 地址" hint="Anki 桌面版 + AnkiConnect 插件（插件代码 2055492159）">
                 <input
@@ -288,12 +292,14 @@ export function Settings() {
                 {ankiTesting ? <Spinner /> : <Icon name="play" size={13} />} 测试连接
               </button>
               {ankiState ? (
-                <span style={{ fontSize: 12, color: ankiState.reachable ? "var(--ok)" : "var(--danger)" }}>
-                  {ankiState.reachable ? `已连上，共 ${ankiState.decks.length} 个牌组` : ankiState.message}
+                <span style={{ fontSize: 12, color: ankiState.reachable ? "var(--ok)" : "var(--text-sub)" }}>
+                  {ankiState.reachable
+                    ? `已连上，共 ${ankiState.decks.length} 个牌组`
+                    : `没连上（${ankiState.message}）——不影响使用，卡片照常在本应用里复习`}
                 </span>
               ) : (
                 <span className="muted" style={{ fontSize: 11.5 }}>
-                  同步不依赖 Anki 也能用：卡片页还提供「导出 TSV」，手动导入即可
+                  不填也能用；卡片页的「Anki」菜单里还有「导出 TSV」，可以手动导入
                 </span>
               )}
             </div>

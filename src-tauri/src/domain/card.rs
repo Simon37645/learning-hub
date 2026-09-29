@@ -118,6 +118,16 @@ impl SrsState {
         self.due <= now
     }
 
+    /// 预览「打这一档，下次什么时候再见」——返回距现在的秒数，不改状态。
+    ///
+    /// 直接把 `apply` 跑在副本上：以后调算法，界面上的按钮文案**自动**跟着变，
+    /// 不会出现「按钮写着 10 分钟、实际排到明天」这种两套逻辑打架的情况。
+    pub fn preview_secs(&self, grade: Grade, now: DateTime<Utc>) -> i64 {
+        let mut probe = self.clone();
+        probe.apply(grade, now);
+        (probe.due - now).num_seconds().max(0)
+    }
+
     /// 「新卡」= 从没复习过。
     pub fn is_new(&self) -> bool {
         self.reviews == 0
@@ -299,5 +309,34 @@ mod tests {
         assert!(s.ease < before);
         assert_eq!(s.repetitions, 0);
         assert!(s.due <= t0 + Duration::minutes(11));
+    }
+
+    /// 复习按钮上的「10 分钟 / 1 天 / 4 天」来自 preview_secs，
+    /// 它必须和真正执行 apply 的结果一致，而且不能改状态。
+    #[test]
+    fn preview_matches_apply() {
+        let now = Utc::now();
+        let fresh = SrsState::default();
+        assert_eq!(fresh.preview_secs(Grade::Again, now), 600);
+        assert_eq!(fresh.preview_secs(Grade::Hard, now), 86_400);
+        assert_eq!(fresh.preview_secs(Grade::Good, now), 86_400);
+        assert_eq!(fresh.preview_secs(Grade::Easy, now), 4 * 86_400);
+
+        // 预览是只读的
+        let _ = fresh.preview_secs(Grade::Easy, now);
+        assert_eq!(fresh.interval_days, 0.0);
+        assert_eq!(fresh.repetitions, 0);
+        assert_eq!(fresh.reviews, 0);
+
+        // 与真实执行逐档一致
+        for grade in [Grade::Again, Grade::Hard, Grade::Good, Grade::Easy] {
+            let mut real = fresh.clone();
+            real.apply(grade, now);
+            assert_eq!(
+                fresh.preview_secs(grade, now),
+                (real.due - now).num_seconds(),
+                "{grade:?} 的预览与执行结果不一致"
+            );
+        }
     }
 }

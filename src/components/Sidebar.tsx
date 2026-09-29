@@ -46,6 +46,11 @@ function loadCollapsed(): string[] {
 export function Sidebar() {
   const topics = useApp((s) => s.topics);
   const activeSlug = useApp((s) => s.topic?.slug ?? null);
+  const topic = useApp((s) => s.topic);
+  const activeChatId = useApp((s) => s.chatId);
+  const chatIndex = useApp((s) => s.chatIndex);
+  const loadChat = useApp((s) => s.loadChat);
+  const loadChats = useApp((s) => s.loadChats);
   const view = useApp((s) => s.view);
   const config = useApp((s) => s.config);
   const openTopic = useApp((s) => s.openTopic);
@@ -89,6 +94,17 @@ export function Sidebar() {
 
   const totalDue = sorted.reduce((n, t) => n + t.stats.cardsDue, 0);
 
+  // 展开了、确实有对话、还没拉过标题的主题：按需读一次。
+  // 标题要读 jsonl 才知道，所以只在真的展开时才读，别一上来把所有主题都扫一遍。
+  useEffect(() => {
+    for (const t of topics) {
+      if (collapsed.includes(t.meta.id)) continue;
+      if ((t.stats.chats ?? 0) === 0) continue;
+      if (chatIndex[t.slug]) continue;
+      void loadChats(t.slug);
+    }
+  }, [topics, collapsed, chatIndex, loadChats]);
+
   // 角标：当前生效的技能数 / 已连接的 MCP 服务器数
   useEffect(() => {
     const load = async () => {
@@ -130,8 +146,15 @@ export function Sidebar() {
   /** 递归渲染主题树；子主题缩进一级，父主题可折叠 */
   const renderNode = (node: TopicTreeNode, depth: number) => {
     const t = node.topic;
-    const hasChildren = node.children.length > 0;
     const isCollapsed = collapsed.includes(t.meta.id);
+    const chats = chatIndex[t.slug] ?? [];
+    const onDisk = (t.stats.chats ?? 0) > 0;
+    // 刚点「新对话」还没发第一条消息时，磁盘上还没有这个文件——先占一行
+    const pendingNew = topic?.slug === t.slug && !!activeChatId && !chats.some((c) => c.id === activeChatId);
+    const expandable = node.children.length > 0 || onDisk || pendingNew;
+    const chatCount = chats.length || t.stats.chats || 0;
+    const open = !isCollapsed;
+
     return (
       <Fragment key={t.slug}>
         <TopicRow
@@ -143,16 +166,38 @@ export function Sidebar() {
           cards={t.stats.cards}
           notes={t.stats.notes}
           tasks={t.stats.tasksOpen}
-          active={t.slug === activeSlug}
+          active={t.slug === activeSlug && !pendingNew}
           depth={depth}
           childCount={node.children.length}
+          chatCount={chatCount}
+          expandable={expandable}
           collapsed={isCollapsed}
           parentSlug={t.meta.parent ?? null}
           onToggle={() => toggleCollapse(t.meta.id)}
           onNewSubtopic={() => openNew({ slug: t.slug, name: t.meta.name })}
           onClick={() => openTopic(t.slug)}
         />
-        {hasChildren && !isCollapsed && node.children.map((c) => renderNode(c, depth + 1))}
+        {open && (
+          <>
+            {node.children.map((c) => renderNode(c, depth + 1))}
+            {chats.map((c) => (
+              <ChatRow
+                key={c.id}
+                title={c.title}
+                time={c.updatedAt}
+                depth={depth + 1}
+                active={c.id === activeChatId}
+                onClick={() => {
+                  void (async () => {
+                    if (topic?.slug !== t.slug) await openTopic(t.slug);
+                    await loadChat(c.id);
+                  })();
+                }}
+              />
+            ))}
+            {pendingNew && <ChatRow title="新对话" time={null} depth={depth + 1} active onClick={() => {}} />}
+          </>
+        )}
       </Fragment>
     );
   };
@@ -331,6 +376,39 @@ export function Sidebar() {
   );
 }
 
+/**
+ * 一条对话（挂在所属主题下面，和子主题同一级缩进）。
+ *
+ * 为什么放侧栏而不是对话区顶部：对话区顶部的下拉一打开就挡住内容，
+ * 而且换主题时看不见「另一个主题里我聊到哪了」。挂进树里，归属一目了然。
+ */
+function ChatRow({
+  title,
+  time,
+  depth,
+  active,
+  onClick,
+}: {
+  title: string;
+  time: string | null;
+  depth: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div
+      className={"chat-row" + (active ? " active" : "")}
+      style={{ paddingLeft: 9 + depth * 14 }}
+      title={title}
+      onClick={onClick}
+    >
+      <Icon name="chat" size={13} />
+      <span className="chat-title">{title || "新对话"}</span>
+      {time && <span className="chat-time">{relTime(time)}</span>}
+    </div>
+  );
+}
+
 /** 主题模式循环切换：跟随系统 → 明亮 → 深色 */
 function ThemeButton() {
   const theme = useApp((s) => s.config?.appearance?.theme ?? "system");
@@ -364,6 +442,8 @@ function TopicRow({
   active,
   depth,
   childCount,
+  chatCount,
+  expandable,
   collapsed,
   parentSlug,
   onToggle,
@@ -382,6 +462,10 @@ function TopicRow({
   /** 缩进层级：0 = 顶层主题，1+ = 章/节 */
   depth: number;
   childCount: number;
+  /** 这个主题下有几条对话（展开后列在它下面） */
+  chatCount: number;
+  /** 有子主题或对话时才有折叠箭头 */
+  expandable: boolean;
   collapsed: boolean;
   parentSlug: string | null;
   onToggle: () => void;
@@ -403,11 +487,11 @@ function TopicRow({
         onClick={onClick}
         title={name}
       >
-        {/* 折叠箭头：只有带子主题的行才占位，其它行留出等宽空白保证对齐 */}
-        {childCount > 0 ? (
+        {/* 折叠箭头：展开后能看到子主题和对话 */}
+        {expandable ? (
           <button
             className="icon-btn topic-chev"
-            title={collapsed ? `展开 ${childCount} 个子主题` : "收起子主题"}
+            title={collapsed ? `展开（${childCount} 个子主题 / ${chatCount} 条对话）` : "收起"}
             onClick={(e) => {
               e.stopPropagation();
               onToggle();
@@ -456,6 +540,18 @@ function TopicRow({
                   {STAGE_LABEL[stage]}阶段 · {notes} 笔记 / {cards} 卡片
                 </MenuLabel>
                 <MenuSep />
+                <MenuItem
+                  onClick={() => {
+                    void (async () => {
+                      const store = useApp.getState();
+                      if (store.topic?.slug !== slug) await store.openTopic(slug);
+                      await useApp.getState().newChat();
+                    })();
+                    close();
+                  }}
+                >
+                  <Icon name="chat" size={13} /> 在这里开新对话
+                </MenuItem>
                 <MenuItem
                   onClick={() => {
                     onNewSubtopic();

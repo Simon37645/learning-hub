@@ -65,6 +65,7 @@
 | `hub://agent` | `AgentEvent`（tagged by `kind`） | 对话进展：`turn_started` `delta` `message` `iteration` `tool_approval` `tool_started` `tool_finished` `usage` `finished` `failed` |
 | `hub://viewer` | `ViewerEvent` | 内置浏览器：`sync` `snapshot_request` `goto` `reload` `updated` |
 | `hub://topics` | `TopicsEvent` | 主题集合变化：`created` `updated` `deleted` `refresh` |
+| `hub://memory` | `MemoryEvent` | 长期记忆变化（agent 记下/删掉，或用户改过）：前端把 `memoryTick` +1，面板与角标据此重拉 |
 | `hub://toast` | `{level, message}` | 轻提示 |
 
 **命名注意**：带 tag 的枚举，serde 的 `rename_all` 只作用于变体名，
@@ -103,6 +104,7 @@ agent viewer_* 工具 ───────────────────�
 ├── README.md                 工作区说明
 ├── .hub/                     应用内部状态
 │   ├── chats/<id>.jsonl      对话记录（一行一条 ChatMessage）
+│   ├── memory/memories.jsonl 长期记忆（全局：跨主题都成立）
 │   └── trash/                所有删除操作的回收站
 └── <主题>/
     ├── topic.json            TopicMeta
@@ -112,7 +114,10 @@ agent viewer_* 工具 ───────────────────�
     ├── cards/cards.jsonl     Card（含 SRS 状态内联）
     ├── plan/tasks.jsonl      PlanTask
     ├── sessions/<id>.json    StudySession
-    └── .hub/chats/<id>.jsonl 该主题的对话
+    └── .hub/
+        ├── chats/<id>.jsonl       该主题的对话（一行一条 ChatMessage）
+        ├── chats/<id>.meta.json   该对话的名字/置顶/归档/分叉血缘（可选，见第 7 节）
+        └── memory/memories.jsonl  该主题的长期记忆
 ```
 
 - 写文件一律走 `store::atomic_write`（临时文件 + rename），不会出现半截文件。
@@ -143,7 +148,99 @@ agent viewer_* 工具 ───────────────────�
 引用格式：继承来的文件在提示词与 KB 里都写成**工作区相对路径**（`线性代数/materials/lecture1.pdf`），
 用户点这个引用时前端按第一段认出主题并切过去打开——所以父主题的文件不需要复制一份。
 
-## 6. 扩展点
+## 6. 长期记忆
+
+目的：让 agent 记住**用户是什么样的人**和**以后要注意的地方**（这是他第三次在同一个点上出错、
+他不喜欢一上来就给公式、他还没学过向量），而不是每开一条新对话就重新认识一遍。
+
+### 为什么自己做，而不是接一套记忆服务
+
+| 现成方案 | 为什么没直接用 |
+| --- | --- |
+| mem0 / Letta / Zep 等记忆层 | 它们的大头是「向量检索挑几条记忆塞进上下文」。个人学习场景的记忆量在几十条量级，**全量注入反而更准**（不会因为相似度没排上而漏掉关键的一条），也少一个向量库和一套 Key 要维护 |
+| 各家 agent 的 `CLAUDE.md` / `AGENTS.md` 约定 | 那是**用户手写**的项目说明，agent 自己不会往里写；这里要的是 agent 能主动记 |
+
+所以规则很简单：**磁盘上的 JSONL 就是记忆本身**，能直接用记事本打开、改、删、进版本库。
+
+### 分层与继承
+
+```
+<工作区>/.hub/memory/memories.jsonl                 全局：称呼、作息、通用偏好
+<工作区>/<主题>/.hub/memory/memories.jsonl          本主题：这一科里的易错点、说好的讲法
+```
+
+- **作用域由文件位置决定**，不写进记录里——同一份文件搬到别处语义就变了，记两个地方迟早不一致。
+- 主题级的记忆沿父子链继承：学「某一章」时，整门课里记下的「他总把 A 和 B 搞混」照样生效。
+  注入顺序是**本主题 → 父主题 → 全局**，同一条内容（按去标点后的指纹判重）只注入一次。
+- 六类记忆（`fact` 情况 / `preference` 偏好 / `goal` 目标 / `pitfall` 注意 / `style` 讲法 / `gap` 缺口）
+  在提示词里**按类分组**输出。分类不是装饰：模型据此决定这条怎么用。
+- 每条带**日期**，模型据此判断还成不成立（已经考完的考试不该再当目标）。
+
+### 写入与注入
+
+```
+agent 对话中判断「这事以后还用得上」
+  → memory_write（默认当前主题，跨主题才写 global）
+  → 内容指纹去重：同义内容更新原条，而不是新增
+  → 落盘 + hub://memory 事件（前端面板/角标刷新）
+
+每轮对话开始
+  → AppCore::memory_digest（本主题 + 父主题 + 全局，按优先级去重截断）
+  → 塞进系统提示词「长期记忆」段（在「当前主题」之前：讲什么之前先知道该对谁讲）
+  → 记录 last_used / use_count（面板上显示「用过几次」）
+```
+
+几个刻意的取舍：
+
+- **注入走系统提示词，不走检索工具**：不需要模型先想到「我该去查记忆」——那一步经常忘。
+  条数（40）与字符数（1600）都有硬上限，不会把上下文预算吃光。
+- **写入不弹审批**。记忆是可撤销的轻写入（面板里一键删），每条都要确认会把用户打断到直接关掉功能；
+  真正危险的动作是删文件，那才走审批。
+- **不做「自动抽取」的后台模型调用**：那会凭空多一次模型请求、多一份 API 费用，
+  而且抽出来的东西用户看不见。现在每条记忆都来自对话里的显式动作，都能在面板里对账。
+- **记账与落盘分开**：`last_used` 是每次注入都要改的，逐条写盘会让一轮对话多出几十次文件写；
+  所以只在内存里改，切换主题（`topic_open`）或关窗口时 `memory_flush` 一起写。
+- **单个作用域 60 条上限**：到顶时报错并让用户去面板清理，而不是悄悄丢掉最旧的一条。
+- **总开关只影响「注入 + 工具暴露」**，不影响已有记忆的查看与编辑——
+  用户临时不想要它干扰，不该以看不到自己记了什么为代价。
+
+系统提示词预览（`prompt_preview`）走的是 `memory_peek`：同样组装那一段但**不**更新计数，
+免得连点几次预览把「用过几次」刷满。
+
+## 7. 会话元数据（重命名 / 置顶 / 分叉 / 归档）
+
+侧栏里每条对话的「⋯」菜单提供四件事，都记在**侧车文件**里：
+
+| 操作 | 语义 |
+| --- | --- |
+| 重命名 | 空标题＝恢复「第一句话」的自动标题（侧车文件随之删掉） |
+| 置顶 | 排在该主题对话列表最前面；与归档互斥（置顶会自动取消归档） |
+| 分叉 | 在**最后一个完整回合**处截断复制成新对话，原对话不动 |
+| 归档 | 收进侧栏的「已归档」分组，不占日常视线；随时可取消 |
+
+为什么放 `chats/<id>.meta.json` 而不是插进 jsonl：
+
+- jsonl 的每一行都是 `ChatMessage`，模型读的、前端渲染的、将来导出的都是它。
+  插一行「特殊行」意味着**每一处**读对话的地方都要先学会跳过它——漏一处就是一条假消息。
+- 侧车文件与对话**同名同目录**（`<id>.jsonl` + `<id>.meta.json`），搬主题、进回收站都一起走
+  （`chat_move` 会把两个文件一起 rename）。
+- 元数据**可缺省**：没改过名就永远不会有这个文件，老对话读出来就是默认值
+  （`Chats::load` 解析失败也只打日志、退回默认，绝不让一条坏元数据把对话锁死）。
+
+### 几个刻意的取舍
+
+- **排序在 Rust 里算一次**（置顶 → 最近使用 → 归档沉底），前端直接用后端返回的顺序渲染。
+  两边各排一次，迟早会出现「界面上看是置顶了、点进去却排在后面」。
+- **条数上限（60）放在排序之后**：否则置顶的那条可能因为文件太旧被截掉。
+- **分叉点定在最后一条 assistant 消息之后**，而不是字面上的最后一条：
+  末尾若挂着「用户刚提问、模型还没答」，复制过去会让新对话一开头就欠一个回答。
+- **归档只是元数据**，文件不动——归档的东西必须还能被检索到（`agent_transcripts`、
+  全文检索都照样看得见），语义是「先收起来」而不是「藏起来」。
+- **删除走回收站**，与主题、笔记一致：`chat_delete` 把 jsonl 移进 `.hub/trash/`，
+  顺带删掉侧车（对话能从回收站还原，名字再起一个即可）。
+- 菜单里**没有「删除」以外的破坏性动作**；归档是默认推荐的那条路（确认框里也这么写）。
+
+## 8. 扩展点
 
 ### 加一个工具
 
@@ -183,7 +280,7 @@ impl Tool for MyTool {
 `lib.rs` 的 `generate_handler!` 注册 → `src/lib/api.ts` 加类型化封装。
 `domain` 不依赖 Tauri，所以可以脱离应用直接 `cargo test`。
 
-## 7. 安全与隐私
+## 9. 安全与隐私
 
 - **密钥不出后端**：`PublicConfig` 只给 `hasApiKey` 与 `sk-12…cd` 形式的提示；前端拿不到明文。
 - **文件访问有边界**：agent 与查看器都只能碰当前主题目录内的路径。
@@ -193,7 +290,7 @@ impl Tool for MyTool {
 - **CSP** 在 `tauri.conf.json` 里收敛：脚本只允许 `self`，iframe 允许 http(s)，字体只允许 `self`/`data:`。
 - 没有任何遥测、账号、云同步；所有数据只在本机。
 
-## 8. 已知取舍
+## 10. 已知取舍
 
 | 决定 | 原因 | 代价 |
 | --- | --- | --- |
@@ -203,7 +300,7 @@ impl Tool for MyTool {
 | 不发工具结果事件 | 减少事件噪声 | 前端要同时处理「实时」与「历史」两条渲染路径 |
 | 删除走回收站 | 学习资料误删代价高 | 需要用户自己清理 `.hub/trash/` |
 
-## 9. 第二轮新增的模块
+## 11. 第二轮与第三轮新增的模块
 
 | 模块 | 位置 | 说明 |
 | --- | --- | --- |
@@ -214,6 +311,8 @@ impl Tool for MyTool {
 | MCP | `mcp.rs` + `agent/tools/mcp.rs` | 手写的 stdio JSON-RPC 客户端（换行分帧）。握手 → `tools/list` → 包装成 `mcp__<服务器>__<工具>` |
 | 沙箱 | `state.rs` 的 `is_inside_workspace` / `needs_escalation` / `approve_root` | 越权时发 `sandbox_request` 事件等用户点头；批准粒度是**目录**并写进配置 |
 | 内置编辑器 | `src/inknote/**` | 移植自 InkNote 的 CodeMirror 6 编辑器。宿主是 `src/components/NoteEditor.tsx`，通过 `setEditorDocumentContext` 把「当前主题」注入适配层 `inknote/lib/tauri.ts` |
+| 长期记忆 | `domain/memory.rs` + `commands/memory.rs` + `agent/tools/memory.rs` + `components/Memory.tsx` | 见第 6 节。JSONL 存储、两级作用域、按分类注入提示词；工具 `memory_write` / `memory_list` / `memory_forget` |
+| 会话元数据 | `agent/chats.rs` + `commands/agent.rs` 的 `chat_*` | 见第 7 节。侧车文件记名字/置顶/归档/分叉血缘；侧栏「⋯」菜单：`chat_rename` / `chat_pin` / `chat_fork` / `chat_archive` / `chat_delete` |
 
 ### 几个关键取舍
 
@@ -224,6 +323,11 @@ impl Tool for MyTool {
 - **主观题判分复用 `agent::complete_once`**：不起对话循环、不带工具，只做一次结构化输出，
   并要求返回 JSON（`extract_json` 会容忍 ``` 围栏与前后解释）。
 - **沙箱只管文件**：联网由 `agent.allow_web` 单独控制；两者互不影响。
+- **记忆全量注入而不做检索**：个人规模（几十条）下，全量注入比向量检索更不容易漏，
+  也少一个向量库要维护。上限（40 条 / 1600 字）保证它不会反噬上下文预算。
+- **会话元数据放侧车文件**（`<id>.meta.json`），不插进 `chats/<id>.jsonl`：
+  jsonl 每行都必须是 `ChatMessage`，插特殊行会让每一处读对话的地方都要学会跳过它。
+  代价是「搬对话」要记得搬两个文件（`chat_move` 已经这么做了）。
 
 ### 移植 InkNote 时的改造点
 

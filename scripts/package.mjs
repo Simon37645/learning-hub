@@ -23,10 +23,36 @@ if (!existsSync(bundleDir)) {
   process.exit(1);
 }
 
-const installer = readdirSync(bundleDir).find((f) => f.endsWith("-setup.exe"));
+// 认准「本版本」的产物。
+//
+// 踩过的坑：以前这里是 `readdirSync(...).find(f => f.endsWith("-setup.exe"))`，
+// 取的是**字典序第一个**。目录里上一版的产物还在时（例如 学习中枢_0.1.0_x64-setup.exe
+// 排在 0.2.0 前面），它会被选中——于是 release/ 里那个 LearningHub-0.2.0-x64-setup.exe
+// 装的其实是上一个版本，而且大小/哈希跟刚构建的也对不上。
+// 现在优先按版本号精确匹配，匹配不到再退回到「最新的那个」。
+const candidates = readdirSync(bundleDir).filter((f) => f.endsWith("-setup.exe"));
+const installer = candidates.find((f) => f.includes(`_${version}_`)) ?? newest(candidates, bundleDir);
 if (!installer) {
   console.error(`打包产物目录里没有 *-setup.exe：${bundleDir}`);
   process.exit(1);
+}
+if (candidates.length > 1) {
+  const stale = candidates.filter((f) => f !== installer);
+  console.log(`目录里有 ${candidates.length} 个安装包，选用 ${installer}`);
+  if (stale.length) console.log(`（其余的属于旧版本，可以删掉：${stale.join("、")}）`);
+}
+
+function newest(names, dir) {
+  let best = null;
+  let bestTime = -1;
+  for (const n of names) {
+    const t = statSync(join(dir, n)).mtimeMs;
+    if (t > bestTime) {
+      bestTime = t;
+      best = n;
+    }
+  }
+  return best;
 }
 
 const target = `LearningHub-${version}-x64-setup.exe`;

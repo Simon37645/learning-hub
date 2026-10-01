@@ -395,6 +395,7 @@ body.dragging-chat {
   cursor: pointer;
   color: var(--text-sub);
   font-size: 12.5px;
+  position: relative;
 }
 
 .chat-row:hover {
@@ -422,6 +423,64 @@ body.dragging-chat {
   font-family: var(--font-mono);
   color: var(--text-faint);
 }
+
+/* 悬停时「⋯」顶掉时间戳：同一块地方，不额外占宽度 */
+.chat-row .chat-actions {
+  display: none;
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: inherit;
+  padding-left: 6px;
+  border-radius: var(--radius-sm);
+}
+
+.chat-row:hover .chat-actions,
+.chat-row:focus-within .chat-actions {
+  display: flex;
+}
+
+.chat-row:hover .chat-time {
+  visibility: hidden;
+}
+
+/* 置顶标记：小小的目标图标，颜色用强调色 */
+.chat-row .chat-pin {
+  flex: none;
+  color: var(--accent);
+}
+
+/* 行内改名：直接长在行里，回车/失焦保存，Esc 放弃 */
+.chat-row .chat-rename {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+/* 「已归档」分组：淡一点，像收进抽屉的一叠 */
+.chat-archived {
+  margin: 2px 0 6px;
+  padding-left: 6px;
+  border-left: 1px dashed var(--border-strong);
+  margin-left: 20px;
+}
+
+.chat-archived-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+} 
 
 .topic-row {
   display: flex;
@@ -2715,4 +2774,10 @@ pre[data-mermaid="failed"] {
   padding: 1px 5px;
   border-radius: 999px;
   background: var(--bg-hover);
+}
+
+/* 记忆面板里的一条：比通用 card-box 紧凑（一屏要放得下十几条） */
+.mem-row {
+  padding: 10px 12px;
+  gap: 5px;
 }

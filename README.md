@@ -30,15 +30,17 @@ Markdown, and quizzes you the way a medical school exam does.
 - [Feature tour](#feature-tour)
   - [1. Topics are folders](#1-topics-are-folders)
   - [2. Chat that actually does things](#2-chat-that-actually-does-things)
-  - [3. Built-in browser the agent can drive](#3-built-in-browser-the-agent-can-drive)
-  - [4. Teach mode: plan first, then one step at a time](#4-teach-mode-plan-first-then-one-step-at-a-time)
-  - [5. Knowledge base from your own lecture notes](#5-knowledge-base-from-your-own-lecture-notes)
-  - [6. Quizzes in real exam formats](#6-quizzes-in-real-exam-formats)
-  - [7. Flashcards, spaced repetition, Anki sync](#7-flashcards-spaced-repetition-anki-sync)
-  - [8. Mind maps and diagrams](#8-mind-maps-and-diagrams)
-  - [9. WYSIWYG Markdown editor](#9-wysiwyg-markdown-editor)
-  - [10. Skills and MCP](#10-skills-and-mcp)
-  - [11. Sandbox, permissions, schedule](#11-sandbox-permissions-schedule)
+  - [3. Organising the chats themselves](#3-organising-the-chats-themselves)
+  - [4. Built-in browser the agent can drive](#4-built-in-browser-the-agent-can-drive)
+  - [5. Teach mode: plan first, then one step at a time](#5-teach-mode-plan-first-then-one-step-at-a-time)
+  - [6. Knowledge base from your own lecture notes](#6-knowledge-base-from-your-own-lecture-notes)
+  - [7. Quizzes in real exam formats](#7-quizzes-in-real-exam-formats)
+  - [8. Flashcards, spaced repetition, Anki sync](#8-flashcards-spaced-repetition-anki-sync)
+  - [9. Mind maps and diagrams](#9-mind-maps-and-diagrams)
+  - [10. WYSIWYG Markdown editor](#10-wysiwyg-markdown-editor)
+  - [11. Skills and MCP](#11-skills-and-mcp)
+  - [12. Long-term memory](#12-long-term-memory)
+  - [13. Sandbox, permissions, schedule](#13-sandbox-permissions-schedule)
 - [Install](#install)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
@@ -60,7 +62,7 @@ Three decisions shape everything:
 | Decision | Why |
 | --- | --- |
 | **A topic is a directory** | Notes are `.md`, cards are `.jsonl`, materials stay as the original PDFs. Open the folder in VS Code, sync it however you like, and delete the app without losing work. |
-| **The agent is a study partner, not a chatbot** | It writes notes, makes cards, schedules review, and is instructed to explain one small step and then ask you a question — instead of dumping ten bullet points. |
+| **The agent is a study partner, not a chatbot** | It writes notes, makes cards, schedules review, and is instructed to explain one small step and then ask you a question — instead of dumping ten bullet points. It also keeps **long-term memory about you**: your level, how you like to be taught, the points you keep getting wrong. All of it in a `.jsonl` you can read and edit. |
 | **Everything is citeable** | When it reads page 12 of your lecture PDF, it says so, and the citation is one click away in the built-in viewer. |
 
 Rust backend (no Electron), Tauri 2 shell, React 19 front end. Fully offline except for the model API
@@ -124,7 +126,23 @@ access, quizzes, the knowledge base, lesson plans, mind maps, skills and MCP.
 The small pills at the end of that paragraph are citations. Click one and the built-in browser opens
 the PDF at that page.
 
-### 3. Built-in browser the agent can drive
+### 3. Organising the chats themselves
+
+A topic's chats are listed under it in the sidebar, and hovering a row reveals a `⋯` menu:
+
+- **Rename** — inline; clear the name to fall back to the auto title (the first thing you asked).
+- **Pin** — keeps a chat at the top of its topic. Pinned chats are never pushed out by the list cap.
+- **Fork** — copies the conversation *up to its last complete exchange* into a new chat, leaving the
+  original untouched. This is how you say "explain it differently from here" without polluting the
+  thread that finally made sense — and the fork remembers where it came from.
+- **Archive** — files the chat under a muted *Archived* group inside its topic. It stays searchable and
+  the agent still sees it; it just stops taking up room. Un-archive puts it back.
+
+Deleting moves the transcript to `.hub/trash/` like everything else. All of this lives in a tiny
+sidecar file next to the transcript (`<id>.meta.json`) — your `chats/<id>.jsonl` stays exactly
+"one message per line", so nothing that reads conversations has to learn a special format.
+
+### 4. Built-in browser the agent can drive
 
 PDF, Markdown, web pages, images and code — tabbed, in a side panel.
 
@@ -136,7 +154,7 @@ PDF, Markdown, web pages, images and code — tabbed, in a side panel.
 
 <img src="docs/images/viewer.png" alt="PDF open in the built-in browser" width="820" />
 
-### 4. Teach mode: plan first, then one step at a time
+### 5. Teach mode: plan first, then one step at a time
 
 A **collapsible progress card** sits at the top-right of the conversation (e.g. `3/6 · step 4 …`): every step of
  the plan, struck through when covered, the current one highlighted, with its “how do I check you got it”
@@ -155,7 +173,7 @@ topic, it was theorem 3.2"* — by reading the notes of your other topics.
 
 <img src="docs/images/lesson.png" alt="Lesson plan with per-step progress" width="820" />
 
-### 5. Knowledge base from your own lecture notes
+### 6. Knowledge base from your own lecture notes
 
 Drop your slides, handouts and papers into the topic (drag and drop works). The knowledge base extracts
 searchable text from `kb/`, `materials/` and `notes/` **with page numbers**, and caches it in
@@ -169,7 +187,7 @@ The agent searches it with `kb_search` before answering, and quotes the source:
 
 Scanned PDFs without a text layer are flagged explicitly instead of being silently ignored.
 
-### 6. Quizzes in real exam formats
+### 7. Quizzes in real exam formats
 
 Ask for a quiz and the agent writes it via `quiz_create`. Six question types:
 
@@ -188,7 +206,7 @@ points you missed. One button then sends every wrong answer back to the chat for
 
 <img src="docs/images/quiz.png" alt="Quiz result with per-question feedback" width="820" />
 
-### 7. Flashcards, spaced repetition, Anki sync
+### 8. Flashcards, spaced repetition, Anki sync
 
 - Three card kinds: **basic**, **reversed**, and **cloze** (`{{c1::...}}` markers, validated before they
   leave the app so you never get blank cards in Anki).
@@ -203,7 +221,7 @@ points you missed. One button then sends every wrong answer back to the chat for
 
 <img src="docs/images/cards.png" alt="Card review" width="820" />
 
-### 8. Mind maps and diagrams
+### 9. Mind maps and diagrams
 
 `mindmap_create` takes an indented outline and produces a Mermaid mind map: saved as a note (rendered in
 the editor *and* the viewer) and returned as text, so it also appears inline in the chat. Mermaid blocks
@@ -212,7 +230,7 @@ fit / 100% / zoom controls.
 
 <img src="docs/images/mindmap.png" alt="Mind map rendered in the editor" width="820" />
 
-### 9. WYSIWYG Markdown editor
+### 10. WYSIWYG Markdown editor
 
 The note editor is built on **CodeMirror 6**, adapted from InkNote: formulas, tables, diagrams and code
 blocks render *in place* — no split preview. Front matter becomes a compact widget, headings are
@@ -220,7 +238,7 @@ numbered automatically, and `Ctrl+/` switches to raw source when you want it.
 
 <img src="docs/images/editor.png" alt="In-place Markdown editing" width="820" />
 
-### 10. Skills and MCP
+### 11. Skills and MCP
 
 Both live in the sidebar, right under *New topic*, and both work at **two scopes**:
 
@@ -240,7 +258,32 @@ External tools are treated as *writes*, so they always ask you first.
 
 <img src="docs/images/mcp.png" alt="Skills and MCP panels, each with global / per-topic switches" width="820" />
 
-### 11. Sandbox, permissions, schedule
+### 12. Long-term memory
+
+The agent keeps notes **about you**, not just about the subject: what you already know, how you prefer to
+be taught, which points you keep getting wrong, and which prerequisites are still missing. Every turn, the
+relevant ones go into the system prompt — so it does not have to *remember to look them up*, and you do not
+have to repeat yourself in every new chat.
+
+Nothing hidden: each memory is one line of JSONL you can open in any editor, and the same list is shown and
+editable in the sidebar's **Memory** panel (category, pin, edit, delete). Agent-written and hand-written
+entries are indistinguishable — same file, same panel.
+
+- **Two scopes**, decided by *where the file is*, not by a field in the record:
+  `<workspace>/.hub/memory/memories.jsonl` (global) and `<topic>/.hub/memory/memories.jsonl` (this topic).
+  A chapter inherits its parent course's memories, the same way it inherits materials.
+- **Six categories** — fact / preference / goal / pitfall / style / gap — grouped in the prompt so the model
+  knows *how* to use each one. Every entry carries the date it was recorded, so stale goals get questioned
+  instead of obeyed.
+- **Duplicates merge.** Same content written again (punctuation and wording aside) updates the existing
+  entry. Pinned entries are always injected first; *used N times* tells you which entries never earned their
+  place.
+- **No background extraction call.** Memories are written by the agent while you talk (`memory_write`), so
+  there is no extra model request, no extra API bill, and nothing you cannot see.
+
+Turning it off stops the injection and hides the memory tools; the existing entries stay viewable.
+
+### 13. Sandbox, permissions, schedule
 
 - **Workspace sandbox (on by default).** The agent can only touch files inside your workspace. When it
   needs a lecture PDF from `D:\slides`, it asks — and approval is granted **per directory**, stored in

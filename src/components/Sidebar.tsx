@@ -10,6 +10,7 @@ import { STAGE_LABEL, THEME_LABEL, type StudyStage, type TopicSummary } from "..
 import { hotkey, relTime } from "../lib/format";
 import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal } from "./ui";
 import { McpDialog, SkillsDialog } from "./Extend";
+import { MemoryPanel } from "./Memory";
 import { api } from "../lib/api";
 
 /** 折叠状态存本地：章节多了以后默认全展开太挤 */
@@ -57,13 +58,17 @@ export function Sidebar() {
   const setView = useApp((s) => s.setView);
   const setPaletteOpen = useApp((s) => s.setPaletteOpen);
   const toast = useApp((s) => s.toast);
+  /** 记忆变化时 +1：角标上的条数要跟着刷新 */
+  const memoryTick = useApp((s) => s.memoryTick);
 
   const [newOpen, setNewOpen] = useState(false);
   const [newParent, setNewParent] = useState<{ slug: string; name: string } | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [skillCount, setSkillCount] = useState(0);
   const [mcpCount, setMcpCount] = useState(0);
+  const [memoryCount, setMemoryCount] = useState(0);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [creating, setCreating] = useState(false);
@@ -120,9 +125,16 @@ export function Sidebar() {
       } catch {
         /* 忽略 */
       }
+      try {
+        // 角标显示「当前上下文真正会注入」的条数（与提示词一致），不是磁盘上的总条数
+        const mem = await api.memoryOverview(activeSlug);
+        setMemoryCount(mem.activeCount);
+      } catch {
+        /* 忽略 */
+      }
     };
     void load();
-  }, [activeSlug, topics]);
+  }, [activeSlug, topics, memoryTick]);
 
   const submitNew = async () => {
     if (!name.trim() || creating) return;
@@ -147,13 +159,24 @@ export function Sidebar() {
   const renderNode = (node: TopicTreeNode, depth: number) => {
     const t = node.topic;
     const isCollapsed = collapsed.includes(t.meta.id);
-    const chats = chatIndex[t.slug] ?? [];
+    const all = chatIndex[t.slug] ?? [];
+    // 后端已按「置顶 → 最近使用 → 归档沉底」排好，这里只把归档的分出来
+    const chats = all.filter((c) => !c.archived);
+    const archived = all.filter((c) => c.archived);
     const onDisk = (t.stats.chats ?? 0) > 0;
     // 刚点「新对话」还没发第一条消息时，磁盘上还没有这个文件——先占一行
     const pendingNew = topic?.slug === t.slug && !!activeChatId && !chats.some((c) => c.id === activeChatId);
-    const expandable = node.children.length > 0 || onDisk || pendingNew;
-    const chatCount = chats.length || t.stats.chats || 0;
+    // 只有归档对话的主题也要能展开，否则那些对话就永远看不见了
+    const expandable = node.children.length > 0 || onDisk || pendingNew || archived.length > 0;
+    const chatCount = all.length || t.stats.chats || 0;
     const open = !isCollapsed;
+
+    const openChat = (chatId: string) => {
+      void (async () => {
+        if (topic?.slug !== t.slug) await openTopic(t.slug);
+        await loadChat(chatId);
+      })();
+    };
 
     return (
       <Fragment key={t.slug}>
@@ -189,16 +212,35 @@ export function Sidebar() {
                 time={c.updatedAt}
                 depth={depth + 1}
                 active={c.id === activeChatId}
-                onClick={() => {
-                  void (async () => {
-                    if (topic?.slug !== t.slug) await openTopic(t.slug);
-                    await loadChat(c.id);
-                  })();
-                }}
+                pinned={c.pinned}
+                customTitle={c.customTitle}
+                onClick={() => openChat(c.id)}
               />
             ))}
             {pendingNew && (
               <ChatRow topicSlug={t.slug} title="新对话" time={null} depth={depth + 1} active onClick={() => {}} />
+            )}
+            {archived.length > 0 && (
+              <div className="chat-archived">
+                <div className="chat-archived-head">
+                  <Icon name="box" size={11} />
+                  已归档 {archived.length}
+                </div>
+                {archived.map((c) => (
+                  <ChatRow
+                    key={c.id}
+                    chatId={c.id}
+                    topicSlug={t.slug}
+                    title={c.title}
+                    time={c.updatedAt}
+                    depth={depth + 1}
+                    active={c.id === activeChatId}
+                    archived
+                    customTitle={c.customTitle}
+                    onClick={() => openChat(c.id)}
+                  />
+                ))}
+              </div>
             )}
           </>
         )}
@@ -229,6 +271,11 @@ export function Sidebar() {
           <Icon name="plug" />
           <span className="grow">MCP 服务器</span>
           {mcpCount > 0 && <span className="side-kbd">{mcpCount}</span>}
+        </button>
+        <button className="side-item" onClick={() => setMemoryOpen(true)}>
+          <Icon name="sparkle" />
+          <span className="grow">记忆</span>
+          {memoryCount > 0 && <span className="side-kbd">{memoryCount}</span>}
         </button>
 
         <div className="menu-sep" style={{ margin: "6px 8px" }} />
@@ -308,6 +355,7 @@ export function Sidebar() {
 
       {skillsOpen && <SkillsDialog onClose={() => setSkillsOpen(false)} />}
       {mcpOpen && <McpDialog onClose={() => setMcpOpen(false)} />}
+      {memoryOpen && <MemoryPanel onClose={() => setMemoryOpen(false)} />}
 
       {newOpen && (
         <Modal
@@ -402,6 +450,9 @@ function ChatRow({
   time,
   depth,
   active,
+  pinned,
+  archived,
+  customTitle,
   onClick,
 }: {
   chatId?: string;
@@ -410,10 +461,25 @@ function ChatRow({
   time: string | null;
   depth: number;
   active: boolean;
+  /** 置顶：排在该主题对话列表最前面 */
+  pinned?: boolean;
+  /** 归档：收在「已归档」分组里 */
+  archived?: boolean;
+  /** 用户自己改过名（菜单里才给「恢复自动标题」） */
+  customTitle?: boolean;
   onClick: () => void;
 }) {
   const moveChat = useApp((s) => s.moveChat);
+  const renameChat = useApp((s) => s.renameChat);
+  const pinChat = useApp((s) => s.pinChat);
+  const archiveChat = useApp((s) => s.archiveChat);
+  const forkChat = useApp((s) => s.forkChat);
+  const deleteChat = useApp((s) => s.deleteChat);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const [confirming, setConfirming] = useState(false);
   const drag = useRef<{
+    el: HTMLElement;
     startX: number;
     startY: number;
     moved: boolean;
@@ -426,14 +492,28 @@ function ChatRow({
   const findRow = (slug: string) =>
     document.querySelector<HTMLElement>(`.topic-row[data-slug="${CSS.escape(slug)}"]`);
 
+  /**
+   * 行内的按钮/输入框不参与拖拽。
+   *
+   * 更要紧的是：拖拽必须**等真的开始拖了**再 `setPointerCapture`。在 pointerdown 上就捕获，
+   * 会把随后的 pointerup/mouseup 重定向到这一行上——浏览器发现「按下」与「抬起」不在同一个
+   * 元素上，就**不会**给按钮补发 click，于是行内的「⋯」永远点不开
+   * （就是用户报的「主题的三个点有用、对话的三个点没用」；主题行没有指针拖拽所以正常）。
+   */
+  const innerInteractive = (t: EventTarget | null) =>
+    !!(t instanceof Element && t.closest("button, input, textarea, select, a, [contenteditable=true]"));
+
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!chatId || e.button !== 0) return;
-    drag.current = { startX: e.clientX, startY: e.clientY, moved: false, ghost: null, target: null };
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* 合成事件（脚本触发）没有真实指针，捕获不到也无所谓：移动事件照样会冒泡上来 */
-    }
+    // 正在改名时不拖：输入框里的拖选文字不能被当成「把对话搬走」
+    if (!chatId || editing || e.button !== 0 || innerInteractive(e.target)) return;
+    drag.current = {
+      el: e.currentTarget,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      ghost: null,
+      target: null,
+    };
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -442,6 +522,12 @@ function ChatRow({
     if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 5) return;
     if (!d.moved) {
       d.moved = true;
+      // 到这里才确认是拖拽：捕获指针，好让手滑出行外时后续事件仍然回到这一行
+      try {
+        d.el.setPointerCapture(e.pointerId);
+      } catch {
+        /* 合成事件（脚本触发）没有真实指针，捕获不到也无所谓：移动事件照样会冒泡上来 */
+      }
       const ghost = document.createElement("div");
       ghost.className = "chat-drag-ghost";
       ghost.textContent = title || "新对话";
@@ -475,27 +561,177 @@ function ChatRow({
     }
   };
 
+  const startRename = () => {
+    setDraft(title);
+    setEditing(true);
+  };
+
+  const commitRename = () => {
+    if (!chatId) return;
+    setEditing(false);
+    const next = draft.trim();
+    // 名字没动就不打扰后端（改名会写文件）
+    if (next === title.trim()) return;
+    void renameChat(chatId, next, topicSlug);
+  };
+
+  /** 从这条对话分叉：复制成新对话，原对话不动 */
+  const doFork = () => {
+    if (!chatId) return;
+    void forkChat(chatId, topicSlug);
+  };
+
   return (
-    <div
-      className={"chat-row" + (active ? " active" : "")}
-      style={{ paddingLeft: 9 + depth * 14 }}
-      title={chatId ? `${title || "新对话"}（按住拖到别的主题可以搬过去）` : title}
-      onClick={() => {
-        if (suppressClick.current) {
-          suppressClick.current = false;
-          return;
+    <>
+      <div
+        className={"chat-row" + (active ? " active" : "") + (archived ? " archived" : "")}
+        style={{ paddingLeft: 9 + depth * 14 }}
+        title={
+          chatId
+            ? `${title || "新对话"}（按住拖到别的主题可以搬过去）`
+            : title
         }
-        onClick();
-      }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-    >
-      <Icon name="chat" size={13} />
-      <span className="chat-title">{title || "新对话"}</span>
-      {time && <span className="chat-time">{relTime(time)}</span>}
-    </div>
+        onClick={() => {
+          if (editing) return;
+          if (suppressClick.current) {
+            suppressClick.current = false;
+            return;
+          }
+          onClick();
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        {editing ? (
+          <input
+            className="chat-rename"
+            autoFocus
+            value={draft}
+            placeholder="对话名字（留空＝用第一句话）"
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={(e) => e.currentTarget.select()}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            onBlur={commitRename}
+          />
+        ) : (
+          <>
+            {pinned && (
+              <Icon name="target" size={11} className="chat-pin" />
+            )}
+            <span className="chat-title">{title || "新对话"}</span>
+            {time && <span className="chat-time">{relTime(time)}</span>}
+            {/* 悬停才出现的「⋯」：重命名 / 置顶 / 分叉 / 归档 / 删除 */}
+            {chatId && (
+              <span className="row-actions chat-actions" onClick={(e) => e.stopPropagation()}>
+                <Dropdown
+                  trigger={() => (
+                    <button className="icon-btn" title="更多">
+                      <Icon name="more" size={14} />
+                    </button>
+                  )}
+                >
+                  {(close) => (
+                    <>
+                      <MenuLabel>{title || "新对话"}</MenuLabel>
+                      <MenuSep />
+                      <MenuItem
+                        onClick={() => {
+                          startRename();
+                          close();
+                        }}
+                      >
+                        <Icon name="pencil" size={13} /> 重命名
+                      </MenuItem>
+                      {customTitle && (
+                        <MenuItem
+                          onClick={() => {
+                            void renameChat(chatId, "", topicSlug);
+                            close();
+                          }}
+                        >
+                          <Icon name="refresh" size={13} /> 恢复自动标题
+                        </MenuItem>
+                      )}
+                      <MenuItem
+                        onClick={() => {
+                          void pinChat(chatId, !pinned, topicSlug);
+                          close();
+                        }}
+                      >
+                        <Icon name="target" size={13} /> {pinned ? "取消置顶" : "置顶"}
+                      </MenuItem>
+                      <MenuItem
+                        onClick={() => {
+                          doFork();
+                          close();
+                        }}
+                      >
+                        <Icon name="layers" size={13} /> 分叉出新对话
+                      </MenuItem>
+                      <MenuItem
+                        onClick={() => {
+                          void archiveChat(chatId, !archived, topicSlug);
+                          close();
+                        }}
+                      >
+                        <Icon name="box" size={13} /> {archived ? "取消归档" : "归档"}
+                      </MenuItem>
+                      <MenuSep />
+                      <MenuItem
+                        danger
+                        onClick={() => {
+                          setConfirming(true);
+                          close();
+                        }}
+                      >
+                        <Icon name="trash" size={13} /> 删除
+                      </MenuItem>
+                    </>
+                  )}
+                </Dropdown>
+              </span>
+            )}
+          </>
+        )}
+      </div>
+
+      {confirming && (
+        <Modal
+          title="删除这条对话？"
+          icon="alert"
+          onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setConfirming(false)}>
+                取消
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => {
+                  void deleteChat(chatId!, topicSlug);
+                  setConfirming(false);
+                }}
+              >
+                移入回收站
+              </button>
+            </>
+          }
+        >
+          <div className="sub">
+            「{title || "新对话"}」会被移动到{" "}
+            <code className="mono">工作区/.hub/trash/</code>，不会真删。
+            只是想让它别占地方的话，用「归档」更合适——随时能翻回来。
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 

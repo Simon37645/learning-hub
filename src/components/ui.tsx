@@ -54,7 +54,8 @@ export type IconName =
   | "moon"
   | "auto"
   | "puzzle"
-  | "plug";
+  | "plug"
+  | "box";
 
 const PATHS: Record<IconName, ReactNode> = {
   plus: <path d="M8 3.5v9M3.5 8h9" />,
@@ -239,6 +240,14 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M6 1.8v3.4M10 1.8v3.4" />
       <path d="M3.6 5.2h8.8v2.4a4.4 4.4 0 0 1-8.8 0z" />
       <path d="M8 12v2.2" />
+    </>
+  ),
+  // 归档：一个带盖的收纳盒
+  box: (
+    <>
+      <rect x="2.2" y="2.6" width="11.6" height="3.2" rx="1" />
+      <path d="M3.2 5.8v6.2c0 .7.5 1.2 1.2 1.2h7.2c.7 0 1.2-.5 1.2-1.2V5.8" />
+      <path d="M6.6 8.6h2.8" />
     </>
   ),
 };

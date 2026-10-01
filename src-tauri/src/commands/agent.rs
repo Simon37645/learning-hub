@@ -66,50 +66,212 @@ pub async fn agent_new_chat() -> AppResult<String> {
     Ok(uuid::Uuid::new_v4().to_string())
 }
 
-/// 侧栏「对话」列表用的一项。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatOverviewItem {
-    pub id: String,
-    /// 第一条用户消息的前 40 字，当列表标题（还没聊过就是空串）
-    pub title: String,
-    pub messages: usize,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// 某个主题下的历史对话清单（侧栏用）。
+/// 侧栏「对话」列表里的一项。
 ///
-/// 对话文件里只有 id 和消息，光看 id 没法挑——所以这里读一遍 jsonl，
-/// 把「第一句话」当标题，按最近使用排序。
-#[tauri::command]
-pub async fn chat_overview(
-    state: State<'_, AppState>,
-    topic_slug: Option<String>,
+/// 排序在后端算好（置顶 → 最近使用 → 归档沉底），前端照着画就行。
+pub use crate::agent::chats::ChatOverviewItem;
+
+/// 读一个主题的对话清单并排好序。`include_archived=false` 时滤掉归档的。
+///
+/// 上限（60）放在**排序之后**：不然置顶的那条可能因为文件太旧被截掉，
+/// 用户会看到「置顶了但没置顶」。
+fn collect_overview(
+    core: &std::sync::Arc<crate::state::AppCore>,
+    slug: Option<&str>,
+    include_archived: bool,
 ) -> AppResult<Vec<ChatOverviewItem>> {
-    let core = state.0.clone();
-    let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
-    let ids = crate::agent::list_transcripts(&core, topic_slug.as_deref())?;
+    let dir = crate::agent::chats_dir_for(core, slug);
+    let ids = crate::agent::list_transcripts(core, slug)?;
     let mut out = Vec::new();
-    for id in ids.into_iter().take(60) {
+    for id in ids {
         let path = dir.join(format!("{id}.jsonl"));
         let messages = crate::store::read_jsonl::<ChatMessage>(&path).unwrap_or_default();
-        let title = messages
-            .iter()
-            .find(|m| m.role == crate::agent::message::Role::User)
-            .map(|m| crate::agent::provider::truncate(m.text().trim(), 40))
-            .unwrap_or_default();
+        let meta = crate::agent::chats::load(&dir, &id);
+        if meta.archived && !include_archived {
+            continue;
+        }
         let updated_at = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .map(chrono::DateTime::<chrono::Utc>::from)
             .unwrap_or_else(|_| crate::store::now());
-        out.push(ChatOverviewItem {
-            id,
-            title,
-            messages: messages.len(),
-            updated_at,
-        });
+        out.push(crate::agent::chats::overview_item(id, &messages, &meta, updated_at));
     }
+    crate::agent::chats::sort_items(&mut out);
+    out.truncate(60);
     Ok(out)
+}
+
+/// 某个主题下的历史对话清单（侧栏用）。
+///
+/// 标题优先取侧车文件里的自定义名字，没有才现算「第一句用户消息」。
+/// `include_archived` 为 false 时把归档的滤掉——侧栏日常只显示没归档的。
+#[tauri::command]
+pub async fn chat_overview(
+    state: State<'_, AppState>,
+    topic_slug: Option<String>,
+    include_archived: Option<bool>,
+) -> AppResult<Vec<ChatOverviewItem>> {
+    let core = state.0.clone();
+    collect_overview(
+        &core,
+        topic_slug.as_deref(),
+        include_archived.unwrap_or(false),
+    )
+}
+
+/// 改完元数据后统一回一次新清单，前端直接拿它替换本地状态。
+fn overview_after_change(
+    core: &std::sync::Arc<crate::state::AppCore>,
+    slug: &Option<String>,
+) -> AppResult<Vec<ChatOverviewItem>> {
+    // 主题统计（对话条数）也跟着变，让侧栏的计数与折叠箭头一致
+    core.emit_topics(crate::agent::event::TopicsEvent::Refresh);
+    collect_overview(core, slug.as_deref(), true)
+}
+
+/// 改对话名字。空标题＝恢复成「第一句话」的自动标题。
+#[tauri::command]
+pub async fn chat_rename(
+    state: State<'_, AppState>,
+    chat_id: String,
+    title: String,
+    topic_slug: Option<String>,
+) -> AppResult<Vec<ChatOverviewItem>> {
+    let core = state.0.clone();
+    let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
+    let mut meta = crate::agent::chats::load(&dir, &chat_id);
+    meta.rename(&title);
+    crate::agent::chats::save(&dir, &chat_id, &mut meta)?;
+    overview_after_change(&core, &topic_slug)
+}
+
+/// 置顶 / 取消置顶。
+#[tauri::command]
+pub async fn chat_pin(
+    state: State<'_, AppState>,
+    chat_id: String,
+    pinned: bool,
+    topic_slug: Option<String>,
+) -> AppResult<Vec<ChatOverviewItem>> {
+    let core = state.0.clone();
+    let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
+    let mut meta = crate::agent::chats::load(&dir, &chat_id);
+    meta.pinned = pinned;
+    if pinned {
+        // 置顶与归档是互斥的：从归档里捞出来置顶，意思很明确
+        meta.archived = false;
+    }
+    crate::agent::chats::save(&dir, &chat_id, &mut meta)?;
+    overview_after_change(&core, &topic_slug)
+}
+
+/// 归档 / 取消归档。归档的对话默认收进侧栏的「已归档」分组。
+#[tauri::command]
+pub async fn chat_archive(
+    state: State<'_, AppState>,
+    chat_id: String,
+    archived: bool,
+    topic_slug: Option<String>,
+) -> AppResult<Vec<ChatOverviewItem>> {
+    let core = state.0.clone();
+    let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
+    let mut meta = crate::agent::chats::load(&dir, &chat_id);
+    meta.archived = archived;
+    if archived {
+        // 归档就是「先收起来」：留着置顶标记会让它在置顶区又冒出来
+        meta.pinned = false;
+    }
+    crate::agent::chats::save(&dir, &chat_id, &mut meta)?;
+    overview_after_change(&core, &topic_slug)
+}
+
+/// 分叉：把这条对话在「最后一个完整回合」处截断，复制成一条新对话。
+///
+/// 用途是「从这儿换个讲法重来」——原对话保持不动，新对话继承到这里为止的上下文。
+/// 截断点定在**最后一条 assistant 消息**（含）而不是字面意义上的最后一条：
+/// 末尾若挂着「用户刚提问、模型还没答」，复制过去会让新对话一开头就欠一个回答。
+#[tauri::command]
+pub async fn chat_fork(
+    state: State<'_, AppState>,
+    chat_id: String,
+    topic_slug: Option<String>,
+    to_slug: Option<String>,
+) -> AppResult<String> {
+    let core = state.0.clone();
+    let ws = core.workspace();
+    // 从哪条对话分：优先用调用方给的主题，没给就按当前主题
+    let from = match topic_slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => ws.resolve(s)?,
+        None => return Err(AppError::invalid("请先打开一个主题，再对里面的对话分叉")),
+    };
+    // 分到哪儿：默认还在同一条主题里
+    let to = match to_slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) if s != from.slug() => ws.resolve(s)?,
+        _ => from.clone(),
+    };
+
+    let src_dir = from.chats_dir();
+    let src_path = from.chat_path(&chat_id);
+    if !src_path.is_file() {
+        return Err(AppError::NotFound(format!("这个主题里没有这条对话：{chat_id}")));
+    }
+    let messages = crate::store::read_jsonl::<ChatMessage>(&src_path)?;
+    let src_meta = crate::agent::chats::load(&src_dir, &chat_id);
+    let src_title = src_meta.display_title(&messages);
+
+    // 截断点：最后一条 assistant 消息之后
+    let at = messages
+        .iter()
+        .rposition(|m| m.role == crate::agent::message::Role::Assistant)
+        .map(|i| i + 1)
+        .unwrap_or(messages.len());
+    let kept: Vec<ChatMessage> = messages[..at].to_vec();
+    if kept.is_empty() {
+        return Err(AppError::invalid(
+            "这条对话还没有可复制的回合（至少要有一轮问答再分叉）",
+        ));
+    }
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    crate::agent::write_transcript(&core, Some(&to), &new_id, &kept)?;
+    let mut meta = crate::agent::chats::ChatMeta::default();
+    meta.forked_from = Some(crate::agent::chats::ForkInfo {
+        chat_id: chat_id.clone(),
+        at_message: at,
+        title: src_title.clone(),
+    });
+    crate::agent::chats::save(&to.chats_dir(), &new_id, &mut meta)?;
+
+    core.emit_topics_updated(&to);
+    Ok(new_id)
+}
+
+/// 分叉到别的主题时前端要切过去（见 `chat_fork` 的 `to_slug`）。
+/// 把一条对话移进回收站（两侧车文件一起）。
+///
+/// 学习记录误删的代价高，所以和别处一样**不真删**：整个文件先进 `.hub/trash/`。
+#[tauri::command]
+pub async fn chat_delete(
+    state: State<'_, AppState>,
+    chat_id: String,
+    topic_slug: Option<String>,
+) -> AppResult<()> {
+    let core = state.0.clone();
+    let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
+    let file = dir.join(format!("{chat_id}.jsonl"));
+    if !file.is_file() {
+        return Err(AppError::NotFound("这条对话已经不在磁盘上了".into()));
+    }
+    let trash = core
+        .workspace()
+        .root
+        .join(crate::domain::topic::DIR_INTERNAL)
+        .join("trash");
+    crate::store::move_to_trash(&trash, &file)?;
+    // 侧车文件（名字/置顶）跟着删：对话本身能从回收站还原，名字再起一个就是了
+    crate::agent::chats::remove(&dir, &chat_id);
+    core.emit_topics(crate::agent::event::TopicsEvent::Refresh);
+    Ok(())
 }
 
 /// 把一条对话挪到另一个主题（侧栏里拖着整理：父主题 ↔ 子主题）。
@@ -141,6 +303,15 @@ pub async fn chat_move(
         return Err(AppError::invalid("目标主题里已经有一条同名对话了"));
     }
     std::fs::rename(&src, &dst)?;
+    // 元数据（名字/置顶/归档/分叉血缘）跟着一起走，不然搬完就「失忆」了
+    let src_meta = crate::agent::chats::meta_path(&from.chats_dir(), &chat_id);
+    if src_meta.is_file() {
+        let dst_meta = crate::agent::chats::meta_path(&to.chats_dir(), &chat_id);
+        if let Err(e) = std::fs::rename(&src_meta, &dst_meta) {
+            // 元数据搬不动不该让整个搬运动作失败：对话本身已经过去了，名字丢了大不了重起
+            eprintln!("[chats] 搬对话时元数据没跟着走：{e}");
+        }
+    }
     core.emit_topics_updated(&from);
     core.emit_topics_updated(&to);
     Ok(())

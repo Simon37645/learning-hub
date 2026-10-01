@@ -11,7 +11,7 @@ npm run app:dev                                        # 开发模式（首次�
 npm run typecheck                                      # 前端类型检查（必须过）
 npm run build                                          # 前端构建
 npm run rust:check                                     # 后端类型检查
-npm run rust:test                                      # 后端单测（19 个）
+npm run rust:test                                      # 后端单测（53 个）
 npm run dist                                           # 打包（tauri build + scripts/package.mjs）
 npm run shortcut                                       # 把打包版同步到 release/app 并在桌面建快捷方式（应用开着时会跳过同步并提示）
 npm run demo:seed && npm run demo:pdf                  # 造演示数据（workspace/）
@@ -125,7 +125,7 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   现在的做法：pointerdown 记住起点 → 移动超过 5px 才算拖拽（否则仍是点击）→
   跟随一个 body 上的幽灵小卡片 → `elementFromPoint` 找落点（主题行带 `data-slug`）→
   pointerup 调命令。`setPointerCapture` 要包 try/catch，合成事件下会抛。
-- **对话可以在主题之间搬**（`chat_move` 只动 `.hub/chats/<id>.jsonl`）：
+- **对话可以在主题之间搬**（`chat_move` 动 `.hub/chats/<id>.jsonl` **和**同名的 `.meta.json`）：
   搬的是文件，聊天记录里已有的相对引用不会跟着重算——所以这是「整理」语义。
   正在看的那条被搬走后，前端会给源主题新开一条，免得接着聊又写回旧主题。
 - **网页「拒绝连接」不是网络问题**：很多站点（GitHub / 知乎 / Bing…）发
@@ -150,12 +150,40 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   设置页那一节都不在了。**别再往回加**：用户明确不要外部依赖。
   复习按钮上的「10 分钟 / 4 天」来自后端 `preview_secs`（同一个 `apply` 跑在副本上），
   别在前端另写一套间隔推算。
+- **长期记忆的作用域由文件位置决定，不是记录里的字段**
+  （`<工作区>/.hub/memory/memories.jsonl` = 全局，`<主题>/.hub/memory/memories.jsonl` = 本主题）。
+  同一份文件搬到别处语义就变了，所以别在 `Memory` 里再加一个 `scope` 字段——
+  那迟早会和文件位置不一致。注入顺序靠 `AppCore::memory_scopes`（本主题 → 父主题 → 全局），
+  面板、工具、提示词都从这里拿，别各写一套。
+- **记忆的写入走 `memory_write` 工具，但注入不走工具**：每轮由 `AppCore::memory_digest`
+  直接塞进系统提示词（模型不会忘），并顺手记 `last_used` / `use_count`。
+  预览系统提示词要用 `memory_peek`（只渲染不记账），否则连点几次预览就把计数刷满了。
+- **`memory_digest` 全程持 `parking_lot` 写锁**：别在它里面 await，也别在持有
+  `state.0.memory()` guard 时 await。攒着的「用了几次」由 `memory_flush` 落盘
+  （`topic_open` 与关窗口时各调一次）。
+- **记忆的改动统一发 `hub://memory`**（`core.emit_memory_changed`）：前端把它折成
+  `memoryTick` 计数，面板与侧栏角标据此重拉。新增写记忆的入口时别忘了发这个事件，
+  否则面板会显示过期数据。
+- **对话的元数据是侧车文件**（`agent/chats.rs` 的 `<id>.meta.json`：名字 / 置顶 / 归档 / 分叉血缘），
+  **不要往 `chats/<id>.jsonl` 里插特殊行**——那个文件每行都必须是 `ChatMessage`，
+  模型、界面、导出都直接读它。代价是「搬对话」要搬两个文件：`chat_move` 已经这么做了，
+  以后加类似操作记得跟上（`chats::meta_path` + `chats::remove`）。
+- **对话列表的排序只在 Rust 里算一次**（`chats::sort_items`：置顶 → 最近使用 → 归档沉底），
+  前端照返回顺序渲染。两边各排一次迟早出现「显示置顶了、点进去排在后面」。
+  条数上限（60）放在排序**之后**，否则置顶那条会被文件时间截掉。
+- **归档只是元数据，文件不动**：归档的对话仍会被 `agent_transcripts` / 全文检索看到，
+  语义是「先收起来」。侧栏把它渲染在各主题展开后的「已归档」分组里。
+  分叉点定在**最后一条 assistant 消息之后**（不是字面上的最后一条），
+  否则末尾那句「用户刚提问、模型还没答」会让新对话一开头就欠一个回答。
 
 ## 当前状态（v1）
 
 已完成：主题/笔记/资料/卡片/计划/会话/测验 七个模块、内置浏览器（PDF 含文字层 / Markdown / 网页 / 图片 / 文本）、
 内置笔记编辑器（移植自 InkNote 的 CodeMirror 6 所见即所得）、讲解模式（讲解方案 + HTML 演示页 + 来源标注）、
 知识库（讲义入库 + 带出处的检索）、技能与 MCP（侧栏入口，支持全局/本主题两级开关，沿父子链继承）、
+长期记忆（侧栏「记忆」面板；agent 用 `memory_write` 自己记，每轮注入系统提示词，
+全局/本主题两级 + 父主题继承）、
+对话管理（侧栏对话行悬停出「⋯」：重命名 / 置顶 / 分叉 / 归档 / 删除；元数据在侧车文件里）、
 思维导图（Mermaid）、拖放导入资料、主题模式（跟随系统/明亮/深色）、
 工作区沙箱与越权申请、权限分级、两类模型协议（OpenAI 兼容 + Anthropic）、日程视图、设置页、
 父子主题（「只学一门课里的一章」：资料继承、笔记/卡片/计划独立）。

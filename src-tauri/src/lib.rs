@@ -91,6 +91,19 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // --- 应用 ---
+            commands::app::app_bootstrap,
+            commands::app::config_get,
+            commands::app::config_patch,
+            commands::app::profile_upsert,
+            commands::app::profile_delete,
+            commands::app::profile_set_reasoning,
+            commands::app::profile_test,
+            commands::app::prompt_preview,
+            commands::app::workspace_info,
+            commands::app::reveal_in_explorer,
+            commands::app::open_with_system,
+            commands::app::config_summary,
             // --- 技能与 MCP ---
             commands::extend::skills_overview,
             commands::extend::skills_reload,
@@ -106,19 +119,15 @@ pub fn run() {
             commands::extend::mcp_delete,
             commands::extend::mcp_set_enabled,
             commands::extend::mcp_set_all,
-            // --- 应用 ---
-            commands::app::app_bootstrap,
-            commands::app::config_get,
-            commands::app::config_patch,
-            commands::app::profile_upsert,
-            commands::app::profile_delete,
-            commands::app::profile_set_reasoning,
-            commands::app::profile_test,
-            commands::app::prompt_preview,
-            commands::app::workspace_info,
-            commands::app::reveal_in_explorer,
-            commands::app::open_with_system,
-            commands::app::config_summary,
+            // --- 长期记忆 ---
+            commands::memory::memory_overview,
+            commands::memory::memory_upsert,
+            commands::memory::memory_delete,
+            commands::memory::memory_set_pinned,
+            commands::memory::memory_clear,
+            commands::memory::memory_set_enabled,
+            commands::memory::memory_kinds,
+            commands::memory::memory_paths,
             // --- 原始文件读写（内置编辑器用）---
             commands::file::file_read_text,
             commands::file::file_write_text,
@@ -152,6 +161,11 @@ pub fn run() {
             commands::agent::agent_chats,
             commands::agent::chat_overview,
             commands::agent::chat_move,
+            commands::agent::chat_rename,
+            commands::agent::chat_pin,
+            commands::agent::chat_archive,
+            commands::agent::chat_fork,
+            commands::agent::chat_delete,
             commands::agent::agent_new_chat,
             commands::agent::agent_running,
             // --- 内置浏览器 ---
@@ -200,6 +214,16 @@ pub fn run() {
             commands::study::session_finish,
             commands::study::daily_brief,
         ])
+        // 关窗口前把长期记忆里攒着的「用了几次」落盘。
+        // 这些统计只影响面板上的显示，丢了也不致命，但既然能顺手写上就别攒着。
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                window
+                    .app_handle()
+                    .try_state::<AppState>()
+                    .map(|s| s.0.memory_flush());
+            }
+        })
         .run(tauri::generate_context!())
         .expect("学习中枢启动失败");
 }

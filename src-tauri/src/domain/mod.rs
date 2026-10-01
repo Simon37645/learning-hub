@@ -1,6 +1,7 @@
 //! 领域模型。全部是纯数据 + 少量纯函数，不依赖 Tauri，方便单测与复用。
 
 pub mod card;
+pub mod memory;
 pub mod note;
 pub mod quiz;
 pub mod session;
@@ -9,6 +10,7 @@ pub mod task;
 pub mod topic;
 
 pub use card::{Card, Grade, SrsState};
+pub use memory::{Memory, MemoryKind, MemoryOverview, MemoryStore, MemoryView, Scope as MemoryScope};
 pub use note::{Note, NoteSummary};
 pub use quiz::{Answer, Attempt, Question, QuestionType, Quiz};
 pub use session::StudySession;

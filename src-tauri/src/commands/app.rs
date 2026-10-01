@@ -435,6 +435,8 @@ pub async fn prompt_preview(state: State<'_, AppState>, topic_slug: Option<Strin
         tool_catalog: core.agent.describe_tools(),
         tool_names: core.agent.tool_names(),
         skill_catalog: crate::skills::catalog(&core.skills_for(topic.as_ref()), 120),
+        // 预览用「只看不记」的版本：连点几次预览不该把「用了几次」刷上去
+        memory: core.memory_peek(topic.as_ref()),
     }))
 }
 

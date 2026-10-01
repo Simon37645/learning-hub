@@ -3,6 +3,7 @@
 use crate::agent::event::{AgentEvent, TopicsEvent, ViewerEvent, EVENT_AGENT, EVENT_TOAST, EVENT_TOPICS, EVENT_VIEWER};
 use crate::agent::AgentService;
 use crate::config::AppConfig;
+use crate::domain::memory::{MemoryStore, Scope as MemoryScope};
 use crate::domain::session::StudySession;
 use crate::domain::topic::{Topic, Workspace};
 use crate::error::{AppError, AppResult};
@@ -29,6 +30,8 @@ pub struct AppCore {
     skills_cache: RwLock<Vec<crate::skills::Skill>>,
     /// MCP 服务器的连接状态
     mcp_state: RwLock<Vec<McpEntry>>,
+    /// 长期记忆（全局 + 各主题），内存里有缓存，磁盘是唯一真相
+    memory: RwLock<MemoryStore>,
 }
 
 /// 一个 MCP 服务器的运行状态。
@@ -91,6 +94,7 @@ impl AppCore {
             approved_roots: RwLock::new(approved),
             skills_cache: RwLock::new(Vec::new()),
             mcp_state: RwLock::new(Vec::new()),
+            memory: RwLock::new(MemoryStore::new()),
         })
     }
 
@@ -378,6 +382,143 @@ impl AppCore {
 
     pub async fn mcp_status(&self) -> Vec<McpStatusEntry> {
         self.mcp_state.read().iter().map(entry_to_status).collect()
+    }
+
+    /// 记忆被改动后通知前端刷新面板。
+    pub fn emit_memory_changed(&self, scope: &str) {
+        let _ = self.app.emit(
+            crate::agent::event::EVENT_MEMORY,
+            crate::agent::event::MemoryEvent {
+                scope: scope.to_string(),
+                action: "changed".into(),
+            },
+        );
+    }
+
+    // ---------------------------------------------------------- 长期记忆
+
+    /// 记忆仓库句柄（命令层要用它做增删改）。
+    pub fn memory(&self) -> &RwLock<MemoryStore> {
+        &self.memory
+    }
+
+    /// 记忆功能是否开启（关掉后既不注入提示词，也不给 agent 记忆工具）。
+    pub fn memory_enabled(&self) -> bool {
+        self.config_read().agent.memory_enabled
+    }
+
+    /// 某个主题的记忆作用域 + 它的目录（写盘时要用）。
+    ///
+    /// 为什么不在这里就把记忆读进缓存：读缓存的 load 不能被调用方持有写锁时做，
+    /// 分两步调用（先解析作用域，再 `memory_read`）能避免锁里再取锁。
+    pub fn memory_scope_for(&self, topic: Option<&Topic>) -> (MemoryScope, Option<PathBuf>) {
+        match topic {
+            Some(t) => (MemoryScope::Topic(t.slug()), Some(t.dir.clone())),
+            None => (MemoryScope::Global, None),
+        }
+    }
+
+    /// 在**这个上下文里生效**的记忆作用域，按优先级从高到低：
+    /// 本主题 → 父主题（同一门课记下的事，学某一章时照样成立）→ 全局。
+    /// 元组第二项是给界面/日志看的标签（全局那份为空）。
+    pub fn memory_scopes(&self, topic: Option<&Topic>) -> Vec<(MemoryScope, String)> {
+        let mut out = Vec::new();
+        if let Some(t) = topic {
+            out.push((MemoryScope::Topic(t.slug()), t.meta.name.clone()));
+            for a in self.workspace().ancestors(t) {
+                out.push((MemoryScope::Topic(a.slug()), a.meta.name.clone()));
+            }
+        }
+        out.push((MemoryScope::Global, String::new()));
+        out
+    }
+
+    /// 在只读锁下读记忆（给命令层与工具用）。
+    pub fn memory_read<T>(&self, f: impl FnOnce(&MemoryStore) -> T) -> T {
+        f(&self.memory.read())
+    }
+
+    /// 在写锁下改记忆（增删改都要立刻落盘）。
+    pub fn memory_write<T>(&self, f: impl FnOnce(&mut MemoryStore) -> AppResult<T>) -> AppResult<T> {
+        let mut guard = self.memory.write();
+        f(&mut guard)
+    }
+
+    /// 组装这个上下文的记忆版块（空串表示没有可注入的记忆或功能被关掉了）。
+    ///
+    /// 注意：持有 `parking_lot` 锁的代码块里**不能 await**，所以这里全程同步。
+    pub fn memory_digest(&self, topic: Option<&Topic>) -> String {
+        if !self.memory_enabled() {
+            return String::new();
+        }
+        let cfg = self.config_read();
+        let root = cfg.workspace_root.clone();
+        let mut guard = self.memory.write();
+        if let Err(e) = guard.load(&root) {
+            eprintln!("[memory] 读取全局记忆失败：{e}");
+            return String::new();
+        }
+        // 把本主题与父主题的记忆读进缓存（用户可能刚用编辑器改过文件）
+        if let Some(t) = topic {
+            let mut chain = vec![t.clone()];
+            chain.extend(self.workspace().ancestors(t));
+            for item in chain {
+                if let Err(e) = guard.load_topic(&item.slug(), &item.dir) {
+                    eprintln!("[memory] 读取主题记忆失败：{e}");
+                }
+            }
+        }
+        let scopes = self.memory_scopes(topic);
+        let (text, _, _) = guard.digest(&scopes);
+        text
+    }
+
+    /// 只看不记：和 [`AppCore::memory_digest`] 一样组装版块，但**不**更新使用计数。
+    ///
+    /// 系统提示词预览用它——预览几十次不该把「用了几次」刷成几十次。
+    pub fn memory_peek(&self, topic: Option<&Topic>) -> String {
+        if !self.memory_enabled() {
+            return String::new();
+        }
+        let root = self.config_read().workspace_root.clone();
+        let mut guard = self.memory.write();
+        if let Err(e) = guard.load(&root) {
+            eprintln!("[memory] 读取全局记忆失败：{e}");
+            return String::new();
+        }
+        if let Some(t) = topic {
+            let mut chain = vec![t.clone()];
+            chain.extend(self.workspace().ancestors(t));
+            for item in chain {
+                if let Err(e) = guard.load_topic(&item.slug(), &item.dir) {
+                    eprintln!("[memory] 读取主题记忆失败：{e}");
+                }
+            }
+        }
+        guard.digest_text(&self.memory_scopes(topic))
+    }
+
+    /// 把攒着的「记忆被用到过」落盘（切换主题、关窗口前调用）。
+    pub fn memory_flush(&self) {
+        if !self.memory_enabled() {
+            return;
+        }
+        let root = self.config_read().workspace_root.clone();
+        // 主题 slug 就是工作区下的一级目录名，直接拼即可（父主题与子主题都是平级目录）
+        let topics: Vec<(String, PathBuf)> = self
+            .workspace()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| (t.slug.clone(), root.join(&t.slug)))
+            .collect();
+        let mut guard = self.memory.write();
+        if let Err(e) = guard
+            .load(&root)
+            .and_then(|_| guard.flush(&topics))
+        {
+            eprintln!("[memory] 长期记忆落盘失败：{e}");
+        }
     }
 
     // ---------------------------------------------------------- 沙箱

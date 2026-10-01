@@ -12,6 +12,7 @@ pub mod fs;
 pub mod kb;
 pub mod lesson;
 pub mod mcp;
+pub mod memory;
 pub mod mindmap;
 pub mod quiz;
 pub mod skills;
@@ -82,6 +83,11 @@ pub fn registry() -> ToolRegistry {
     r.register(Arc::new(skills::SkillList))
         .register(Arc::new(skills::SkillRead))
         .register(Arc::new(skills::McpStatus));
+
+    // --- 长期记忆（总开关关闭时会在 run_turn 里被摘掉）---
+    r.register(Arc::new(memory::MemoryWrite))
+        .register(Arc::new(memory::MemoryList))
+        .register(Arc::new(memory::MemoryForget));
 
     // --- 联网 ---
     r.register(Arc::new(web::WebFetch)).register(Arc::new(web::WebSearch));

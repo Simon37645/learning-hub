@@ -10,6 +10,7 @@ pub mod extend;
 pub mod file;
 pub mod app;
 pub mod lesson;
+pub mod memory;
 pub mod quiz;
 pub mod study;
 pub mod topic;

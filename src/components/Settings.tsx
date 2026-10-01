@@ -282,6 +282,30 @@ export function Settings() {
           </div>
         </section>
 
+        {/* ---------------- 长期记忆 ---------------- */}
+        <section className="col">
+          <h2>
+            长期记忆 <span className="sub">记住你的特点与「以后要注意的地方」</span>
+          </h2>
+          <div className="card-box">
+            <Switch
+              checked={agent.memoryEnabled}
+              onChange={(v) => void patchConfig({ memoryEnabled: v })}
+              label="启用长期记忆：每轮对话都把相关记忆交给 agent"
+            />
+            <div className="muted" style={{ fontSize: 12 }}>
+              agent 会在对话里主动记下值得长期保留的信息（你的基础、偏好、反复出错的点、还缺的前置），
+              记在 <code className="mono">.hub/memory/memories.jsonl</code> 里——
+              普通文本，可以直接用编辑器改。关掉开关只是不再注入提示词，已有记忆仍可查看。
+            </div>
+            <div className="row">
+              <span className="muted" style={{ fontSize: 12 }}>
+                查看、编辑、钉住或删除记忆：侧栏顶部的「记忆」。
+              </span>
+            </div>
+          </div>
+        </section>
+
         {/* ---------------- 技能与 MCP 的入口 ---------------- */}
         <section className="col">
           <h2>

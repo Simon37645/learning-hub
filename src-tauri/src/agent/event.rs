@@ -160,6 +160,21 @@ pub const EVENT_AGENT: &str = "hub://agent";
 pub const EVENT_VIEWER: &str = "hub://viewer";
 pub const EVENT_TOPICS: &str = "hub://topics";
 pub const EVENT_TOAST: &str = "hub://toast";
+/// 长期记忆发生变化（agent 记下/删掉了什么，或用户在面板里改了）。
+///
+/// 单独开一个频道而不是塞进 `hub://topics`：记忆有全局与主题两级，
+/// 顶级主题列表未必需要跟着刷新，但「记忆」面板一定要。
+pub const EVENT_MEMORY: &str = "hub://memory";
+
+/// 记忆变化事件：前端收到就重拉一次记忆总览。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEvent {
+    /// 哪个范围变了（界面上提示用，例如「主题「线性代数」」）
+    pub scope: String,
+    /// agent 写入 / 用户编辑 / 删除
+    pub action: String,
+}
 
 /// 查看器事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]

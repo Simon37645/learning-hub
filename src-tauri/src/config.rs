@@ -297,6 +297,10 @@ pub struct AgentConfig {
     /// 全局层面禁用的技能（按 id）
     #[serde(default)]
     pub disabled_skills: Vec<String>,
+    /// 长期记忆：把「用户是什么样的人、以后要注意什么」记下来，每轮注入提示词。
+    /// 关掉后既不注入也不给 agent 记忆工具（面板里还能看和编辑已有的记忆）
+    #[serde(default = "yes")]
+    pub memory_enabled: bool,
 }
 
 fn default_max_iterations() -> u32 {
@@ -324,6 +328,7 @@ impl Default for AgentConfig {
             extra_skill_dirs: Vec::new(),
             mcp_servers: Vec::new(),
             disabled_skills: Vec::new(),
+            memory_enabled: true,
         }
     }
 }

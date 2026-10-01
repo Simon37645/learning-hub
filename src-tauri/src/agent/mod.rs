@@ -12,6 +12,7 @@
 //! - 工具按风险分级，按配置的权限模式决定是否打断用户
 //! - 上下文超预算时，从最早的「完整轮次」开始丢，绝不切断工具调用与结果的配对
 
+pub mod chats;
 pub mod event;
 pub mod message;
 pub mod prompt;
@@ -257,13 +258,18 @@ impl AgentService {
             tool_catalog: self.describe_tools(),
             tool_names: self.tool_names(),
             skill_catalog: crate::skills::catalog(&core.skills_for(topic.as_ref()), 120),
+            // 长期记忆：在这一轮开始时就装进提示词，并记下「被用到过」
+            memory: core.memory_digest(topic.as_ref()),
         });
         let system = format!("{}\n\n{}", prompt::current_date_line(), system);
 
-        // 只把「当前主题下启用」的外部工具给模型（主题级开关在这里生效）
+        // 只把「当前主题下启用」的外部工具给模型（主题级开关在这里生效）；
+        // 记忆总开关关掉时，记忆工具也要摘掉——否则模型会一次次尝试写入再被拒。
+        let memory_on = cfg.agent.memory_enabled;
         let specs = if profile.supports_tools {
             self.tools_specs()
                 .into_iter()
+                .filter(|t| memory_on || !crate::agent::tools::memory::is_memory_tool(&t.name))
                 .filter(|t| core.mcp_tool_allowed(&t.name, topic.as_ref()))
                 .collect::<Vec<_>>()
         } else {
@@ -874,6 +880,17 @@ fn append_transcript(
 ) -> AppResult<()> {
     let path = transcript_path(core, topic, chat_id);
     store::append_jsonl(&path, msg)
+}
+
+/// 整份重写一条对话（分叉时写新文件用；普通追加仍走 [`append_transcript`]）。
+pub fn write_transcript(
+    core: &AppCore,
+    topic: Option<&Topic>,
+    chat_id: &str,
+    messages: &[ChatMessage],
+) -> AppResult<()> {
+    let path = transcript_path(core, topic, chat_id);
+    store::write_jsonl(&path, messages)
 }
 
 /// 读取一段对话记录（给前端展示历史）。

@@ -40,6 +40,11 @@ import type {
   McpOverview,
   McpStatusEntry,
   McpServerConfig,
+  MemoryInput,
+  MemoryKindInfo,
+  MemoryOverview,
+  MemoryPaths,
+  MemoryScope,
   LessonPlan,
   LessonStep,
   StepStatus,
@@ -128,10 +133,24 @@ export const api = {
     invoke<ChatMessage[]>("agent_transcript", { chatId, topicSlug: topicSlug ?? null }),
   agentChats: (topicSlug?: string | null) =>
     invoke<string[]>("agent_chats", { topicSlug: topicSlug ?? null }),
-  chatOverview: (topicSlug?: string | null) =>
-    invoke<ChatOverviewItem[]>("chat_overview", { topicSlug: topicSlug ?? null }),
+  chatOverview: (topicSlug?: string | null, includeArchived?: boolean) =>
+    invoke<ChatOverviewItem[]>("chat_overview", {
+      topicSlug: topicSlug ?? null,
+      includeArchived: includeArchived ?? false,
+    }),
   chatMove: (chatId: string, fromSlug: string, toSlug: string) =>
     invoke<void>("chat_move", { chatId, fromSlug, toSlug }),
+  chatRename: (chatId: string, title: string, topicSlug?: string | null) =>
+    invoke<ChatOverviewItem[]>("chat_rename", { chatId, title, topicSlug: topicSlug ?? null }),
+  chatPin: (chatId: string, pinned: boolean, topicSlug?: string | null) =>
+    invoke<ChatOverviewItem[]>("chat_pin", { chatId, pinned, topicSlug: topicSlug ?? null }),
+  chatArchive: (chatId: string, archived: boolean, topicSlug?: string | null) =>
+    invoke<ChatOverviewItem[]>("chat_archive", { chatId, archived, topicSlug: topicSlug ?? null }),
+  /** 分叉：在「最后一个完整回合」处截断复制成新对话，返回新对话 id */
+  chatFork: (chatId: string, topicSlug?: string | null, toSlug?: string | null) =>
+    invoke<string>("chat_fork", { chatId, topicSlug: topicSlug ?? null, toSlug: toSlug ?? null }),
+  chatDelete: (chatId: string, topicSlug?: string | null) =>
+    invoke<void>("chat_delete", { chatId, topicSlug: topicSlug ?? null }),
   agentNewChat: () => invoke<string>("agent_new_chat"),
 
   // ---------------- 内置浏览器 ----------------
@@ -292,6 +311,24 @@ export const api = {
     invoke<McpStatusEntry[]>("mcp_set_enabled", { name, enabled, scope, topicSlug: topicSlug ?? null }),
   /** 一键开关全部 MCP 服务器 */
   mcpSetAll: (enabled: boolean) => invoke<McpStatusEntry[]>("mcp_set_all", { enabled }),
+
+  // ---------------- 长期记忆 ----------------
+  memoryOverview: (topicSlug?: string | null) =>
+    invoke<MemoryOverview>("memory_overview", { topicSlug: topicSlug ?? null }),
+  memoryUpsert: (input: MemoryInput, scope: MemoryScope, topicSlug?: string | null) =>
+    invoke<MemoryOverview>("memory_upsert", { input, scope, topicSlug: topicSlug ?? null }),
+  memoryDelete: (id: string, scope: MemoryScope, topicSlug?: string | null) =>
+    invoke<MemoryOverview>("memory_delete", { id, scope, topicSlug: topicSlug ?? null }),
+  memorySetPinned: (id: string, pinned: boolean, scope: MemoryScope, topicSlug?: string | null) =>
+    invoke<MemoryOverview>("memory_set_pinned", { id, pinned, scope, topicSlug: topicSlug ?? null }),
+  memoryClear: (scope: MemoryScope, topicSlug?: string | null) =>
+    invoke<number>("memory_clear", { scope, topicSlug: topicSlug ?? null }),
+  memorySetEnabled: (enabled: boolean, topicSlug?: string | null) =>
+    invoke<MemoryOverview>("memory_set_enabled", { enabled, topicSlug: topicSlug ?? null }),
+  /** 分类的中文名与说明由后端给，前端不重复维护一份 */
+  memoryKinds: () => invoke<MemoryKindInfo[]>("memory_kinds"),
+  memoryPaths: (topicSlug?: string | null) =>
+    invoke<MemoryPaths>("memory_paths", { topicSlug: topicSlug ?? null }),
 
   // ---------------- 讲解方案 ----------------
   lessonList: (slug: string) => invoke<LessonPlan[]>("lesson_list", { slug }),

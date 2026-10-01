@@ -167,10 +167,26 @@ export interface TopicMatch {
 /** 侧栏「对话」列表里的一项 */
 export interface ChatOverviewItem {
   id: string;
-  /** 第一条用户消息的前 40 字；空串表示还没聊过 */
+  /** 显示标题：用户起过名就用它，否则是第一句用户消息的前 40 字 */
   title: string;
+  /** 用户是否自己改过名（可以「恢复自动标题」） */
+  customTitle: boolean;
   messages: number;
   updatedAt: string;
+  /** 置顶：排在该主题对话列表最前面 */
+  pinned: boolean;
+  /** 归档：默认收进侧栏的「已归档」分组 */
+  archived: boolean;
+  /** 分叉血缘（从哪条对话、第几条消息分出来的） */
+  forkedFrom?: ChatForkInfo | null;
+}
+
+/** 分叉血缘：只记「从哪来」，不记「分出去哪些」 */
+export interface ChatForkInfo {
+  chatId: string;
+  /** 分叉点在原对话里的消息序号（0 基） */
+  atMessage: number;
+  title: string;
 }
 
 // ---------------------------------------------------------------- 卡片 / 任务
@@ -288,6 +304,8 @@ export interface AgentConfig {
   sandbox: boolean;
   /** 用户批准过的「工作区之外」的目录 */
   approvedRoots: string[];
+  /** 长期记忆：记下用户的特点与注意事项，每轮注入系统提示词 */
+  memoryEnabled: boolean;
 }
 
 export interface ViewerConfig {
@@ -399,6 +417,8 @@ export interface ConfigPatch {
   homeUrl?: string;
   searchEngine?: string;
   theme?: ThemeMode;
+  /** 长期记忆总开关 */
+  memoryEnabled?: boolean;
   /** 撤销某个已授权目录 */
   revokeRoot?: string;
   /** 清空全部越权白名单 */
@@ -787,4 +807,85 @@ export interface McpOverview {
   topic: McpEntryView[];
   topicName?: string | null;
 }
+
+// ---------------------------------------------------------------- 长期记忆
+
+/**
+ * 记忆的分类。**不是装饰**：提示词里按类分组注入，模型据此决定怎么用这条记忆。
+ * 中文名由后端给（`memory_kinds`），前端不再写一份。
+ */
+export type MemoryKind = "fact" | "preference" | "goal" | "pitfall" | "style" | "gap";
+
+/** 记忆的作用域：全局（所有主题）或某个主题 */
+export type MemoryScope = "global" | "topic";
+
+export const MEMORY_SCOPE_LABEL: Record<MemoryScope, string> = {
+  global: "全局",
+  topic: "本主题",
+};
+
+export interface MemoryItem {
+  id: string;
+  kind: MemoryKind;
+  content: string;
+  note: string;
+  source?: string | null;
+  /** 钉住的永远优先注入（称呼、总目标这类） */
+  pinned: boolean;
+  scope: MemoryScope;
+  topicSlug?: string | null;
+  topicName?: string | null;
+  /** 从父主题继承来的：本主题里可见，但要改得去父主题 */
+  inherited: boolean;
+  createdAt: string;
+  updatedAt?: string | null;
+  lastUsed?: string | null;
+  /** 被写进提示词多少次——用来发现「记了从来没起过作用」的条目 */
+  useCount: number;
+}
+
+export interface MemoryOverview {
+  /** 记忆总开关 */
+  enabled: boolean;
+  topicName?: string | null;
+  /** 真正会写进系统提示词的条数 */
+  activeCount: number;
+  /** 注入提示词的字符数（提示词预览里能看到同样内容） */
+  digestChars: number;
+  /** 单个作用域的容量上限 */
+  limit: number;
+  global: MemoryItem[];
+  topic: MemoryItem[];
+  /** 从父主题继承的（只读展示） */
+  inherited: MemoryItem[];
+}
+
+export interface MemoryKindInfo {
+  id: MemoryKind;
+  label: string;
+  hint: string;
+}
+
+export interface MemoryPaths {
+  global: string;
+  topic?: string | null;
+  limit: number;
+}
+
+export interface MemoryInput {
+  /** 有 id 是修改，没有是新增 */
+  id?: string | null;
+  kind?: MemoryKind;
+  content: string;
+  note?: string;
+  source?: string;
+  pinned?: boolean;
+}
+
+/** hub://memory 事件：记忆被 agent 或别处改动过 */
+export interface MemoryEvent {
+  scope: string;
+  action: string;
+}
+
 

@@ -21,6 +21,7 @@ import type {
   ChatOverviewItem,
   ConfigPatch,
   DailyBrief,
+  MemoryEvent,
   Note,
   NoteSummary,
   OpenRequest,
@@ -107,6 +108,8 @@ interface AppStore {
   approval: ApprovalRequest | null;
   /** 每跑完一轮 +1：讲解步骤面板靠它刷新（agent 会在这一轮里改方案） */
   lessonTick: number;
+  /** 每次记忆变化 +1：记忆面板靠它刷新（agent 可能在对话里刚记下一条） */
+  memoryTick: number;
 
   // --- 内置浏览器 ---
   viewer: ViewerSnapshot;
@@ -149,6 +152,16 @@ interface AppStore {
   loadChats: (slug?: string | null) => Promise<void>;
   /** 把一条对话挪到另一个主题（侧栏拖拽整理） */
   moveChat: (chatId: string, fromSlug: string, toSlug: string) => Promise<void>;
+  /** 改对话名字（空串＝恢复「第一句话」的自动标题） */
+  renameChat: (chatId: string, title: string, slug?: string | null) => Promise<void>;
+  /** 置顶 / 取消置顶 */
+  pinChat: (chatId: string, pinned: boolean, slug?: string | null) => Promise<void>;
+  /** 归档 / 取消归档（归档的收进侧栏「已归档」分组） */
+  archiveChat: (chatId: string, archived: boolean, slug?: string | null) => Promise<void>;
+  /** 从某条对话分叉出新的分支（原对话不动），返回新对话 id */
+  forkChat: (chatId: string, slug?: string | null) => Promise<string | null>;
+  /** 把一条对话移进回收站 */
+  deleteChat: (chatId: string, slug?: string | null) => Promise<void>;
   send: (text: string, attachments?: string[]) => Promise<void>;
   stop: () => Promise<void>;
   approve: (allow: boolean, always: boolean) => Promise<void>;
@@ -235,6 +248,7 @@ export const useApp = create<AppStore>((set, get) => ({
   chatError: null,
   approval: null,
   lessonTick: 0,
+  memoryTick: 0,
 
   viewer: { tabs: [], activeId: null, visible: false },
   viewerWidth: 460,
@@ -418,10 +432,72 @@ export const useApp = create<AppStore>((set, get) => ({
   async loadChats(slug) {
     const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
     try {
-      const items = await api.chatOverview(target);
+      // 带上归档的：它们要显示在「已归档」分组里，前端自己分拣
+      const items = await api.chatOverview(target, true);
       set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
     } catch (e) {
       console.warn("读取对话清单失败", e);
+    }
+  },
+
+  // 改名 / 置顶 / 归档都由后端算好新清单，前端直接替换——
+  // 排序规则（置顶在前、归档沉底）只在 Rust 里写一份，别在界面上再排一遍
+  async renameChat(chatId, title, slug) {
+    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+    try {
+      const items = await api.chatRename(chatId, title, target);
+      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
+      get().toast("success", title.trim() ? "对话已改名" : "已恢复自动标题");
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
+
+  async pinChat(chatId, pinned, slug) {
+    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+    try {
+      const items = await api.chatPin(chatId, pinned, target);
+      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
+
+  async archiveChat(chatId, archived, slug) {
+    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+    try {
+      const items = await api.chatArchive(chatId, archived, target);
+      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
+      get().toast("info", archived ? "已归档，可在侧栏「已归档」里找回来" : "已取消归档");
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
+
+  async forkChat(chatId, slug) {
+    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+    try {
+      const newId = await api.chatFork(chatId, target);
+      await get().loadChats(target);
+      get().toast("success", "已分叉出一条新对话（原对话没动）");
+      return newId;
+    } catch (e) {
+      get().toast("error", errText(e));
+      return null;
+    }
+  },
+
+  async deleteChat(chatId, slug) {
+    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+    try {
+      await api.chatDelete(chatId, target);
+      await get().refreshTopics();
+      await get().loadChats(target);
+      // 正在看的就是被删的那条：换个空对话，免得接着聊又写回被删的文件
+      if (get().chatId === chatId) await get().newChat();
+      get().toast("info", "对话已移入回收站");
+    } catch (e) {
+      get().toast("error", errText(e));
     }
   },
 
@@ -917,6 +993,11 @@ async function bootstrapStore(
     });
     await listen<ToastEvent>("hub://toast", (e) => {
       get().toast(e.payload.level, e.payload.message);
+    });
+    // 记忆变化（agent 用 memory_write 记下/删掉，或用户在面板里改过）：
+    // 这里只推一个计数，界面按需重拉——记忆面板关着时不必付重扫的成本
+    await listen<MemoryEvent>("hub://memory", () => {
+      set((s) => ({ memoryTick: s.memoryTick + 1 }));
     });
 
     void get().refreshBrief();

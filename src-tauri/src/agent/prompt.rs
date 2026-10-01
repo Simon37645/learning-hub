@@ -21,6 +21,8 @@ pub struct PromptInputs<'a> {
     pub tool_names: Vec<String>,
     /// 技能清单（只有名字与适用场景，正文按需用 skill_read 读）
     pub skill_catalog: String,
+    /// 长期记忆的版块（已经由 `AppCore::memory_digest` 组装好；空串表示没有可注入的）
+    pub memory: String,
 }
 
 pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
@@ -62,6 +64,30 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
          - 写笔记时用 Markdown，标题用 `#`，公式用 LaTeX；文件名用「内容主题」命名，不要用日期堆砌。\n\
          - 覆盖已有文件前先读一遍，确认不会丢掉用户自己写的内容。\n",
     );
+
+    // ---- 长期记忆：先让模型知道「眼前这个人是谁、以前踩过什么坑」 ----
+    // 位置放在主题上下文之前：讲什么之前先知道该对谁讲。
+    if inp.memory.trim().is_empty() {
+        p.push_str(
+            "\n## 长期记忆\n\
+             现在还没有关于这位用户的长期记忆。如果这轮里出现了**以后还用得上**的信息\
+             （他是谁、偏好怎么学、反复错在哪、缺哪个前置），用 `memory_write` 记下来——\
+             下次对话你会自动看到它，用户也能在「记忆」面板里查看和修改。\n",
+        );
+    } else {
+        p.push_str(
+            "\n## 长期记忆（以前记下的，自动带上；当作事实用，别再重复记）\n",
+        );
+        p.push_str(inp.memory.trim());
+        p.push('\n');
+        p.push_str(
+            "- 上面每条的括注是记下/更新它的日期。做涉及时间的承诺前先看一眼日期，\
+             明显过时的（比如已经考完的考试）先用 `memory_list` 核对，再决定要不要 `memory_forget`。\n\
+             - 这轮如果发现新的、稳定的信息（偏好、易错点、缺的前置），用 `memory_write` 补上；\
+             只有**跨主题都成立**的事才写 global，其余写进当前主题。\n\
+             - 不要把自己推测出来的东西记成事实，也不要记一次性的临时约定。\n",
+        );
+    }
 
     // 技能走渐进式披露：这里只给「有什么技能、什么时候用」
     if !inp.skill_catalog.trim().is_empty() {
@@ -370,6 +396,7 @@ mod tests {
             tool_catalog: String::new(),
             tool_names: Vec::new(),
             skill_catalog: String::new(),
+            memory: String::new(),
         });
 
         assert!(prompt.contains("- 上级主题：线性代数"), "缺少上级主题行");
@@ -383,6 +410,48 @@ mod tests {
         assert!(prompt.contains("（本主题的父主题）"), "其它主题清单没标出父子关系");
         // 父主题自己的资料不该被当成「本主题」的资料重复列一遍
         assert!(!prompt.contains("### 主题资料（可以用 viewer_open 打开、用 viewer_read 阅读）"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 长期记忆要出现在系统提示词里，而且位置在「当前主题」之前——
+    /// 讲什么之前先知道该对谁讲。没有记忆时也要给一段「什么时候该记」的指引。
+    #[test]
+    fn prompt_carries_memory_block_before_topic() {
+        let tmp = std::env::temp_dir().join(format!("lh-prompt-mem-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let topic = ws.create("线性代数", "整门课", None, None).unwrap();
+        let cfg = AppConfig::bootstrap(tmp.clone());
+
+        let with_mem = build_system_prompt(&PromptInputs {
+            config: &cfg,
+            topic: Some(&topic),
+            stage: None,
+            supports_tools: true,
+            tool_catalog: String::new(),
+            tool_names: Vec::new(),
+            skill_catalog: String::new(),
+            memory: "**注意**\n- ★他把特征值和特征向量搞混（2024-05-01）\n".to_string(),
+        });
+        let mem_at = with_mem.find("## 长期记忆").expect("缺少长期记忆段");
+        let topic_at = with_mem.find("## 当前主题").expect("缺少当前主题段");
+        assert!(mem_at < topic_at, "长期记忆应排在当前主题之前");
+        assert!(with_mem.contains("他把特征值和特征向量搞混"));
+        // 提醒模型别重复记、并且要判断时效
+        assert!(with_mem.contains("别再重复记"));
+        assert!(with_mem.contains("memory_write"));
+
+        let empty = build_system_prompt(&PromptInputs {
+            config: &cfg,
+            topic: Some(&topic),
+            stage: None,
+            supports_tools: true,
+            tool_catalog: String::new(),
+            tool_names: Vec::new(),
+            skill_catalog: String::new(),
+            memory: String::new(),
+        });
+        assert!(empty.contains("还没有关于这位用户的长期记忆"));
 
         std::fs::remove_dir_all(&tmp).ok();
     }

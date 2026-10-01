@@ -106,6 +106,8 @@ pub async fn topic_get(state: State<'_, AppState>, slug: String) -> AppResult<To
 #[tauri::command]
 pub async fn topic_open(state: State<'_, AppState>, slug: String) -> AppResult<TopicDetail> {
     let core = state.0.clone();
+    // 换主题前把上一个主题攒着的「记忆被用到过」落盘（不然换了主题就丢了）
+    core.memory_flush();
     let mut topic = core.workspace().resolve(&slug)?;
     topic.meta.last_opened_at = Some(Utc::now());
     topic.save_meta()?;

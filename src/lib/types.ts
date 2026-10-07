@@ -45,7 +45,17 @@ export interface MessageMeta {
   durationMs?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  /** 输入里由缓存提供的部分。服务商没报就是 null/undefined——这一轮不计入命中率 */
+  cachedTokens?: number | null;
+  /** 这一轮写进缓存的部分（Anthropic 才有） */
+  cacheWriteTokens?: number | null;
   interrupted?: boolean;
+}
+
+/** 「上下文构成」里的一块：标签 + 估算 token 数（后端按字符估的，只用来画比例） */
+export interface ContextPart {
+  label: string;
+  tokens: number;
 }
 
 export interface ChatMessage {
@@ -517,7 +527,17 @@ export type AgentEvent =
     }
   | { kind: "tool_started"; turn_id: string; call_id: string; name: string; summary: string; risk: Risk }
   | { kind: "tool_finished"; turn_id: string; outcome: ToolOutcomeView }
-  | { kind: "usage"; turn_id: string; input_tokens: number; output_tokens: number }
+  | {
+      kind: "usage";
+      turn_id: string;
+      input_tokens: number;
+      output_tokens: number;
+      /** 服务商报的真实用量；不报就是 0（界面把这轮算作「无数据」） */
+      cached_tokens?: number;
+      cache_write_tokens?: number;
+      /** 最后一次请求的上下文构成 */
+      context?: ContextPart[];
+    }
   | { kind: "finished"; turn_id: string; reason: string; duration_ms: number; interrupts: number }
   | { kind: "failed"; turn_id: string; message: string };
 

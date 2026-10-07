@@ -5,7 +5,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useApp, type ToolActivity } from "../store/app";
 import { api, errText } from "../lib/api";
 import { highlightWithin, linkifyCitations, renderMarkdown, renderMermaidIn } from "../lib/markdown";
-import { clampText, fmtClock, hotkey } from "../lib/format";
+import { clampText, fmtClock, fmtTokens, hotkey } from "../lib/format";
+import { contextShares, summarizeCache } from "../lib/usage";
 import { LessonSteps } from "./Lesson";
 import {
   EFFORT_HINT,
@@ -459,6 +460,85 @@ function ChatHead() {
   );
 }
 
+// ---------------------------------------------------------------- 用量徽标
+
+/** 对话整体缓存命中率：平时一枚小胶囊，光标移上去展开明细。
+ *
+ * 数字只认**服务商在流里报的真实用量**（provider 层解析的 usage）。服务商不报的轮次
+ * 不计入，一轮都没有就整块不显示——宁可没有，也不给一个假的 0%。
+ * 「整体」= 这条对话所有报过用量的轮次里，命中 token / 输入 token 的累计值。 */
+export function CacheBadge() {
+  const messages = useApp((s) => s.messages);
+  const usage = useApp((s) => s.usage);
+  const [open, setOpen] = useState(false);
+
+  const sum = useMemo(() => summarizeCache(messages), [messages]);
+  const parts = useMemo(() => contextShares(usage?.context ?? []), [usage]);
+
+  if (sum.turns === 0) return null;
+
+  return (
+    <div
+      className="cache-badge"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button className="pill-select" title="这条对话整体的缓存命中率（光标移上去看明细）">
+        <Icon name="target" size={13} />
+        <span className="ellip">缓存 {sum.rate.toFixed(1)}%</span>
+      </button>
+      {open && (
+        <div className="cache-pop">
+          <div className="cp-head">
+            <span>上下文构成</span>
+            <span className="muted">
+              输入 {fmtTokens(usage?.input ?? 0)} · 输出 {fmtTokens(usage?.output ?? 0)}
+            </span>
+          </div>
+          {parts.length > 0 && (
+            <>
+              <div className="cp-bar">
+                {parts.map((p, i) => (
+                  <i key={p.label} style={{ width: `${p.share}%`, background: partColor(i) }} />
+                ))}
+              </div>
+              {parts.map((p, i) => (
+                <div className="cp-row" key={p.label}>
+                  <span className="cp-label">
+                    <span className="dot" style={{ background: partColor(i) }} />
+                    {p.label}
+                  </span>
+                  <span>{p.share.toFixed(1)}%</span>
+                </div>
+              ))}
+            </>
+          )}
+          <div className="cp-sep" />
+          <div className="cp-row cp-strong">
+            <span>缓存命中率（本对话累计）</span>
+            <span>{sum.rate.toFixed(1)}%</span>
+          </div>
+          <div className="cp-row">
+            <span>
+              命中 {fmtTokens(sum.cached)} / 输入 {fmtTokens(sum.input)}
+            </span>
+            <span>{sum.turns} 轮</span>
+          </div>
+          <div className="cp-hint">
+            命中率由服务商返回的用量算出（OpenAI 需端点支持 stream_options）；
+            「上下文构成」是按字符估的比例。
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 上下文各块的颜色：同一支强调色按比例调深浅，不引入新色板 */
+function partColor(i: number): string {
+  return `color-mix(in srgb, var(--accent) ${Math.max(12, 100 - i * 18)}%, var(--border-strong))`;
+}
+
 // ---------------------------------------------------------------- 输入区
 
 function Composer() {
@@ -545,7 +625,7 @@ function Composer() {
         <div className="composer-bar">
           <button
             className="pill-select"
-            title="导入资料：把课件 / 论文 / 截图复制进主题的 materials/（直接拖进窗口也行）"
+            title="导入资料：把课件 / 论文 / 讲义 / 截图复制进主题的 materials/（直接拖进窗口也行）"
             onClick={pickFiles}
             disabled={importing}
           >
@@ -627,6 +707,9 @@ function Composer() {
           </Dropdown>
 
           <div className="spacer" />
+
+          {/* 用量：这条对话整体缓存命中多少（光标移上去看上下文构成） */}
+          <CacheBadge />
 
           {/* 思考强度：和模型选择放在一起，随时能调 */}
           <Dropdown

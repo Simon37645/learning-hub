@@ -1275,6 +1275,102 @@ body.dragging-chat {
   flex: 1;
 }
 
+/* 缓存命中率徽标：胶囊本身用 .pill-select，悬停时在它上面展开明细。
+   明细里的数字来自服务商报的用量，「上下文构成」是按字符估的比例。 */
+.cache-badge {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.cache-badge .pill-select {
+  cursor: default;
+}
+
+.cache-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  width: 272px;
+  padding: 10px 12px 11px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+  color: var(--text-sub);
+}
+
+.cache-pop .cp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.cache-pop .cp-head .muted {
+  font-weight: 400;
+  font-size: 11.5px;
+}
+
+.cache-pop .cp-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-active);
+  margin-bottom: 8px;
+}
+
+.cache-pop .cp-bar i {
+  display: block;
+  height: 100%;
+}
+
+.cache-pop .cp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.cache-pop .cp-row .cp-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cache-pop .cp-row .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.cache-pop .cp-strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.cache-pop .cp-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+}
+
+.cache-pop .cp-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
 .pill-select {
   display: inline-flex;
   align-items: center;

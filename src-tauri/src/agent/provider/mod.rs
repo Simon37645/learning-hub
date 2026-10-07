@@ -32,6 +32,38 @@ pub struct ChatRequest {
     pub cancel: Arc<AtomicBool>,
 }
 
+/// 服务商报回来的**真实**用量（不是本地估算）。
+///
+/// 各家的字段口径不一样，这里统一成：
+/// - `input_tokens` = 这次请求的**输入总量**（命中缓存的那部分也算在内）
+/// - `cached_tokens` = 其中由缓存提供的部分（OpenAI 的 `prompt_tokens_details.cached_tokens`、
+///   DeepSeek 的 `prompt_cache_hit_tokens`、Anthropic 的 `cache_read_input_tokens`）
+/// - `cache_write_tokens` = 这次写进缓存的部分（Anthropic 的 `cache_creation_input_tokens`）
+///
+/// `cached_tokens / input_tokens` 就是界面上那个「缓存命中率」。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProviderUsage {
+    pub input_tokens: u32,
+    pub cached_tokens: u32,
+    pub cache_write_tokens: u32,
+    pub output_tokens: u32,
+}
+
+impl ProviderUsage {
+    /// 合并同一轮里的多次上报（Anthropic 把输入放在 message_start、输出放在 message_delta；
+    /// 这些字段都是累计值，所以取较大者）。
+    pub fn merge(&mut self, other: ProviderUsage) {
+        self.input_tokens = self.input_tokens.max(other.input_tokens);
+        self.cached_tokens = self.cached_tokens.max(other.cached_tokens);
+        self.cache_write_tokens = self.cache_write_tokens.max(other.cache_write_tokens);
+        self.output_tokens = self.output_tokens.max(other.output_tokens);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.input_tokens == 0 && self.output_tokens == 0
+    }
+}
+
 /// 服务商返回的流式增量（尚未累积成完整消息）。
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
@@ -46,6 +78,9 @@ pub enum StreamEvent {
     },
     /// 结束原因：stop / tool_calls / length …
     Finish(String),
+    /// 真实用量。可能来一次（OpenAI 兼容端点通常在最后一块，且那一块 `choices` 是空的），
+    /// 也可能来两次（Anthropic：输入在 message_start、输出在 message_delta）。
+    Usage(ProviderUsage),
 }
 
 #[async_trait]

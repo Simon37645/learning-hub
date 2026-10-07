@@ -5,7 +5,7 @@
 //! 2. 工具调用/结果是内容块（`tool_use` / `tool_result`），不是独立字段
 //! 3. user / assistant 必须交替出现，同角色连续消息需要合并
 
-use super::{error_from_response, pump_sse, ChatRequest, LlmProvider, StreamEvent};
+use super::{error_from_response, pump_sse, ChatRequest, LlmProvider, ProviderUsage, StreamEvent};
 use crate::agent::message::{ChatMessage, ContentBlock, Role};
 use crate::agent::registry::ToolSpec;
 use crate::config::{ProviderKind, ProviderProfile};
@@ -167,6 +167,12 @@ impl LlmProvider for AnthropicProvider {
                         _ => {}
                     }
                 }
+                // 输入用量（含缓存命中/写入）在 message_start 里
+                "message_start" => {
+                    if let Some(u) = v.pointer("/message/usage").and_then(usage_from_anthropic) {
+                        let _ = tx.send(StreamEvent::Usage(u));
+                    }
+                }
                 "message_delta" => {
                     if let Some(reason) = v.pointer("/delta/stop_reason").and_then(|r| r.as_str()) {
                         let mapped = match reason {
@@ -177,6 +183,10 @@ impl LlmProvider for AnthropicProvider {
                         };
                         let _ = tx.send(StreamEvent::Finish(mapped.to_string()));
                     }
+                    // 累计输出量在 message_delta 的 usage 里
+                    if let Some(u) = v.get("usage").and_then(usage_from_anthropic) {
+                        let _ = tx.send(StreamEvent::Usage(u));
+                    }
                 }
                 "message_stop" => return Ok(false),
                 _ => {}
@@ -185,6 +195,29 @@ impl LlmProvider for AnthropicProvider {
         })
         .await
     }
+}
+
+/// 从 Anthropic 的 `usage` 对象里取用量。
+///
+/// 口径和 OpenAI 不同：`input_tokens` 只算**没命中缓存**的那部分，
+/// 所以这里的输入总量 = input + cache_read + cache_creation，
+/// 命中量就是 `cache_read_input_tokens`（写进去的那次算未命中，符合直觉）。
+fn usage_from_anthropic(u: &Value) -> Option<ProviderUsage> {
+    let num = |k: &str| u.get(k).and_then(|v| v.as_u64()).map(|n| n as u32).unwrap_or(0);
+    let fresh = num("input_tokens");
+    let read = num("cache_read_input_tokens");
+    let write = num("cache_creation_input_tokens");
+    let output = num("output_tokens");
+    let total_in = fresh + read + write;
+    if total_in == 0 && output == 0 {
+        return None;
+    }
+    Some(ProviderUsage {
+        input_tokens: total_in,
+        cached_tokens: read,
+        cache_write_tokens: write,
+        output_tokens: output,
+    })
 }
 
 /// 该不该开 extended thinking，开了的话预算是多少。
@@ -283,6 +316,30 @@ fn to_anthropic_tools(tools: &[ToolSpec]) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_usage_sums_cache_into_input() {
+        // message_start 的形状：input_tokens 只是「没命中」的那部分
+        let start = json!({
+            "input_tokens": 120,
+            "cache_read_input_tokens": 8800,
+            "cache_creation_input_tokens": 80,
+            "output_tokens": 1
+        });
+        let u = usage_from_anthropic(&start).expect("应当解析出用量");
+        assert_eq!(u.input_tokens, 9000, "总量 = 未命中 + 命中 + 写入");
+        assert_eq!(u.cached_tokens, 8800, "命中量只有 cache_read");
+        assert_eq!(u.cache_write_tokens, 80);
+
+        // message_delta 的形状：只有累计输出
+        let delta = json!({ "output_tokens": 512 });
+        let u = usage_from_anthropic(&delta).expect("应当解析出用量");
+        assert_eq!(u.output_tokens, 512);
+        assert_eq!(u.input_tokens, 0);
+
+        // 全空 → 不算数
+        assert!(usage_from_anthropic(&json!({})).is_none());
+    }
 
     #[test]
     fn merges_consecutive_roles() {

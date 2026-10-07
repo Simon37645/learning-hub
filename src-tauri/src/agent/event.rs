@@ -34,6 +34,13 @@ impl Risk {
     }
 }
 
+/// 上下文构成里的一块（标签 + 估算 token 数）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPart {
+    pub label: String,
+    pub tokens: u32,
+}
+
 /// 一次等待审批的工具调用。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +132,16 @@ pub enum AgentEvent {
         turn_id: String,
         input_tokens: u32,
         output_tokens: u32,
+        /// 输入里由**缓存**提供的部分。0 表示服务商没报，界面就把这轮算作「无数据」。
+        #[serde(default)]
+        cached_tokens: u32,
+        /// 这轮写进缓存的部分（Anthropic 才有）
+        #[serde(default)]
+        cache_write_tokens: u32,
+        /// 最后一次请求的上下文构成（系统提示词各版块 + 对话消息 + 工具结果）。
+        /// 悬停浮层用它画「上下文容量」那根条——总和不等于真实用量是正常的（按字符估的）。
+        #[serde(default)]
+        context: Vec<ContextPart>,
     },
     Finished {
         turn_id: String,

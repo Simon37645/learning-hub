@@ -11,7 +11,8 @@ npm run app:dev                                        # 开发模式（首次�
 npm run typecheck                                      # 前端类型检查（必须过）
 npm run build                                          # 前端构建
 npm run rust:check                                     # 后端类型检查
-npm run rust:test                                      # 后端单测（53 个）
+npm run rust:test                                      # 后端单测（56 个）
+npm run test:ui                                        # 前端单测（vitest：InkNote 回归网 + 应用自己的纯逻辑）
 npm run dist                                           # 打包（tauri build + scripts/package.mjs）
 npm run shortcut                                       # 把打包版同步到 release/app 并在桌面建快捷方式（应用开着时会跳过同步并提示）
 npm run demo:seed && npm run demo:pdf                  # 造演示数据（workspace/）
@@ -19,7 +20,8 @@ npm run dev:fake-llm                                   # 本地假模型（无�
 npm run test:e2e                                       # 端到端冒烟（需要应用带调试端口启动）
 ```
 
-跑完改动后至少执行：`npm run typecheck` + `npm run rust:check`。改到 `domain/` 或 `viewer/` 时必须跑 `npm run rust:test`。
+跑完改动后至少执行：`npm run typecheck` + `npm run rust:check`。改到 `domain/` 或 `viewer/` 时必须跑 `npm run rust:test`；
+改了前端的纯逻辑（`src/lib/`、hook、统计口径）把 `npm run test:ui` 也跑上（测试放在被改文件旁边，`*.test.ts(x)`）。
 
 ### 验证 UI 的正确姿势
 
@@ -174,6 +176,19 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **记忆的改动统一发 `hub://memory`**（`core.emit_memory_changed`）：前端把它折成
   `memoryTick` 计数，面板与侧栏角标据此重拉。新增写记忆的入口时别忘了发这个事件，
   否则面板会显示过期数据。
+- **用量（token / 缓存命中）只认服务商报的数字**：`ProviderUsage` 由两个协议各自解析
+  （OpenAI 兼容在 `usage`，Anthropic 在 `message_start` + `message_delta`，两处口径不同：
+  Anthropic 的 `input_tokens` **不含**缓存命中的部分，要加回去）。两个坑：
+  带 `usage` 的那一块 SSE `choices` 是**空数组**，解析必须早于 choices 判断，否则永远拿不到；
+  官方 OpenAI 端点要请求体里带 `stream_options.include_usage` 才会报用量，但有的网关不认这个字段，
+  所以失败要能退回不带它的请求（`chat()` 里就是这么做的）。前端只统计报过用量的轮次，
+  轮次为 0 时整块不显示——**别把「没数据」算成「没命中」**。
+- **`materials/` 里有什么就显示什么**：类型不做白名单（PDF / Markdown / txt / 图片 / 代码都能读、
+  都能在内置浏览器预览），资料面板与系统提示词的清单都得走 `store::walk_files`，
+  **两边的深度要一致**（都 4 层），否则放进子目录的讲义模型看不见、会答「你的资料里没有」。
+  另外提醒：用户可能在**资源管理器里**直接丢文件进来，前端收不到通知——
+  `App.tsx` 里挂了个 window focus 监听调 `store.refreshTopicFiles()` 轻量重拉，
+  别改成 `openTopic`（那会清空 streaming 并把对话切回最近一条）。
 - **对话的元数据是侧车文件**（`agent/chats.rs` 的 `<id>.meta.json`：名字 / 置顶 / 归档 / 分叉血缘），
   **不要往 `chats/<id>.jsonl` 里插特殊行**——那个文件每行都必须是 `ChatMessage`，
   模型、界面、导出都直接读它。代价是「搬对话」要搬两个文件：`chat_move` 已经这么做了，
@@ -196,7 +211,12 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 对话管理（侧栏对话行悬停出「⋯」：重命名 / 置顶 / 分叉 / 归档 / 删除；元数据在侧车文件里）、
 思维导图（Mermaid）、拖放导入资料、主题模式（跟随系统/明亮/深色）、
 工作区沙箱与越权申请、权限分级、两类模型协议（OpenAI 兼容 + Anthropic）、日程视图、设置页、
-父子主题（「只学一门课里的一章」：资料继承、笔记/卡片/计划独立）。
+父子主题（「只学一门课里的一章」：资料继承、笔记/卡片/计划独立）、
+用量与缓存（对话框底部「缓存 X%」胶囊，悬停看上下文构成与累计命中率；数字来自服务商报的真实 usage）、
+资料不看类型（`materials/` 里的 PDF / Markdown / txt / 图片都能列、能在内置浏览器预览、
+  窗口回前台会自动重拉清单）、
+内置浏览器按标签读（agent 用 `viewer_list` + `viewer_read(tab_id)` 能读**任意**标签页，
+  包括用户当前没在看的后台标签，本地文件与网页都由后端直接提取）。
 
 已知待办（按价值排序）：
 

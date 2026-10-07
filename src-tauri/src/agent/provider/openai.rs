@@ -3,7 +3,7 @@
 //! 覆盖绝大多数国产与自建服务：DeepSeek、Moonshot、通义、智谱、硅基流动、
 //! Ollama / vLLM / LM Studio 的 OpenAI 兼容端点、以及各种中转网关。
 
-use super::{error_from_response, pump_sse, ChatRequest, LlmProvider, StreamEvent};
+use super::{error_from_response, pump_sse, ChatRequest, LlmProvider, ProviderUsage, StreamEvent};
 use crate::agent::message::{ChatMessage, Role};
 use crate::agent::registry::ToolSpec;
 use crate::config::{ProviderKind, ProviderProfile};
@@ -50,23 +50,16 @@ impl LlmProvider for OpenAiProvider {
             body.insert("tool_choice".into(), json!("auto"));
         }
 
-        let mut rb = self
-            .http
-            .post(self.profile.chat_url())
-            .timeout(req.timeout)
-            .json(&Value::Object(body));
-        let key = self.profile.api_key.trim();
-        if !key.is_empty() {
-            rb = rb.bearer_auth(key);
-        }
-        for (k, v) in &self.profile.headers {
-            rb = rb.header(k.as_str(), v.as_str());
-        }
-
-        let resp = rb.send().await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response(resp).await);
-        }
+        // 让官方端点也在流里带上 usage（官方默认不带，界面上的缓存命中率就没数据了）。
+        // 但不是所有网关都认这个字段：一旦报「不认识的参数」就退回不带它的请求——用量拿不到可以忍，
+        // 对话失败不能。
+        let resp = match self.post_with_usage(&body, &req).await {
+            Err(e) if e.to_string().contains("stream_options") => {
+                eprintln!("[provider] 该端点不认 stream_options，已退回不带用量的请求");
+                self.post(&body, &req).await?
+            }
+            other => other?,
+        };
 
         let cancel = req.cancel.clone();
         pump_sse(resp, &cancel, move |_event, v| {
@@ -78,6 +71,11 @@ impl LlmProvider for OpenAiProvider {
                         .unwrap_or("模型返回了错误");
                     return Err(crate::error::AppError::Provider(msg.to_string()));
                 }
+            }
+
+            // 用量块要**先于** choices 判断：带 usage 的那一块 choices 通常是空数组。
+            if let Some(usage) = v.get("usage").filter(|u| !u.is_null()).and_then(usage_from_openai) {
+                let _ = tx.send(StreamEvent::Usage(usage));
             }
 
             let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else {
@@ -130,6 +128,76 @@ impl LlmProvider for OpenAiProvider {
         })
         .await
     }
+}
+
+impl OpenAiProvider {
+    /// 发一次请求；非 2xx 会转成可读的错误。
+    async fn post(
+        &self,
+        body: &Map<String, Value>,
+        req: &ChatRequest,
+    ) -> AppResult<reqwest::Response> {
+        let mut rb = self
+            .http
+            .post(self.profile.chat_url())
+            .timeout(req.timeout)
+            .json(&Value::Object(body.clone()));
+        let key = self.profile.api_key.trim();
+        if !key.is_empty() {
+            rb = rb.bearer_auth(key);
+        }
+        for (k, v) in &self.profile.headers {
+            rb = rb.header(k.as_str(), v.as_str());
+        }
+        let resp = rb.send().await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response(resp).await);
+        }
+        Ok(resp)
+    }
+
+    /// 同上，但请求体里多带 `stream_options.include_usage`（官方端点靠它才会在流里报用量）。
+    async fn post_with_usage(
+        &self,
+        body: &Map<String, Value>,
+        req: &ChatRequest,
+    ) -> AppResult<reqwest::Response> {
+        let mut with_usage = body.clone();
+        with_usage.insert("stream_options".into(), json!({ "include_usage": true }));
+        self.post(&with_usage, req).await
+    }
+}
+
+/// 从 OpenAI 兼容的 `usage` 对象里取用量。
+///
+/// 只有能拿到数字才算数：`prompt_tokens` 是**输入总量**（命中缓存的部分也包含在内），
+/// 命中量各家写法不同——OpenAI 用 `prompt_tokens_details.cached_tokens`，
+/// DeepSeek 用 `prompt_cache_hit_tokens`，个别网关用 `cache_read_input_tokens`。
+fn usage_from_openai(u: &Value) -> Option<ProviderUsage> {
+    let num = |v: &Value| v.as_u64().map(|n| n as u32);
+    let input = num(u.get("prompt_tokens")?)?;
+    let output = u
+        .get("completion_tokens")
+        .and_then(num)
+        .unwrap_or_default();
+    let cached = u
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(num)
+        .or_else(|| u.get("prompt_cache_hit_tokens").and_then(num))
+        .or_else(|| u.get("cache_read_input_tokens").and_then(num))
+        .unwrap_or_default()
+        // 有的网关会把命中量报成总输入的一部分以上，兜一下别让命中率超过 100%
+        .min(input);
+    let cache_write = u
+        .get("cache_creation_input_tokens")
+        .and_then(num)
+        .unwrap_or_default();
+    Some(ProviderUsage {
+        input_tokens: input,
+        cached_tokens: cached,
+        cache_write_tokens: cache_write,
+        output_tokens: output,
+    })
 }
 
 /// 消息 → OpenAI 格式。思考块不回传（DeepSeek 等会因此报错）。
@@ -269,5 +337,35 @@ mod tests {
         assert!(out[2]["tool_calls"][0]["function"]["arguments"].is_string());
         assert_eq!(out[3]["role"], "tool");
         assert_eq!(out[3]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn parses_usage_from_openai_and_deepseek_shapes() {
+        // OpenAI 官方
+        let openai = json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "prompt_tokens_details": { "cached_tokens": 960 }
+        });
+        let u = usage_from_openai(&openai).expect("应当解析出用量");
+        assert_eq!((u.input_tokens, u.cached_tokens, u.output_tokens), (1000, 960, 50));
+
+        // DeepSeek：命中/未命中分开报，没有 prompt_tokens_details
+        let deepseek = json!({
+            "prompt_tokens": 2000,
+            "completion_tokens": 80,
+            "prompt_cache_hit_tokens": 1900,
+            "prompt_cache_miss_tokens": 100
+        });
+        let u = usage_from_openai(&deepseek).expect("应当解析出用量");
+        assert_eq!((u.input_tokens, u.cached_tokens, u.output_tokens), (2000, 1900, 80));
+
+        // 没有 usage / 没有数字：不算数（界面就沿用本地估算）
+        assert!(usage_from_openai(&json!({})).is_none());
+        assert!(usage_from_openai(&json!({"prompt_tokens": null})).is_none());
+
+        // 命中量比总量还大时兜住，别让命中率超过 100%
+        let weird = json!({ "prompt_tokens": 100, "prompt_cache_hit_tokens": 5000 });
+        assert_eq!(usage_from_openai(&weird).unwrap().cached_tokens, 100);
     }
 }

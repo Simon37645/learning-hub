@@ -24,6 +24,15 @@ export default function App() {
     void useApp.getState().init();
   }, []);
 
+  // 窗口回到前台：轻量重拉当前主题的文件清单。
+  // 用户可能在资源管理器里往 materials/ 丢了讲义（或让别的工具生成了笔记），
+  // 前端不会收到通知——不重拉的话「资料」面板要重开主题才更新。
+  useEffect(() => {
+    const onFocus = () => void useApp.getState().refreshTopicFiles();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   // 全局快捷键
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

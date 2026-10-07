@@ -25,8 +25,29 @@ pub struct PromptInputs<'a> {
     pub memory: String,
 }
 
+/// 提示词里一块的大小（按字符估的 token，只用于界面展示）。
+pub struct PromptSectionStat {
+    pub label: &'static str,
+    pub tokens: u32,
+}
+
 pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
+    build_system_prompt_with_stats(inp).0
+}
+
+/// 和 [`build_system_prompt`] 一样，但顺带给出各版块占了多少。
+///
+/// 为什么需要：对话框底部的「上下文构成」浮层要告诉用户「为什么这轮输入这么大」
+/// ——是资料清单、技能说明，还是记忆。各版块是按字符估的，和真实用量不会完全相等，
+/// 所以界面上只用来画比例。
+pub fn build_system_prompt_with_stats(
+    inp: &PromptInputs<'_>,
+) -> (String, Vec<PromptSectionStat>) {
+    use crate::agent::message::estimate_tokens;
+
     let mut p = String::with_capacity(4096);
+    // 各版块的起点偏移；最后一块一直算到结尾。
+    let mut marks: Vec<(&'static str, usize)> = vec![("系统提示词", 0)];
 
     p.push_str(
         "你是「学习中枢」里的学习助手。你不是通用聊天机器人，你的唯一目标是让用户**真正学会**眼前这个东西。\n\n\
@@ -47,6 +68,10 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
          - **需要动态演示就写 HTML**：把演示页写到 `lessons/<名字>.html`，然后用 `viewer_open` 打开给用户看。\
          适合做交互式演示的内容包括：参数可拖动的函数图像、几何变换、算法逐步执行、可折叠的对照表。\
          演示页要自带说明文字，能独立看懂；不要依赖外部网络资源（用内联 CSS/JS）。\n\
+         - **内置浏览器里摊开的都能读**：用户可能把讲义开在别的标签页上（不只是当前那一个）。\
+         不确定有哪些页面就先 `viewer_list`，再用 `viewer_read` 传 `tab_id` 读任意一个——\
+         本地文件与网页都由后端直接提取，不需要用户切过去。用户说「你看我开着的那份」时，\
+         先 list 再 read，不要猜是哪个。\n\
          - **该画图就画图**：讲框架、分类、层级关系时用 `mindmap_create` 出思维导图（它会存成笔记并在内置浏览器打开，\
          同时把图定义返回给你，贴进回复用户就能在对话里看到）；讲流程、因果、时间线时，\
          直接把 mermaid 代码块（flowchart / sequenceDiagram / timeline）写进笔记或回复里。\
@@ -67,6 +92,7 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
 
     // ---- 长期记忆：先让模型知道「眼前这个人是谁、以前踩过什么坑」 ----
     // 位置放在主题上下文之前：讲什么之前先知道该对谁讲。
+    marks.push(("记忆", p.len()));
     if inp.memory.trim().is_empty() {
         p.push_str(
             "\n## 长期记忆\n\
@@ -91,6 +117,7 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
 
     // 技能走渐进式披露：这里只给「有什么技能、什么时候用」
     if !inp.skill_catalog.trim().is_empty() {
+        marks.push(("技能", p.len()));
         p.push_str("\n## 可用技能（用 skill_list 查看，需要时先 skill_read 读正文再照做）\n");
         p.push_str(&inp.skill_catalog);
         p.push_str(
@@ -98,6 +125,7 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
         );
     }
 
+    marks.push(("工具说明", p.len()));
     if inp.supports_tools {
         p.push_str(&format!(
             "\n## 可用工具\n你可以直接调用以下工具（用原生 function calling，不要用文字假装调用）：\n{}\n\
@@ -115,6 +143,7 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
     }
 
     // ---- 当前主题上下文 ----
+    marks.push(("主题与资料", p.len()));
     match inp.topic {
         Some(topic) => {
             let stage = inp.stage.unwrap_or(topic.meta.stage);
@@ -178,7 +207,9 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
                 }
             }
 
-            let materials: Vec<String> = store::walk_files(&topic.materials_dir(), 2)
+            // 资料清单：PDF / Markdown / txt / 图片都可能。深度和「资料」面板一致（4 层），
+            // 否则用户放进子目录里的讲义模型看不见，就会答「你的资料里没有」。
+            let materials: Vec<String> = store::walk_files(&topic.materials_dir(), 4)
                 .into_iter()
                 .take(40)
                 .map(|p| {
@@ -188,7 +219,9 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
                 })
                 .collect();
             if !materials.is_empty() {
-                p.push_str("\n### 主题资料（可以用 viewer_open 打开、用 viewer_read 阅读）\n");
+                p.push_str(
+                    "\n### 主题资料（PDF / Markdown / txt / 图片都有；用 viewer_open 打开、viewer_read 阅读）\n",
+                );
                 for m in &materials {
                     p.push_str(&format!("- {m}\n"));
                 }
@@ -294,6 +327,7 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
 
     // ---- 用户自定义 ----
     if !inp.config.agent.system_prompt_extra.trim().is_empty() {
+        marks.push(("用户要求", p.len()));
         p.push_str("\n## 用户的额外要求（优先级最高）\n");
         p.push_str(inp.config.agent.system_prompt_extra.trim());
         p.push('\n');
@@ -304,7 +338,17 @@ pub fn build_system_prompt(inp: &PromptInputs<'_>) -> String {
         inp.config.user_name
     ));
 
-    p
+    // 按各版块的起点切出大小（估算，只给界面画比例用）
+    let sections: Vec<PromptSectionStat> = marks
+        .iter()
+        .enumerate()
+        .map(|(i, (label, start))| {
+            let end = marks.get(i + 1).map(|(_, s)| *s).unwrap_or(p.len());
+            PromptSectionStat { label, tokens: estimate_tokens(&p[*start..end]) }
+        })
+        .filter(|s| s.tokens > 0)
+        .collect();
+    (p, sections)
 }
 
 pub fn current_date_line() -> String {
@@ -409,7 +453,7 @@ mod tests {
         // 父主题在「其它主题」清单里要被标注成父主题
         assert!(prompt.contains("（本主题的父主题）"), "其它主题清单没标出父子关系");
         // 父主题自己的资料不该被当成「本主题」的资料重复列一遍
-        assert!(!prompt.contains("### 主题资料（可以用 viewer_open 打开、用 viewer_read 阅读）"));
+        assert!(!prompt.contains("### 主题资料"), "本主题没有资料，不该出现资料清单");
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -452,6 +496,41 @@ mod tests {
             memory: String::new(),
         });
         assert!(empty.contains("还没有关于这位用户的长期记忆"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 「上下文构成」浮层靠这个：各版块要分开统计，且加起来不该超过整段提示词
+    /// （按字符估会有取整误差，所以留一点余量）。
+    #[test]
+    fn prompt_stats_split_each_section() {
+        let tmp = std::env::temp_dir().join(format!("lh-prompt-stats-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let topic = ws.create("线性代数", "整门课", None, None).unwrap();
+        let cfg = AppConfig::bootstrap(tmp.clone());
+
+        let (prompt, sections) = build_system_prompt_with_stats(&PromptInputs {
+            config: &cfg,
+            topic: Some(&topic),
+            stage: None,
+            supports_tools: true,
+            tool_catalog: "- fs_read：读文件\n".to_string(),
+            tool_names: vec!["fs_read".to_string()],
+            skill_catalog: "- blender：三维建模\n".to_string(),
+            memory: "**情况**\n- 他在准备期末考试\n".to_string(),
+        });
+
+        let labels: Vec<&str> = sections.iter().map(|s| s.label).collect();
+        for want in ["系统提示词", "记忆", "技能", "工具说明", "主题与资料"] {
+            assert!(labels.contains(&want), "缺少版块：{want}（实际 {labels:?}）");
+        }
+
+        let sum: u32 = sections.iter().map(|s| s.tokens).sum();
+        let whole = crate::agent::message::estimate_tokens(&prompt);
+        assert!(
+            sum <= whole + sections.len() as u32,
+            "分块求和 {sum} 不该明显超过整段 {whole}"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

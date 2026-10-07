@@ -20,6 +20,7 @@ import type {
   ChatMessage,
   ChatOverviewItem,
   ConfigPatch,
+  ContextPart,
   DailyBrief,
   MemoryEvent,
   Note,
@@ -103,7 +104,14 @@ interface AppStore {
   streaming: { turnId: string; text: string; thinking: string } | null;
   activities: ToolActivity[];
   iteration: { index: number; max: number } | null;
-  usage: { input: number; output: number } | null;
+  /** 上一轮的用量与上下文构成；服务商不报真实用量时 cached/cacheWrite 为 0 */
+  usage: {
+    input: number;
+    output: number;
+    cached: number;
+    cacheWrite: number;
+    context: ContextPart[];
+  } | null;
   chatError: string | null;
   approval: ApprovalRequest | null;
   /** 每跑完一轮 +1：讲解步骤面板靠它刷新（agent 会在这一轮里改方案） */
@@ -134,6 +142,8 @@ interface AppStore {
   setView: (v: ViewName) => void;
   openTopic: (slug: string) => Promise<void>;
   leaveTopic: () => void;
+  /** 窗口回到前台时轻量重拉当前主题的文件清单（见实现处的说明） */
+  refreshTopicFiles: () => Promise<void>;
   createTopic: (name: string, description?: string, parent?: string | null) => Promise<TopicDetail | null>;
   updateTopic: (patch: {
     name?: string;
@@ -338,6 +348,26 @@ export const useApp = create<AppStore>((set, get) => ({
     } catch (e) {
       set({ topicLoading: false });
       get().toast("error", errText(e));
+    }
+  },
+
+  /**
+   * 只把主题「文件层面」的信息重拉一遍（资料清单 / 笔记 / 统计），**不动当前对话与流式状态**。
+   *
+   * 用在窗口重新获得焦点时：用户可能在资源管理器里往 `materials/` 丢了新文件
+   * （比如刚录完的课堂语音转文字 .txt），那时前端不知道，资料面板要等到重开主题才更新。
+   * 不能直接调 `openTopic——它会清空 streaming、把对话切回最近一条。
+   */
+  async refreshTopicFiles() {
+    const cur = get().topic;
+    if (!cur) return;
+    try {
+      const detail = await api.topicOpen(cur.slug);
+      // 期间可能换了主题：那就别把旧主题的数据糊回去
+      if (get().topic?.slug !== cur.slug) return;
+      set({ topic: detail, sessions: detail.sessions });
+    } catch {
+      // 刷新失败不打扰用户：下次动作还会再拉
     }
   },
 
@@ -1096,7 +1126,15 @@ function handleAgentEvent(
       });
       break;
     case "usage":
-      set({ usage: { input: ev.input_tokens, output: ev.output_tokens } });
+      set({
+        usage: {
+          input: ev.input_tokens,
+          output: ev.output_tokens,
+          cached: ev.cached_tokens ?? 0,
+          cacheWrite: ev.cache_write_tokens ?? 0,
+          context: ev.context ?? [],
+        },
+      });
       break;
     case "finished":
       set((s) => ({ streaming: null, iteration: null, approval: null, lessonTick: s.lessonTick + 1 }));

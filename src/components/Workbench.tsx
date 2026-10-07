@@ -25,6 +25,9 @@ import { LessonCard } from "./Lesson";
 
 type PaneKey = "overview" | "notes" | "materials" | "cards" | "quiz" | "plan" | "sessions";
 
+/** 资料清单里按扩展名给图标：图片一类，其余都是可读文件（PDF / Markdown / txt / 代码…） */
+const IMAGE_KINDS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"]);
+
 const PANES: { key: PaneKey; label: string }[] = [
   { key: "overview", label: "概览" },
   { key: "notes", label: "笔记" },
@@ -468,7 +471,8 @@ function MaterialsPane() {
 
   const row = (m: MaterialItem) => (
     <div key={`${m.topic}/${m.path}`} className="list-row" onClick={() => open(m)}>
-      <Icon name={m.kind === "pdf" || m.kind === "md" ? "file" : "layers"} size={14} />
+      {/* 图标只分两类：图片给「眼睛」，其余（PDF / Markdown / txt / 代码…）都是可读的文件 */}
+      <Icon name={IMAGE_KINDS.has(m.kind) ? "eye" : "file"} size={14} />
       <div className="li-main">
         <div className="li-title">{m.name}</div>
         <div className="li-sub mono">{m.path}</div>
@@ -487,7 +491,8 @@ function MaterialsPane() {
     <div className="wb-pane">
       <div className="row">
         <span className="sub" style={{ fontSize: 12.5 }}>
-          资料保存在主题的 <code className="mono">materials/</code> 目录，agent 可以直接读 PDF 的文字。
+          资料保存在主题的 <code className="mono">materials/</code> 目录，PDF、Markdown、txt
+          与图片都能放进来，agent 直接读文字；点一行在内置浏览器里预览。
           {inheritedBy.length > 0 && " 带「继承」标记的来自父主题，点开就能看，原件不用复制过来。"}
         </span>
         <div className="grow" />
@@ -518,10 +523,10 @@ function MaterialsPane() {
         <div className="drop-hint" onClick={importFiles}>
           <Icon name="download" size={22} />
           <div style={{ fontSize: 13.5, color: "var(--text-sub)" }}>
-            把课件、论文、截图拖进窗口，或点这里选择文件
+            把课件、论文、讲义、截图拖进窗口，或点这里选择文件
           </div>
           <div className="muted" style={{ fontSize: 12 }}>
-            会复制进 <code>materials/</code>，之后 agent 就能读 PDF 文字、按页码引用
+            会复制进 <code>materials/</code>，PDF、Markdown、txt 都能读（PDF 能按页码引用）
           </div>
         </div>
       ) : (

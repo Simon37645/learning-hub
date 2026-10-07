@@ -226,7 +226,9 @@ impl Tool for ViewerList {
     }
 
     fn description(&self) -> &'static str {
-        "列出内置浏览器当前打开的所有标签页，含当前页码与用户正在看的位置。"
+        "列出内置浏览器当前打开的所有标签页（含 id、页码、滚动位置、已读字数）。\
+         要读**用户当前没在看**的那个标签（比如他把讲义开在另一个标签上），先调这个拿 id，\
+         再用 viewer_read 的 tab_id 去读——不用让用户切过去。"
     }
 
     fn schema(&self) -> Value {
@@ -283,7 +285,10 @@ impl Tool for ViewerRead {
     }
 
     fn description(&self) -> &'static str {
-        "读取内置浏览器里当前页面（或指定标签页）的文字内容交给模型理解。\
+        "读取内置浏览器里某个标签页的文字内容交给模型理解。\
+         默认读当前激活的那个；传 tab_id 可以读**任意标签页**——包括用户当前没在看的后台标签，\
+         本地文件（PDF、Markdown、txt）与网页都由后端直接提取，不需要用户切过去或重新打开。\
+         用 viewer_list 拿各标签的 id。\
          PDF 可以用 page_from / page_to 只读某几页——讲到哪一页就读哪一页。"
     }
 

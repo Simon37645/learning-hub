@@ -65,11 +65,18 @@ pub struct MessageMeta {
     pub model: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
-    /// 这一轮里模型请求了多少次、用了多少 token（估算值）
+    /// 这一轮里模型请求了多少次、用了多少 token。
+    /// 服务商报了真实用量就用真实值，没报就退回本地估算（重算时按字符估）。
     #[serde(default)]
     pub input_tokens: Option<u32>,
     #[serde(default)]
     pub output_tokens: Option<u32>,
+    /// 输入里由**缓存**提供的部分（服务商没报就是 None，界面上那一轮就不计入命中率）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u32>,
+    /// 这一轮写进缓存的部分（Anthropic 才有）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u32>,
     /// 这条消息是否被用户中止
     #[serde(default)]
     pub interrupted: bool,

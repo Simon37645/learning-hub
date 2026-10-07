@@ -250,7 +250,7 @@ impl AgentService {
             .and_then(crate::domain::stage::StudyStage::parse)
             .or_else(|| topic.as_ref().map(|t| t.meta.stage));
 
-        let system = prompt::build_system_prompt(&PromptInputs {
+        let (system, system_sections) = prompt::build_system_prompt_with_stats(&PromptInputs {
             config: &cfg,
             topic: topic.as_ref(),
             stage,
@@ -285,6 +285,9 @@ impl AgentService {
 
         let mut total_in = 0u32;
         let mut total_out = 0u32;
+        // 真实用量（服务商报的那部分）。服务商不报时保持 0，界面按「无数据」处理。
+        let mut total_cached = 0u32;
+        let mut total_cache_write = 0u32;
         let mut reason = "stop".to_string();
 
         for iteration in 1..=cfg.agent.max_iterations.max(1) {
@@ -310,8 +313,6 @@ impl AgentService {
                 timeout: Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
                 cancel: cancel.clone(),
             };
-            total_in += estimate_messages_tokens(&messages);
-
             let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
             let provider_task = {
                 let provider = provider.clone();
@@ -322,6 +323,7 @@ impl AgentService {
             let mut acc = Accumulator::default();
             while let Some(ev) = rx.recv().await {
                 match ev {
+                    StreamEvent::Usage(u) => acc.usage.merge(u),
                     StreamEvent::Text(t) => {
                         acc.text.push_str(&t);
                         core.emit_agent(&AgentEvent::Delta {
@@ -377,14 +379,29 @@ impl AgentService {
                 break;
             }
 
-            let out_tokens = crate::agent::message::estimate_tokens(&acc.text)
+            // 服务商报了真实用量就用真实的（里面含缓存命中），没报才退回本地估算
+            let est_in = estimate_messages_tokens(&messages);
+            let est_out = crate::agent::message::estimate_tokens(&acc.text)
                 + crate::agent::message::estimate_tokens(&acc.thinking);
+            let real = acc.usage;
+            let (in_tokens, out_tokens) = if real.is_empty() {
+                (est_in, est_out)
+            } else {
+                (real.input_tokens, real.output_tokens)
+            };
+            total_in += in_tokens;
             total_out += out_tokens;
+            total_cached += real.cached_tokens;
+            total_cache_write += real.cache_write_tokens;
 
             let mut assistant = ChatMessage::assistant(blocks);
             assistant.meta.model = Some(profile.model.clone());
-            assistant.meta.input_tokens = Some(total_in);
+            assistant.meta.input_tokens = Some(in_tokens);
             assistant.meta.output_tokens = Some(out_tokens);
+            if !real.is_empty() {
+                assistant.meta.cached_tokens = Some(real.cached_tokens);
+                assistant.meta.cache_write_tokens = Some(real.cache_write_tokens);
+            }
             messages.push(assistant.clone());
             append_transcript(&core, topic.as_ref(), &req.chat_id, &assistant)?;
             core.emit_agent(&AgentEvent::Message {
@@ -423,6 +440,9 @@ impl AgentService {
             turn_id: turn_id.clone(),
             input_tokens: total_in,
             output_tokens: total_out,
+            cached_tokens: total_cached,
+            cache_write_tokens: total_cache_write,
+            context: context_breakdown(&system_sections, &messages),
         });
         Ok(reason)
     }
@@ -749,6 +769,8 @@ struct Accumulator {
     thinking: String,
     tools: Vec<ToolCall>,
     finish: Option<String>,
+    /// 服务商在这条流里报的真实用量（可能为空）
+    usage: provider::ProviderUsage,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -797,6 +819,41 @@ impl Accumulator {
             })
             .collect()
     }
+}
+
+/// 组装「上下文构成」：系统提示词各版块 + 对话消息 + 工具结果。
+///
+/// 只给界面画比例用：数字是**按字符估**的，和真实用量不会完全相等，
+/// 但足够回答「这轮输入为什么这么大」——是资料清单、工具说明还是历史消息。
+fn context_breakdown(
+    system_sections: &[prompt::PromptSectionStat],
+    messages: &[ChatMessage],
+) -> Vec<crate::agent::event::ContextPart> {
+    use crate::agent::event::ContextPart;
+    let est = crate::agent::message::estimate_tokens;
+
+    let mut parts: Vec<ContextPart> = system_sections
+        .iter()
+        .map(|s| ContextPart { label: s.label.to_string(), tokens: s.tokens })
+        .collect();
+
+    let (mut msg_tokens, mut tool_tokens) = (0u32, 0u32);
+    for m in messages {
+        for b in &m.blocks {
+            match b {
+                ContentBlock::ToolResult { content, .. } => tool_tokens += est(content),
+                ContentBlock::Text { text } | ContentBlock::Thinking { text } => {
+                    msg_tokens += est(text)
+                }
+                ContentBlock::ToolUse { input, .. } => msg_tokens += est(&input.to_string()),
+            }
+        }
+    }
+    parts.push(ContextPart { label: "对话消息".into(), tokens: msg_tokens });
+    if tool_tokens > 0 {
+        parts.push(ContextPart { label: "工具结果".into(), tokens: tool_tokens });
+    }
+    parts
 }
 
 fn parse_tool_args(raw: &str) -> Value {

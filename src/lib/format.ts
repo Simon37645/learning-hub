@@ -94,6 +94,13 @@ export function estimateTokens(s: string): number {
   return cjk + Math.ceil(other / 4);
 }
 
+/** token 数的中文写法：24.9万 / 8.2k / 640（用量面板上比 249000 好读） */
+export function fmtTokens(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
 export function isMac(): boolean {
   return navigator.platform.toLowerCase().includes("mac");
 }

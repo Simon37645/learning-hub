@@ -1,6 +1,6 @@
 [package]
 name = "learning-hub"
-version = "0.2.0"
+version = "0.2.0-beta1"
 description = "学习中枢 — 个人 AI 学习助手"
 authors = ["Simon37645"]
 license = "GPL-2.0-only"

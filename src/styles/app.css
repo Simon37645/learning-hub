@@ -172,6 +172,13 @@ a:hover {
   display: flex;
   flex-direction: column;
   background: var(--bg-side);
+  /* 壳就是窗口视口，里面的东西一律不许把页面撑高。
+     为什么不能省：body 的 overflow:hidden 会传给视口，视口虽然滚轮滚不动，
+     但 scrollIntoView / focus() 仍然能把**页面**滚走——壳里只要有个元素越出下沿
+     （绝对定位的浮层最容易），页面就会往上滚掉几十像素，32px 的自绘标题栏整个滑出可视区：
+     用户看到的是「logo 和最小化/最大化/关闭三个图标都不见了」，而且滚轮滚不回来。
+     用 clip 而不是 hidden：hidden 会让壳自己变成可滚动容器，同一个坑只是往上挪了一层。 */
+  overflow: clip;
 }
 
 .titlebar {
@@ -184,6 +191,11 @@ a:hover {
   background: var(--bg-side);
   border-bottom: 1px solid var(--border);
   user-select: none;
+  /* 第二道保险：万一页面还是被滚动了（见 .app-shell 那段），标题栏钉在最上面，
+     三个窗口按钮永远够得着——否则窗口关不掉，只能去任务栏。 */
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
 .titlebar .tb-brand {

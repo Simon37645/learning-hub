@@ -119,6 +119,16 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   （`core:window:allow-minimize`、`allow-toggle-maximize`、`allow-close`、`allow-is-maximized` 等；
   漏了会在运行时报权限错误，typecheck 查不出来）；拖拽靠 `data-tauri-drag-region`
   （需要 `core:window:allow-start-dragging`），按钮上别加这个属性，否则点不灵。
+- **页面被滚走 = 自绘标题栏整个消失**（用户报的「上面的三个图标和 logo 都不见了」）：
+  `body { overflow: hidden }` 会传给视口，视口**滚轮滚不动，但 `scrollIntoView` / `focus()`
+  仍然滚得动**。壳（`.app-shell`）里只要有个元素越出下沿（绝对定位的浮层最容易；`.app-main`
+  没有 overflow，它的绝对定位子元素能直接顶到页面外），一次 `scrollIntoView`（`Viewer.tsx`
+  的引用跳转、`PdfView.tsx` 的翻页都会调）就把**页面**滚了上去，32px 的标题栏滑出可视区：
+  logo 与最小化/最大化/关闭三个按钮全没了，而且滚不回来，只能重启应用。
+  所以 `.app-shell` 上必须留着 `overflow: clip`——**别改成 `hidden`**（hidden 会让壳自己变成
+  可滚动容器，同一个坑往上挪一层），`.titlebar` 上再留一道 `position: sticky; top: 0` 兜底。
+  排查这类问题时**别信 `documentElement.scrollHeight`**（它会被 `overflow: hidden` 骗成视口高）：
+  用 `window.scrollTo(0, 99999)` 再看读回来的 `scrollY`，那才是页面真正的可滚动量。
 - **侧栏拖拽用自己的指针事件实现**（`Sidebar.tsx` 的 `ChatRow`）：Tauri 在 Windows 上
   `dragDropEnabled: true` 会接管文件拖放（资料导入要用），HTML5 的 `dragstart`/`drop`
   **根本不会触发**——想加「拖动某个元素到另一处」的交互时别再试 HTML5 拖放。

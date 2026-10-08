@@ -1,12 +1,14 @@
 //! 内置工具集装配。
 //!
-//! 按用途分四组：
+//! 按用途分组：
 //! - `fs`     文件读写与全文检索
 //! - `study`  主题 / 笔记 / 卡片 / 计划 / 学习会话
 //! - `viewer` 内置浏览器的操作
 //! - `web`    联网抓取与搜索
+//! - `studio` 工坊：读规范、发布技能、登记 MCP 服务器（只在工坊模式出现）
 //!
 //! 想加工具：在对应文件里 `impl Tool`，然后在 [`registry`] 里 `register`。
+//! 如果这个工具在工坊模式下也该出现，记得实现 `scope()` 返回 [`ToolScope::Both`]。
 
 pub mod fs;
 pub mod kb;
@@ -16,6 +18,7 @@ pub mod memory;
 pub mod mindmap;
 pub mod quiz;
 pub mod skills;
+pub mod studio;
 pub mod study;
 pub mod viewer;
 pub mod web;
@@ -91,6 +94,12 @@ pub fn registry() -> ToolRegistry {
 
     // --- 联网 ---
     r.register(Arc::new(web::WebFetch)).register(Arc::new(web::WebSearch));
+
+    // --- 工坊（独立于学习：照着内置规范造技能与 MCP 服务器）---
+    // 它们改的是应用自己的能力与配置，学习模式里用不到，所以 scope 是 Studio
+    r.register(Arc::new(studio::SpecRead))
+        .register(Arc::new(studio::SkillPublish))
+        .register(Arc::new(studio::McpPublish));
 
     r
 }

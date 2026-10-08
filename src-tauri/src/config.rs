@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
 
 /// 模型服务商协议族。差异只在「请求/响应长什么样」，其余逻辑共用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -169,6 +169,11 @@ pub struct ProviderProfile {
     /// 是否支持函数调用（不支持时 agent 自动降级为「纯文本 + 指令」模式）
     #[serde(default = "yes")]
     pub supports_tools: bool,
+    /// 是否支持图片输入（多模态）。默认开——绝大多数现代模型都认，
+    /// 只有当用户明确知道自己在用一个纯文本模型时才该关掉。
+    /// 关掉后不是「拒绝收图」，而是**把图降级成一行文字**再发：见 provider::resolve_image。
+    #[serde(default = "yes")]
+    pub supports_vision: bool,
     /// 思考强度（默认关闭）
     #[serde(default)]
     pub reasoning: ReasoningConfig,
@@ -197,6 +202,7 @@ impl ProviderProfile {
             max_tokens: default_max_tokens(),
             headers: BTreeMap::new(),
             supports_tools: true,
+            supports_vision: true,
             reasoning: ReasoningConfig::default(),
         }
     }
@@ -386,11 +392,16 @@ impl ThemeMode {
 pub struct AppearanceConfig {
     #[serde(default)]
     pub theme: ThemeMode,
+    /// 用户自定义主题的 id（`<工作区>/.hub/themes/<id>.json` 或用户目录同名文件）。
+    /// `None` = 用内置的明亮/深色配色。找不到这个 id 时也按内置配色走——
+    /// 主题文件被删掉不该让界面变成一片没有颜色的白板。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_theme: Option<String>,
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
-        Self { theme: ThemeMode::System }
+        Self { theme: ThemeMode::System, custom_theme: None }
     }
 }
 
@@ -527,6 +538,7 @@ pub struct PublicProfile {
     pub temperature: f32,
     pub max_tokens: u32,
     pub supports_tools: bool,
+    pub supports_vision: bool,
     pub reasoning: ReasoningConfig,
     pub has_api_key: bool,
     pub key_hint: String,
@@ -552,6 +564,7 @@ impl From<&AppConfig> for PublicConfig {
                     temperature: p.temperature,
                     max_tokens: p.max_tokens,
                     supports_tools: p.supports_tools,
+                    supports_vision: p.supports_vision,
                     reasoning: p.reasoning,
                     has_api_key: !p.api_key.trim().is_empty(),
                     key_hint: p.key_hint(),

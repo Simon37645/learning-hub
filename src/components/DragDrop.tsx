@@ -36,7 +36,11 @@ export function useDragDropImport() {
             if (paths.length === 0) return;
             const state = useApp.getState();
             if (!state.topic) {
-              state.toast("warn", "先打开一个主题，拖进来的文件才有地方放");
+              // 没有主题就没地方放文件。顺带指一条更常用的路：贴图给 agent 看是 Ctrl+V
+              state.toast(
+                "warn",
+                "拖进来的文件要有主题才有地方放——先在左侧选一个主题；只想给 agent 看一张图的话，直接在输入框里 Ctrl+V 粘贴就行",
+              );
               return;
             }
             void state.importMaterials(paths);

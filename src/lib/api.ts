@@ -55,6 +55,10 @@ import type {
   WrongItem,
   Question,
   QuizKind,
+  AgentMode,
+  CustomTheme,
+  StudioInfo,
+  ThemesOverview,
 } from "./types";
 
 /** 后端返回的错误是纯字符串 */
@@ -74,8 +78,8 @@ export const api = {
   profileTest: (id: string) => invoke<ProfileTestResult>("profile_test", { id }),
   profileSetReasoning: (profileId: string, effort: ReasoningEffort, style?: ReasoningStyle) =>
     invoke<PublicConfig>("profile_set_reasoning", { profileId, effort, style: style ?? null }),
-  promptPreview: (topicSlug?: string | null) =>
-    invoke<string>("prompt_preview", { topicSlug: topicSlug ?? null }),
+  promptPreview: (topicSlug?: string | null, mode?: AgentMode | null) =>
+    invoke<string>("prompt_preview", { topicSlug: topicSlug ?? null, mode: mode ?? null }),
   workspaceInfo: () => invoke<WorkspaceInfo>("workspace_info"),
   revealInExplorer: (topicSlug?: string | null) =>
     invoke<string>("reveal_in_explorer", { topicSlug: topicSlug ?? null }),
@@ -133,25 +137,55 @@ export const api = {
     invoke<ChatMessage[]>("agent_transcript", { chatId, topicSlug: topicSlug ?? null }),
   agentChats: (topicSlug?: string | null) =>
     invoke<string[]>("agent_chats", { topicSlug: topicSlug ?? null }),
-  chatOverview: (topicSlug?: string | null, includeArchived?: boolean) =>
+  /** 对话清单。`mode` 决定要哪一份：工坊的对话和工作区级的日常问答共用同一个目录 */
+  chatOverview: (topicSlug?: string | null, includeArchived?: boolean, mode?: AgentMode | null) =>
     invoke<ChatOverviewItem[]>("chat_overview", {
       topicSlug: topicSlug ?? null,
       includeArchived: includeArchived ?? false,
+      mode: mode ?? null,
     }),
   chatMove: (chatId: string, fromSlug: string, toSlug: string) =>
     invoke<void>("chat_move", { chatId, fromSlug, toSlug }),
-  chatRename: (chatId: string, title: string, topicSlug?: string | null) =>
-    invoke<ChatOverviewItem[]>("chat_rename", { chatId, title, topicSlug: topicSlug ?? null }),
-  chatPin: (chatId: string, pinned: boolean, topicSlug?: string | null) =>
-    invoke<ChatOverviewItem[]>("chat_pin", { chatId, pinned, topicSlug: topicSlug ?? null }),
-  chatArchive: (chatId: string, archived: boolean, topicSlug?: string | null) =>
-    invoke<ChatOverviewItem[]>("chat_archive", { chatId, archived, topicSlug: topicSlug ?? null }),
+  chatRename: (chatId: string, title: string, topicSlug?: string | null, mode?: AgentMode | null) =>
+    invoke<ChatOverviewItem[]>("chat_rename", {
+      chatId,
+      title,
+      topicSlug: topicSlug ?? null,
+      mode: mode ?? null,
+    }),
+  chatPin: (chatId: string, pinned: boolean, topicSlug?: string | null, mode?: AgentMode | null) =>
+    invoke<ChatOverviewItem[]>("chat_pin", {
+      chatId,
+      pinned,
+      topicSlug: topicSlug ?? null,
+      mode: mode ?? null,
+    }),
+  chatArchive: (chatId: string, archived: boolean, topicSlug?: string | null, mode?: AgentMode | null) =>
+    invoke<ChatOverviewItem[]>("chat_archive", {
+      chatId,
+      archived,
+      topicSlug: topicSlug ?? null,
+      mode: mode ?? null,
+    }),
   /** 分叉：在「最后一个完整回合」处截断复制成新对话，返回新对话 id */
-  chatFork: (chatId: string, topicSlug?: string | null, toSlug?: string | null) =>
-    invoke<string>("chat_fork", { chatId, topicSlug: topicSlug ?? null, toSlug: toSlug ?? null }),
+  chatFork: (
+    chatId: string,
+    topicSlug?: string | null,
+    toSlug?: string | null,
+    mode?: AgentMode | null,
+  ) =>
+    invoke<string>("chat_fork", {
+      chatId,
+      topicSlug: topicSlug ?? null,
+      toSlug: toSlug ?? null,
+      mode: mode ?? null,
+    }),
   chatDelete: (chatId: string, topicSlug?: string | null) =>
     invoke<void>("chat_delete", { chatId, topicSlug: topicSlug ?? null }),
   agentNewChat: () => invoke<string>("agent_new_chat"),
+  /** 读一张本机图片转成可上传的载荷（用户在输入框里选了图片时用） */
+  agentImageLoad: (path: string) =>
+    invoke<{ name: string; mediaType: string; data: string }>("agent_image_load", { path }),
 
   // ---------------- 内置浏览器 ----------------
   viewerSnapshot: () => invoke<ViewerSnapshot>("viewer_snapshot"),
@@ -311,6 +345,22 @@ export const api = {
     invoke<McpStatusEntry[]>("mcp_set_enabled", { name, enabled, scope, topicSlug: topicSlug ?? null }),
   /** 一键开关全部 MCP 服务器 */
   mcpSetAll: (enabled: boolean) => invoke<McpStatusEntry[]>("mcp_set_all", { enabled }),
+
+  // ---------------- 工坊（独立于学习：造技能与 MCP 服务器）----------------
+  studioInfo: () => invoke<StudioInfo>("studio_info"),
+  /** 读一份内置规范文档（skill / mcp） */
+  studioSpec: (doc: string) => invoke<string>("studio_spec", { doc }),
+  studioOpenDir: (ensure?: boolean) =>
+    invoke<string>("studio_open_dir", { ensure: ensure ?? true }),
+
+  // ---------------- 自定义外观主题 ----------------
+  themesOverview: () => invoke<ThemesOverview>("themes_overview"),
+  /** 切换自定义主题；传 null 回到内置配色 */
+  themeSetActive: (id: string | null) =>
+    invoke<PublicConfig>("theme_set_active", { id: id ?? null }),
+  themeSave: (theme: CustomTheme) => invoke<ThemesOverview>("theme_save", { theme }),
+  themeDelete: (id: string) => invoke<ThemesOverview>("theme_delete", { id }),
+  themeOpenDir: (user?: boolean) => invoke<string>("theme_open_dir", { user: user ?? false }),
 
   // ---------------- 长期记忆 ----------------
   memoryOverview: (topicSlug?: string | null) =>

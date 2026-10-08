@@ -12,6 +12,7 @@
 //! - 工具按风险分级，按配置的权限模式决定是否打断用户
 //! - 上下文超预算时，从最早的「完整轮次」开始丢，绝不切断工具调用与结果的配对
 
+pub mod attachment;
 pub mod chats;
 pub mod event;
 pub mod message;
@@ -20,11 +21,12 @@ pub mod provider;
 pub mod registry;
 pub mod tools;
 
+use crate::agent::attachment::Attachments;
 use crate::agent::event::{AgentEvent, PendingCall, Risk, ToolOutcomeView};
 use crate::agent::message::{estimate_messages_tokens, ChatMessage, ContentBlock};
 use crate::agent::prompt::PromptInputs;
 use crate::agent::provider::{ChatRequest, StreamEvent};
-use crate::agent::registry::{ToolCtx, ToolRegistry};
+use crate::agent::registry::{AgentMode, ToolCtx, ToolRegistry};
 use crate::config::AppConfig;
 use crate::domain::topic::Topic;
 use crate::error::{AppError, AppResult};
@@ -57,6 +59,29 @@ pub struct TurnRequest {
     /// 随消息附上的文件（相对主题目录），会写进提示词
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// 随消息附上的图片。字节由前端传 base64 过来，落地成 `image` 块（见 `attachment.rs`）
+    #[serde(default)]
+    pub images: Vec<ImageUpload>,
+    /// study（学习，默认）/ studio（工坊）。老对话与不传这个字段的前端都是学习模式
+    #[serde(default)]
+    pub mode: AgentMode,
+}
+
+/// 一张随消息上传的图片（前端贴图/拖文件时传来）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUpload {
+    /// 原文件名，只用于显示
+    #[serde(default)]
+    pub name: String,
+    /// base64（允许带 `data:image/png;base64,` 前缀）。
+    /// **类型不认这里说的**，认字节里的魔数——前端可能把 `.txt` 改名成 `.png` 传进来。
+    pub data: String,
+    /// 像素尺寸（前端量得到就给，用于估算 token）
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +139,22 @@ impl AgentService {
         self.tools.read().describe_for_prompt()
     }
 
+    /// 某个模式下的工具名 / 声明 / 清单文本。
+    ///
+    /// 学习模式与工坊模式看到的是**不同的工具表**：工坊不出现「出卷」「写卡片」这类
+    /// 需要主题的工具，而学习模式不出现发布技能/登记 MCP 的工具。
+    pub fn names_for(&self, mode: AgentMode) -> Vec<String> {
+        self.tools.read().names_for(mode)
+    }
+
+    pub fn specs_for(&self, mode: AgentMode) -> Vec<registry::ToolSpec> {
+        self.tools.read().specs_for(mode)
+    }
+
+    pub fn describe_for(&self, mode: AgentMode) -> String {
+        self.tools.read().describe_for_prompt_for(mode)
+    }
+
     /// 运行时登记外部工具（MCP 服务器接上来时用）。
     pub fn register_tools(&self, extra: Vec<Arc<dyn registry::Tool>>) -> usize {
         let mut guard = self.tools.write();
@@ -136,9 +177,29 @@ impl AgentService {
         req: TurnRequest,
     ) -> AppResult<(String, ChatMessage)> {
         let text = req.text.trim().to_string();
-        if text.is_empty() {
+        // 只贴图不打字是合法的：「这张图里的第三行是什么」可以省略
+        if text.is_empty() && req.images.is_empty() {
             return Err(AppError::invalid("消息不能为空"));
         }
+
+        // 图片先落盘（消息里只存路径）。中途失败要把已经写下的删掉：
+        // 用户看到的是「发送失败」，没人会来清理那几个半途留下的文件。
+        let attachments = Attachments::new(core.config_read().workspace_root.clone());
+        let mut image_blocks: Vec<ContentBlock> = Vec::new();
+        for up in &req.images {
+            match save_image(&attachments, up) {
+                Ok(block) => image_blocks.push(block),
+                Err(e) => {
+                    for b in &image_blocks {
+                        if let Some(img) = b.as_image() {
+                            attachments.remove(img.path);
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
         let turn_id = uuid::Uuid::new_v4().to_string();
         let cancel = Arc::new(AtomicBool::new(false));
         self.turns.lock().insert(
@@ -147,9 +208,29 @@ impl AgentService {
         );
 
         // 用户消息先落库，前端拿到 id 后直接渲染，避免重复
-        let user_msg = ChatMessage::user(compose_user_text(&text, &req.attachments));
-        let topic = resolve_topic_opt(&core, req.topic_slug.as_deref());
+        let body = compose_user_text(&text, &req.attachments);
+        let user_msg = if image_blocks.is_empty() {
+            ChatMessage::user(body)
+        } else {
+            ChatMessage::user_with_images(&body, image_blocks)
+        };
+        let topic = match req.mode {
+            // 工坊没有主题：它的对话也是工作区级的
+            AgentMode::Studio => None,
+            AgentMode::Study => resolve_topic_opt(&core, req.topic_slug.as_deref()),
+        };
         append_transcript(&core, topic.as_ref(), &req.chat_id, &user_msg)?;
+
+        // 工坊的对话要在侧车文件里记下自己的身份，否则侧栏会把它当成首页的日常问答。
+        // 这是唯一一个「必须写侧车」的情形（其它字段都是用户改过才写）。
+        if req.mode == AgentMode::Studio {
+            let dir = crate::agent::chats_dir_for(&core, None);
+            let mut meta = crate::agent::chats::load(&dir, &req.chat_id);
+            if meta.mode != AgentMode::Studio {
+                meta.mode = AgentMode::Studio;
+                crate::agent::chats::save(&dir, &req.chat_id, &mut meta)?;
+            }
+        }
 
         let svc = self.clone();
         let tid = turn_id.clone();
@@ -228,9 +309,28 @@ impl AgentService {
         let cfg = core.config_read();
         let profile = cfg.active_profile()?.clone();
         let workspace = cfg.workspace();
-        let topic: Option<Topic> = match req.topic_slug.as_deref() {
-            Some(s) if !s.trim().is_empty() => Some(workspace.resolve(s)?),
-            _ => None,
+        let mode = req.mode;
+        // 图片附件按工作区定位（对话可以在主题之间搬，附件不跟着主题走）
+        let attachments = Attachments::new(workspace.root.clone());
+        let topic: Option<Topic> = match mode {
+            // 工坊没有主题：它的产出物（技能 / MCP 服务器）不属于任何一门课
+            AgentMode::Studio => None,
+            AgentMode::Study => match req.topic_slug.as_deref() {
+                Some(s) if !s.trim().is_empty() => Some(workspace.resolve(s)?),
+                _ => None,
+            },
+        };
+        // 相对路径的根：学习模式是主题目录，工坊模式是练习目录
+        let studio = crate::studio::Studio::new(workspace.root.clone());
+        let root = match mode {
+            AgentMode::Studio => {
+                studio.ensure()?;
+                studio.dir()
+            }
+            AgentMode::Study => topic
+                .as_ref()
+                .map(|t| t.dir.clone())
+                .unwrap_or_else(|| workspace.root.clone()),
         };
 
         core.emit_agent(&AgentEvent::TurnStarted {
@@ -250,24 +350,37 @@ impl AgentService {
             .and_then(crate::domain::stage::StudyStage::parse)
             .or_else(|| topic.as_ref().map(|t| t.meta.stage));
 
-        let (system, system_sections) = prompt::build_system_prompt_with_stats(&PromptInputs {
-            config: &cfg,
-            topic: topic.as_ref(),
-            stage,
-            supports_tools: profile.supports_tools,
-            tool_catalog: self.describe_tools(),
-            tool_names: self.tool_names(),
-            skill_catalog: crate::skills::catalog(&core.skills_for(topic.as_ref()), 120),
-            // 长期记忆：在这一轮开始时就装进提示词，并记下「被用到过」
-            memory: core.memory_digest(topic.as_ref()),
-        });
+        // 两套提示词：工坊那份没有主题、没有资料清单，换成「读规范 → 写文件 → 发布 → 看状态」
+        let (system, system_sections) = match mode {
+            AgentMode::Studio => prompt::build_studio_prompt_with_stats(&prompt::StudioInputs {
+                config: &cfg,
+                supports_tools: profile.supports_tools,
+                tool_catalog: self.describe_for(mode),
+                tool_names: self.names_for(mode),
+                skill_catalog: crate::skills::catalog(&core.skills_for(None), 120),
+                bench: crate::studio::DIR_REL.to_string(),
+                // 工坊里没有记忆工具，但「用户是谁」仍然有用（全局那份）
+                memory: core.memory_digest(None),
+            }),
+            AgentMode::Study => prompt::build_system_prompt_with_stats(&PromptInputs {
+                config: &cfg,
+                topic: topic.as_ref(),
+                stage,
+                supports_tools: profile.supports_tools,
+                tool_catalog: self.describe_for(mode),
+                tool_names: self.names_for(mode),
+                skill_catalog: crate::skills::catalog(&core.skills_for(topic.as_ref()), 120),
+                // 长期记忆：在这一轮开始时就装进提示词，并记下「被用到过」
+                memory: core.memory_digest(topic.as_ref()),
+            }),
+        };
         let system = format!("{}\n\n{}", prompt::current_date_line(), system);
 
-        // 只把「当前主题下启用」的外部工具给模型（主题级开关在这里生效）；
+        // 只把「当前模式下可见」的工具给模型（工坊不给出卷、写卡片这些要主题的工具）；
         // 记忆总开关关掉时，记忆工具也要摘掉——否则模型会一次次尝试写入再被拒。
         let memory_on = cfg.agent.memory_enabled;
         let specs = if profile.supports_tools {
-            self.tools_specs()
+            self.specs_for(mode)
                 .into_iter()
                 .filter(|t| memory_on || !crate::agent::tools::memory::is_memory_tool(&t.name))
                 .filter(|t| core.mcp_tool_allowed(&t.name, topic.as_ref()))
@@ -279,6 +392,8 @@ impl AgentService {
         let ctx = ToolCtx {
             core: core.clone(),
             topic: topic.clone(),
+            root,
+            mode,
             turn_id: turn_id.clone(),
             chat_id: req.chat_id.clone(),
         };
@@ -312,6 +427,8 @@ impl AgentService {
                 reasoning: profile.reasoning,
                 timeout: Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
                 cancel: cancel.clone(),
+                attachments: attachments.clone(),
+                supports_vision: profile.supports_vision,
             };
             let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
             let provider_task = {
@@ -616,6 +733,9 @@ pub async fn complete_once(
         reasoning: profile.reasoning,
         timeout: std::time::Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
         cancel: Arc::new(AtomicBool::new(false)),
+        // 这条路径只做一次结构化输出，不带图片
+        attachments: Attachments::disabled(),
+        supports_vision: false,
     };
 
     let task = tokio::spawn(async move { provider.stream(request, tx).await });
@@ -729,6 +849,9 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, budget_chars: usize) -> u
                 ContentBlock::Thinking { text } => text.chars().count(),
                 ContentBlock::ToolUse { input, name, .. } => name.chars().count() + input.to_string().chars().count(),
                 ContentBlock::ToolResult { content, .. } => content.chars().count(),
+                // 图片几乎没有字符，但很占 token：按一张 1100 token 的量级折算成字符，
+                // 否则贴了几十张图的对话永远不会被裁，请求会一路涨到服务商拒收。
+                ContentBlock::Image { .. } => 4_000,
             })
             .sum()
     };
@@ -845,6 +968,9 @@ fn context_breakdown(
                 ContentBlock::Text { text } | ContentBlock::Thinking { text } => {
                     msg_tokens += est(text)
                 }
+                ContentBlock::Image { width, height, .. } => {
+                    msg_tokens += crate::agent::attachment::estimate_image_tokens(*width, *height)
+                }
                 ContentBlock::ToolUse { input, .. } => msg_tokens += est(&input.to_string()),
             }
         }
@@ -883,8 +1009,7 @@ fn parse_tool_args(raw: &str) -> Value {
 
 // ============================================================ 落地工具函数
 
-fn compose_user_text(text: &str, attachments: &[String]) -> String {
-    if attachments.is_empty() {
+fn compose_user_text(text: &str, attachments: &[String]) -> String {    if attachments.is_empty() {
         return text.to_string();
     }
     format!(
@@ -895,6 +1020,23 @@ fn compose_user_text(text: &str, attachments: &[String]) -> String {
 
 fn preview_of(content: &str) -> String {
     content.chars().take(400).collect()
+}
+
+/// 把一张上传的图解码、落盘，转成消息里的 `image` 块。
+///
+/// 尺寸只用于估算 token，所以先夹到合理范围：前端量出来的数字也可能因为
+/// 图片还没加载完而是 0 或 -1，那种脏数据会把估算撑到上限，反而看不出真正的开销。
+fn save_image(attachments: &Attachments, up: &ImageUpload) -> AppResult<ContentBlock> {
+    let data = crate::agent::attachment::b64_decode(&up.data)?;
+    let stored = attachments.save(&up.name, &data)?;
+    Ok(ContentBlock::Image {
+        path: stored.rel,
+        media_type: stored.media_type,
+        name: up.name.trim().chars().take(120).collect(),
+        bytes: stored.bytes,
+        width: up.width.filter(|w| (1..=20000).contains(w)),
+        height: up.height.filter(|h| (1..=20000).contains(h)),
+    })
 }
 
 pub fn resolve_topic_opt(core: &AppCore, slug: Option<&str>) -> Option<Topic> {

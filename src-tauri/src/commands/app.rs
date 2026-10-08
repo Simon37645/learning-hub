@@ -224,6 +224,9 @@ pub struct ProfileInput {
     pub max_tokens: u32,
     #[serde(default = "yes")]
     pub supports_tools: bool,
+    /// 是否支持图片输入；不传就沿用原值（新建时默认开）
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     /// 思考强度；不传就沿用原值（新建时用默认值 = 关闭）
@@ -262,6 +265,9 @@ pub async fn profile_upsert(state: State<'_, AppState>, input: ProfileInput) -> 
                 p.temperature = input.temperature.clamp(0.0, 2.0);
                 p.max_tokens = input.max_tokens.clamp(256, 200_000);
                 p.supports_tools = input.supports_tools;
+                if let Some(v) = input.supports_vision {
+                    p.supports_vision = v;
+                }
                 p.headers = input.headers.clone();
                 if let Some(r) = input.reasoning {
                     p.reasoning = r;
@@ -276,6 +282,7 @@ pub async fn profile_upsert(state: State<'_, AppState>, input: ProfileInput) -> 
                 p.temperature = input.temperature.clamp(0.0, 2.0);
                 p.max_tokens = input.max_tokens.clamp(256, 200_000);
                 p.supports_tools = input.supports_tools;
+                p.supports_vision = input.supports_vision.unwrap_or(true);
                 p.headers = input.headers.clone();
                 if let Some(r) = input.reasoning {
                     p.reasoning = r;
@@ -364,6 +371,9 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
         reasoning: crate::config::ReasoningConfig::default(),
         timeout: Duration::from_secs(45),
         cancel: Arc::new(AtomicBool::new(false)),
+        // 连通性测试只发一句 ping：不带图片，也不看档案的图片开关
+        attachments: crate::agent::attachment::Attachments::disabled(),
+        supports_vision: false,
     };
 
     let started = Instant::now();
@@ -421,12 +431,32 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
 }
 
 /// 预览当前系统提示词，方便用户/开发者理解 agent 看到了什么。
+///
+/// `mode=studio` 时给的是工坊那份（它没有主题，提示词是另一套）。
 #[tauri::command]
-pub async fn prompt_preview(state: State<'_, AppState>, topic_slug: Option<String>) -> AppResult<String> {
+pub async fn prompt_preview(
+    state: State<'_, AppState>,
+    topic_slug: Option<String>,
+    mode: Option<String>,
+) -> AppResult<String> {
     let core = state.0.clone();
     let cfg = core.config_read();
-    let topic = crate::agent::resolve_topic_opt(&core, topic_slug.as_deref());
     let profile = cfg.active_profile().ok();
+    let agent_mode = crate::agent::registry::AgentMode::parse(mode.as_deref().unwrap_or(""));
+
+    if agent_mode == crate::agent::registry::AgentMode::Studio {
+        return Ok(prompt::build_studio_prompt(&prompt::StudioInputs {
+            config: &cfg,
+            supports_tools: profile.map(|p| p.supports_tools).unwrap_or(false),
+            tool_catalog: core.agent.describe_for(agent_mode),
+            tool_names: core.agent.names_for(agent_mode),
+            skill_catalog: crate::skills::catalog(&core.skills_for(None), 120),
+            bench: crate::studio::DIR_REL.to_string(),
+            memory: core.memory_peek(None),
+        }));
+    }
+
+    let topic = crate::agent::resolve_topic_opt(&core, topic_slug.as_deref());
     Ok(prompt::build_system_prompt(&prompt::PromptInputs {
         config: &cfg,
         topic: topic.as_ref(),
@@ -496,7 +526,7 @@ pub async fn open_with_system(state: State<'_, AppState>, topic_slug: String, pa
 }
 
 #[cfg(target_os = "windows")]
-fn open_in_os(path: &std::path::Path) -> AppResult<()> {
+pub(crate) fn open_in_os(path: &std::path::Path) -> AppResult<()> {
     if path.is_dir() {
         std::process::Command::new("explorer")
             .arg(path.as_os_str())
@@ -513,7 +543,7 @@ fn open_in_os(path: &std::path::Path) -> AppResult<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn open_in_os(path: &std::path::Path) -> AppResult<()> {
+pub(crate) fn open_in_os(path: &std::path::Path) -> AppResult<()> {
     std::process::Command::new("open")
         .arg(path)
         .spawn()
@@ -522,7 +552,7 @@ fn open_in_os(path: &std::path::Path) -> AppResult<()> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn open_in_os(path: &std::path::Path) -> AppResult<()> {
+pub(crate) fn open_in_os(path: &std::path::Path) -> AppResult<()> {
     std::process::Command::new("xdg-open")
         .arg(path)
         .spawn()

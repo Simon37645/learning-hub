@@ -6,12 +6,14 @@
 //! - 长任务（agent 一轮对话）立即返回 turn_id，进展通过 `hub://*` 事件推送
 
 pub mod agent;
+pub mod app;
 pub mod extend;
 pub mod file;
-pub mod app;
 pub mod lesson;
 pub mod memory;
 pub mod quiz;
+pub mod studio;
 pub mod study;
+pub mod theme;
 pub mod topic;
 pub mod viewer;

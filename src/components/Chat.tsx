@@ -2,10 +2,12 @@
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useApp, type ToolActivity } from "../store/app";
 import { api, errText } from "../lib/api";
 import { highlightWithin, linkifyCitations, renderMarkdown, renderMermaidIn } from "../lib/markdown";
 import { clampText, fmtClock, fmtTokens, hotkey } from "../lib/format";
+import { imageFilesFrom, prepareImage } from "../lib/images";
 import { contextShares, summarizeCache } from "../lib/usage";
 import { LessonSteps } from "./Lesson";
 import {
@@ -16,8 +18,10 @@ import {
   STYLE_LABEL,
   SANDBOX_MODE_LABEL,
   STAGE_LABEL,
+  type AgentMode,
   type ChatMessage,
   type ContentBlock,
+  type ImageUpload,
   type PermissionMode,
   type ReasoningEffort,
   type ReasoningStyle,
@@ -27,6 +31,21 @@ import {
 } from "../lib/types";
 import { Dropdown, Icon, MenuItem, MenuLabel, MenuSep, Modal, Spinner, AutoTextarea } from "./ui";
 import { TopicWelcome, Welcome } from "./Home";
+
+/** 一条消息最多带几张图（再多就该想想是不是该做成资料了）。 */
+const MAX_IMAGES = 8;
+
+/** 附件（工作区相对路径）→ 能直接塞进 <img> 的地址。 */
+export function assetUrl(workspaceRoot: string, rel: string): string {
+  const sep = workspaceRoot.includes("\\") ? "\\" : "/";
+  return convertFileSrc(workspaceRoot.replace(/[\\/]+$/, "") + sep + rel.replace(/^[\\/]+/, ""));
+}
+
+/** 输入框里还没发出去的一张图（`preview` 就是它的 base64，直接当缩略图用）。 */
+interface PendingImage {
+  upload: ImageUpload;
+  preview: string;
+}
 
 // ---------------------------------------------------------------- Markdown
 
@@ -104,17 +123,21 @@ function MessageView({
   msg,
   results,
   onLink,
+  onImage,
 }: {
   msg: ChatMessage;
   results: Map<string, ToolOutcomeView | { content: string; isError: boolean }>;
   onLink: (href: string) => void;
+  onImage: (block: ContentBlock) => void;
 }) {
   const user = msg.role === "user";
   const userName = useApp((s) => s.config?.userName ?? "我");
+  const workspaceRoot = useApp((s) => s.config?.workspaceRoot ?? "");
 
   const blocks: ContentBlock[] = msg.blocks ?? [];
   const thinking = blocks.find((b) => b.type === "thinking") as { type: "thinking"; text: string } | undefined;
   const text = blocks.find((b) => b.type === "text") as { type: "text"; text: string } | undefined;
+  const images = blocks.filter((b) => b.type === "image");
   const tools = blocks.filter((b) => b.type === "tool_use") as {
     type: "tool_use";
     id: string;
@@ -133,6 +156,23 @@ function MessageView({
             <summary>思考过程</summary>
             <div style={{ marginTop: 6 }}>{thinking.text}</div>
           </details>
+        )}
+
+        {images.length > 0 && (
+          <div className={"msg-imgs" + (user ? " user" : "")}>
+            {images.map((b, i) =>
+              b.type === "image" ? (
+                <button
+                  key={b.path + i}
+                  className="msg-img"
+                  title={`${b.name || "图片"}（点击放大）`}
+                  onClick={() => onImage(b)}
+                >
+                  <img src={assetUrl(workspaceRoot, b.path)} alt={b.name || "图片"} loading="lazy" />
+                </button>
+              ) : null,
+            )}
+          </div>
         )}
 
         {text && text.text.trim() && (
@@ -166,6 +206,53 @@ function MessageView({
       </div>
     </div>
   );
+}
+
+/** 点开一张图看大图。图片是用户自己贴上来的，所以这里不需要缩放以外的操作。 */
+function ImageLightbox({ block, onClose }: { block: ContentBlock; onClose: () => void }) {
+  const workspaceRoot = useApp((s) => s.config?.workspaceRoot ?? "");
+  const [zoom, setZoom] = useState(1);
+  if (block.type !== "image") return null;
+
+  return (
+    <div className="img-lightbox" onClick={onClose}>
+      <div className="img-lightbox-inner" onClick={(e) => e.stopPropagation()}>
+        <div className="img-lightbox-bar">
+          <span className="ellip">{block.name || "图片"}</span>
+          <span className="muted">
+            {block.width && block.height ? `${block.width}×${block.height} · ` : ""}
+            {block.bytes > 0 ? fmtBytes(block.bytes) : ""}
+          </span>
+          <div className="spacer" />
+          <button className="icon-btn" title="缩小" onClick={() => setZoom((z) => Math.max(0.2, z - 0.25))}>
+            <Icon name="zoom-out" size={14} />
+          </button>
+          <span className="muted mono" style={{ fontSize: 11 }}>
+            {Math.round(zoom * 100)}%
+          </span>
+          <button className="icon-btn" title="放大" onClick={() => setZoom((z) => Math.min(4, z + 0.25))}>
+            <Icon name="zoom-in" size={14} />
+          </button>
+          <button className="icon-btn" title="关闭（Esc）" onClick={onClose}>
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+        <div className="img-lightbox-stage">
+          <img
+            src={assetUrl(workspaceRoot, block.path)}
+            alt={block.name || "图片"}
+            style={{ transform: `scale(${zoom})` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** 从工具名 + 入参里猜一句人话（历史消息没有后端摘要时用） */
@@ -232,7 +319,7 @@ function summarizeInput(name: string, input: unknown): string {
 
 // ---------------------------------------------------------------- 主面板
 
-export function Chat() {
+export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: React.ReactNode }) {
   const topic = useApp((s) => s.topic);
   const messages = useApp((s) => s.messages);
   const streaming = useApp((s) => s.streaming);
@@ -241,9 +328,20 @@ export function Chat() {
   const error = useApp((s) => s.chatError);
   const approval = useApp((s) => s.approval);
   const setView = useApp((s) => s.setView);
+  const [lightbox, setLightbox] = useState<ContentBlock | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+
+  // 大图浮层：Esc 关掉（和其它浮层保持一致的手感）
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   // 结果索引：历史（tool 消息）+ 本轮实时（activities）
   const results = useMemo(() => {
@@ -293,20 +391,22 @@ export function Chat() {
 
   return (
     <div className="chat">
-      <ChatHead />
+      <ChatHead mode={mode} />
       <LessonSteps />
 
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
         {visible.length === 0 && !streaming ? (
-          topic?.meta.name ? (
-            <TopicWelcome topicName={topic.meta.name} />
-          ) : (
-            <Welcome topicName={null} />
-          )
+          welcome ?? (topic?.meta.name ? <TopicWelcome topicName={topic.meta.name} /> : <Welcome topicName={null} />)
         ) : (
           <div className="msg-wrap">
             {visible.map((m) => (
-              <MessageView key={m.id} msg={m} results={results} onLink={onLink} />
+              <MessageView
+                key={m.id}
+                msg={m}
+                results={results}
+                onLink={onLink}
+                onImage={setLightbox}
+              />
             ))}
 
             {/* 本轮工具活动（尚未落进消息的） */}
@@ -381,8 +481,9 @@ export function Chat() {
         )}
       </div>
 
-      <Composer />
+      <Composer mode={mode} />
       {approval && <ApprovalDialog />}
+      {lightbox && <ImageLightbox block={lightbox} onClose={() => setLightbox(null)} />}
     </div>
   );
 }
@@ -391,19 +492,25 @@ function ToolCardForActivity({ a }: { a: ToolActivity }) {
   return <ToolCard name={a.name} summary={a.summary} risk={a.risk} result={a} running={a.running} />;
 }
 
-function ChatHead() {
+function ChatHead({ mode = "study" }: { mode?: AgentMode }) {
   const topic = useApp((s) => s.topic);
   const setStage = useApp((s) => s.setStage);
   const newChat = useApp((s) => s.newChat);
+  const newStudioChat = useApp((s) => s.newStudioChat);
   const session = useApp((s) => s.topic?.currentSession ?? null);
   const updateTopic = useApp((s) => s.updateTopic);
+  const studio = mode === "studio";
 
   return (
     <div className="chat-head">
       <div className="who">
-        <Icon name="chat" size={14} />
-        <span>{topic ? topic.meta.name : "日常问答"}</span>
-        {topic && <span className="sub">· {topic.path}</span>}
+        <Icon name={studio ? "hammer" : "chat"} size={14} />
+        <span>{studio ? "工坊" : topic ? topic.meta.name : "日常问答"}</span>
+        {studio ? (
+          <span className="sub">· 造技能与 MCP 服务器，不跟任何主题挂钩</span>
+        ) : (
+          topic && <span className="sub">· {topic.path}</span>
+        )}
       </div>
       <div className="spacer" />
 
@@ -413,7 +520,7 @@ function ChatHead() {
         </span>
       )}
 
-      {topic && (
+      {topic && !studio && (
         <Dropdown
           up={false}
           trigger={() => (
@@ -453,7 +560,11 @@ function ChatHead() {
         </Dropdown>
       )}
 
-      <button className="icon-btn" title="新对话" onClick={() => void newChat()}>
+      <button
+        className="icon-btn"
+        title={studio ? "新对话（工坊）" : "新对话"}
+        onClick={() => void (studio ? newStudioChat() : newChat())}
+      >
         <Icon name="plus" />
       </button>
     </div>
@@ -541,7 +652,7 @@ function partColor(i: number): string {
 
 // ---------------------------------------------------------------- 输入区
 
-function Composer() {
+function Composer({ mode = "study" }: { mode?: AgentMode }) {
   const send = useApp((s) => s.send);
   const stop = useApp((s) => s.stop);
   const streaming = useApp((s) => s.streaming);
@@ -553,17 +664,76 @@ function Composer() {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const [reading, setReading] = useState(false);
 
   const active = config?.profiles.find((p) => p.id === config.activeProfileId) ?? null;
   const profile = active;
-  const mode = config?.agent.permissionMode ?? "ask";
+  const permMode = config?.agent.permissionMode ?? "ask";
+  const studio = mode === "studio";
 
   async function submit() {
-    if (!text.trim() || streaming) return;
+    if ((!text.trim() && images.length === 0) || streaming) return;
     const t = text;
+    const pics = images.map((i) => i.upload);
     setText("");
     setAttachments([]);
-    await send(t, attachments);
+    setImages([]);
+    await send(t, attachments, pics);
+  }
+
+  /**
+   * 把若干张图收进待发送队列。
+   *
+   * 缩放与编码在 `lib/images.ts` 里做（长边 1568px 以上只会更贵、不会更清楚），
+   * 这里只管数量上限与错误提示——一张图读不出来不该让另外几张也发不出去。
+   */
+  async function addImages(files: File[]) {
+    const room = MAX_IMAGES - images.length;
+    if (room <= 0) {
+      toast("warn", `一条消息最多带 ${MAX_IMAGES} 张图`);
+      return;
+    }
+    const take = files.slice(0, room);
+    if (files.length > room) toast("warn", `一条消息最多带 ${MAX_IMAGES} 张图，多余的没有加`);
+    setReading(true);
+    const added: PendingImage[] = [];
+    for (const file of take) {
+      try {
+        const p = await prepareImage(file, file.name || "粘贴的图片.png");
+        added.push({ upload: p.upload, preview: p.preview });
+      } catch (e) {
+        toast("error", `${file.name || "这张图"}：${errText(e)}`);
+      }
+    }
+    setReading(false);
+    if (added.length > 0) setImages((prev) => [...prev, ...added]);
+  }
+
+  async function pickImages() {
+    try {
+      const picked = await openDialog({
+        multiple: true,
+        title: "选择图片（会随消息发给模型）",
+        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+      });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      const files: File[] = [];
+      for (const p of paths as string[]) {
+        try {
+          // 文件选择框给的是路径，字节要经后端读一遍（沙箱只认主题目录，读不了任意路径）
+          const payload = await api.agentImageLoad(p);
+          const bytes = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0));
+          files.push(new File([bytes], payload.name, { type: payload.mediaType }));
+        } catch (e) {
+          toast("error", errText(e));
+        }
+      }
+      if (files.length > 0) await addImages(files);
+    } catch (e) {
+      toast("error", errText(e));
+    }
   }
 
   async function pickFiles() {
@@ -594,6 +764,26 @@ function Composer() {
   return (
     <div className="composer-wrap">
       <div className="composer">
+        {images.length > 0 && (
+          <div className="composer-imgs">
+            {images.map((img, i) => (
+              <div className="composer-img" key={img.upload.name + i}>
+                <img src={img.preview} alt={img.upload.name} />
+                <button
+                  className="img-x"
+                  title="移除这张图"
+                  onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  <Icon name="close" size={10} />
+                </button>
+              </div>
+            ))}
+            <div className="composer-imgs-note muted">
+              {reading ? <Spinner /> : `${images.length} 张图会随这条消息发给模型`}
+            </div>
+          </div>
+        )}
+
         {attachments.length > 0 && (
           <div className="row wrap" style={{ padding: "8px 12px 0", gap: 6 }}>
             {attachments.map((a) => (
@@ -615,29 +805,50 @@ function Composer() {
           value={text}
           onChange={setText}
           onSend={submit}
+          onPaste={(e) => {
+            // 截图直接粘进来是最常用的一条路（Win+Shift+S 之后 Ctrl+V）
+            const files = imageFilesFrom(e.clipboardData?.items);
+            if (files.length === 0) return;
+            e.preventDefault();
+            void addImages(files);
+          }}
           placeholder={
-            topic
-              ? `关于「${topic.meta.name}」，想问什么？（Enter 发送，Shift+Enter 换行）`
-              : "说点什么，或者直接说要学什么（Enter 发送）"
+            studio
+              ? "想造什么？例如「做一个查英语词根的技能」（Enter 发送，Ctrl+V 贴图）"
+              : topic
+                ? `关于「${topic.meta.name}」，想问什么？（Enter 发送，Shift+Enter 换行，Ctrl+V 贴图）`
+                : "说点什么，或者直接说要学什么（Enter 发送，Ctrl+V 贴图）"
           }
         />
 
         <div className="composer-bar">
           <button
             className="pill-select"
-            title="导入资料：把课件 / 论文 / 讲义 / 截图复制进主题的 materials/（直接拖进窗口也行）"
-            onClick={pickFiles}
-            disabled={importing}
+            title="贴图片：把截图 / 照片随消息发给模型（也可以直接 Ctrl+V 粘贴）"
+            onClick={pickImages}
+            disabled={reading}
           >
-            {importing ? <Spinner /> : <Icon name="download" size={13} />}
-            <span className="ellip">资料</span>
+            {reading ? <Spinner /> : <Icon name="image" size={13} />}
+            <span className="ellip">图片</span>
           </button>
+
+          {!studio && (
+            <button
+              className="pill-select"
+              title="导入资料：把课件 / 论文 / 讲义复制进主题的 materials/（直接拖进窗口也行）"
+              onClick={pickFiles}
+              disabled={importing}
+            >
+              {importing ? <Spinner /> : <Icon name="download" size={13} />}
+              <span className="ellip">资料</span>
+            </button>
+          )}
 
           <Dropdown
             trigger={() => (
-              <button className={"pill-select" + (mode === "full" ? " warn" : "")} title="工具权限">
+              <button className={"pill-select" + (permMode === "full" ? " warn" : "")} title="工具权限">
                 <Icon name="eye" size={13} />
-                <span className="ellip">{PERMISSION_LABEL[mode]}</span>
+                <span className="ellip">{PERMISSION_LABEL[permMode]}</span>
                 <Icon name="chevron-down" size={12} />
               </button>
             )}
@@ -648,7 +859,7 @@ function Composer() {
                 {(config?.agent ? (["ask", "auto_edit", "full"] as PermissionMode[]) : []).map((m) => (
                   <MenuItem
                     key={m}
-                    selected={m === mode}
+                    selected={m === permMode}
                     onClick={() => {
                       void patchConfig({ permissionMode: m });
                       close();
@@ -777,12 +988,27 @@ function Composer() {
             </span>
           )}
 
+          {active && !active.supportsVision && (
+            <span
+              className="muted"
+              style={{ fontSize: 11.5 }}
+              title="这个模型档案标着「不支持图片输入」，贴的图不会发给它（会换成一行文字说明）。可在「设置 → 模型档案」里打开"
+            >
+              图片不会发出
+            </span>
+          )}
+
           {streaming ? (
             <button className="send-btn stop" title="停止生成" onClick={() => void stop()}>
               <Icon name="square" size={12} />
             </button>
           ) : (
-            <button className="send-btn" title={`发送 (${hotkey("Enter")})`} onClick={submit} disabled={!text.trim()}>
+            <button
+              className="send-btn"
+              title={`发送 (${hotkey("Enter")})`}
+              onClick={submit}
+              disabled={!text.trim() && images.length === 0}
+            >
               <Icon name="arrow-up" size={14} />
             </button>
           )}

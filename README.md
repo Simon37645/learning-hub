@@ -41,6 +41,9 @@ Markdown, and quizzes you the way a medical school exam does.
   - [11. Skills and MCP](#11-skills-and-mcp)
   - [12. Long-term memory](#12-long-term-memory)
   - [13. Sandbox, permissions, schedule](#13-sandbox-permissions-schedule)
+  - [14. Pictures in the chat](#14-pictures-in-the-chat)
+  - [15. Themes you write yourself](#15-themes-you-write-yourself)
+  - [16. Studio: build your own skills and MCP servers](#16-studio-build-your-own-skills-and-mcp-servers)
 - [Install](#install)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
@@ -298,6 +301,50 @@ Turning it off stops the injection and hides the memory tools; the existing entr
 
 <img src="docs/images/agenda.png" alt="Schedule view" width="820" />
 
+### 14. Pictures in the chat
+
+Paste a screenshot straight into the composer (`Ctrl+V`), or use the *Image* button to pick files.
+Screenshots are resized to a 1568px long edge before upload — beyond that you pay more tokens without
+seeing more detail.
+
+The bytes live on disk (`<workspace>/.hub/attachments/`), and the message only stores the path. That
+keeps the transcript readable, greppable and small — the same reason notes and materials are plain
+files. Each protocol then encodes the picture its own way (OpenAI-compatible `image_url` with an inline
+data URL, Anthropic `image` blocks with raw base64). If a picture is missing, oversized, or your model
+profile is marked “no image input”, it degrades into one line of text instead of failing the whole turn.
+Click a picture to open it large (zoom, `Esc` to close).
+
+### 15. Themes you write yourself
+
+The built-in light/dark palettes are still there, but you can also write your own theme as a small JSON
+file of CSS-variable overrides:
+
+```json
+{ "id": "solarized", "name": "Solarized", "base": "dark",
+  "vars": { "--bg": "#002b36", "--accent": "#cb4b16" } }
+```
+
+Drop it in `<workspace>/.hub/themes/` (travels with the workspace) or `~/.learning-hub/themes/`
+(travels with you). In *Settings → Appearance* you can copy the current palette as a starting point,
+edit the JSON in place, see every available variable with its meaning, and switch themes on and off.
+Variables are applied one by one (`style.setProperty`), never as an injected stylesheet — a typo costs
+you that one colour, not the whole interface.
+
+### 16. Studio: build your own skills and MCP servers
+
+The *Studio* is a second agent mode that has nothing to do with studying. It ships two built-in
+specification documents — the SKILL.md format and this app's actual MCP implementation (stdio,
+newline-framed JSON-RPC, which methods exist) — and the agent reads them before writing anything.
+
+Ask for what you want in plain language; the agent works in a scratch directory
+(`<workspace>/.hub/workshop/`) and then **publishes**: `skill_publish` installs a skill folder into
+`.hub/skills/`, `mcp_publish` registers a server in your config and immediately reconnects, handing back
+the connection status and the tool names it exposes — that round trip is the only way to test a server
+here, and it is enough. Nothing you build can break your existing setup until you publish it, and
+published things show up in the usual *Skills* / *MCP servers* panels with the same switches.
+
+The Studio keeps its own chat list (under *Studio* in the sidebar) — no topic required.
+
 ---
 
 ## Install
@@ -410,7 +457,7 @@ has already fallen into once.
 ## Roadmap
 
 - English UI (strings are already centralised)
-- Voice / image input (multimodal messages)
+- Voice input (pictures already work — see [14](#14-pictures-in-the-chat))
 - Review reminders (system notification when cards are due)
 - Weekly / monthly report from session history
 - MCP Streamable HTTP transport

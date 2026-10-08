@@ -338,3 +338,96 @@ impl Tool for MyTool {
 | `load_app_settings` 持久化 | 换成 localStorage（界面偏好不值得占后端配置） |
 | unified/remark/rehype 导出管线 | 复用学习中枢已有的 marked + KaTeX + DOMPurify（`inknote/render/export.ts` 只有 10 行） |
 | `.modal` / `.toast` 类名 | 加 `.inknote-scope` 前缀限定作用域，避免与学习中枢的同名样式互相覆盖 |
+
+## 12. 图片消息（多模态）
+
+用户贴进对话的图**不写进 jsonl**，而是落盘成文件、消息里只存路径：
+
+```
+<工作区>/.hub/attachments/<uuid>.<png|jpg|gif|webp>     图片本体
+chats/<id>.jsonl 里的块：{ "type":"image", "path":".hub/attachments/x.png", "media_type":…, "bytes":… }
+```
+
+理由（`agent/attachment.rs` 里也写了一遍）：
+
+- `chats/<id>.jsonl` 每行都必须是一条 `ChatMessage`，而且会被整份读进上下文预算、
+  被全文检索扫、被用户用记事本打开——一张 1MB 的截图 base64 之后会让这三件事一起变肿；
+- 二进制进 JSONL 之后既不能 grep 也不能 diff，「用别的编辑器改对话」就废了；
+- 放在**工作区级**目录而不是主题里：对话可以在主题之间搬（`chat_move`），
+  附件跟着工作区走才不会因为搬一次对话就找不到图。
+
+链路与几个决定：
+
+| 环节 | 做法 |
+| --- | --- |
+| 贴图（Ctrl+V）/ 选图 | 前端 `lib/images.ts`：长边压到 1568px 再上传（超过这个尺寸只会更贵，不会更清楚）；类型以字节里的魔数为准 |
+| 上传 | `agent_send` 的 `images[]`（base64）→ `start_turn` 解码落盘；**中途失败会把已写下的删掉**，不留半截文件 |
+| 存储 | 一张图一个 uuid 文件名，不做内容去重（几十 KB 的重复比「哈希撞了换错图」便宜） |
+| 发送 | 两个协议各自编码：OpenAI 的 `image_url`（内联 data URL）、Anthropic 的 `image` 块（裸 base64） |
+| 降级 | 读不到 / 超上限 / 档案标了「不支持图片输入」→ 换成一行文字占位，**绝不让整轮请求失败** |
+| 预算 | 图片按 `(w×h)/750` 估 token（上限 1600），裁剪上下文时按 4000 字符折算——否则贴了几十张图的对话永远裁不掉 |
+| 显示 | 前端用 asset 协议读「工作区 + path」；点开是浮层大图（可缩放、Esc 关闭） |
+
+**没做附件回收**：删对话不会删它引用的图（`.hub/attachments/` 里会留下孤儿文件）。
+理由：删对话只是把 jsonl 移进回收站，用户随时可能还原；真要回收得先扫全部对话统计引用，
+而收益（几十 KB）远小于「还原对话后发现图没了」的风险。
+
+## 13. 自定义外观主题
+
+界面上的每一处颜色都走 `app.css` 里的 CSS 变量，所以自定义主题 = **一份变量覆盖表**：
+
+```json
+{ "id": "solarized", "name": "Solarized", "base": "dark",
+  "vars": { "--bg": "#002b36", "--accent": "#cb4b16" } }
+```
+
+- 位置：`<工作区>/.hub/themes/<id>.json`（跟着工作区走）与 `~/.learning-hub/themes/`
+  （跟着用户走）。同名时工作区胜出——和技能目录的规则一致。
+- 应用方式：`data-theme` 取主题自带的 `base`（它没覆盖的变量跟随那一套内置配色），
+  变量用 `style.setProperty` 逐个设，**不注入样式表**。变量名写错只影响那一条，
+  界面不会变成一片空白；也不需要 eval 任何东西。
+- 读不了的文件**照样列出来**（带 `error`），这样用户看得见「我写的主题坏了」，
+  而不是「主题没出现，是不是软件坏了」。
+- `theme.rs` 的 `VAR_DOCS` 是界面上那份「可用的变量」帮助表，底下有个单测**直接解析
+  `app.css` 对齐两边**：加了变量忘了写文档（或反过来）会红。
+- 点内置的「明亮 / 深色」会**退回内置配色**（并提示原主题还能选回来）——
+  自定义主题自带底色，不这么做的话那两个按钮看起来像没反应。
+- **内置笔记编辑器跟着一起变**：`inknote/editor-tokens.css` 把编辑器的令牌
+  （`--bg-editor` / `--fg` / `--syntax-*`）映射成这些变量的别名，
+  所以主题不用为编辑器再写一份。
+
+## 14. 工坊（Studio）：独立于学习的 agent 模式
+
+造技能与 MCP 服务器需要的是「读规范 → 写文件 → 发布 → 看连接状态」这套循环，
+和学习一门课用的提示词、工具表、上下文都不一样，所以它是**另一个模式**（`AgentMode`）：
+
+| | 学习模式 `study` | 工坊模式 `studio` |
+| --- | --- | --- |
+| 主题 | 有（或首页的日常问答） | **没有** |
+| 相对路径的根 | 主题目录 | `<工作区>/.hub/workshop/`（练习目录） |
+| 系统提示词 | `build_system_prompt` | `build_studio_prompt` |
+| 工具表 | 出卷 / 卡片 / 讲解 / 知识库… | `spec_read` / `skill_publish` / `mcp_publish` + 通用工具 |
+| 对话存哪 | 主题的 `.hub/chats/` | 工作区级的 `.hub/chats/`（侧车 `mode:"studio"` 分开） |
+
+- **规范文档编进二进制**（`include_str!`）：`docs/studio/skill.md`、`docs/studio/mcp.md`。
+  放磁盘上会产生「用户删了 / 版本旧了」这种与代码不一致的状态，而这几千字不该由用户维护。
+  agent 用 `spec_read` 读；用户可以在工坊工具栏里预览同一份。
+- **工具按模式过滤**：`Tool::scope()`（`Study` / `Both` / `Studio`，默认 `Study`）。
+  默认值刻意是「只给学习模式」——新加工具时不必记得来登记，它至少不会跑进工坊、
+  然后因为「没有主题」而报错。
+- **发布是唯一的测试手段**：`mcp_publish` 把服务器登记进配置后立刻 `mcp_reload`，
+  把连接状态与工具名带回来（工坊里没有 shell，不能手动跑一下）。
+- **发布是覆盖 + 回收站**：同名技能/服务器先移进 `.hub/trash/` 再放新的——
+  改完再发一次是常态，但用户手写的旧版本不该被无声抹掉。
+- **对话身份记在侧车文件里**（`ChatMeta.mode`）：工作区级的对话本来就都在
+  `.hub/chats/` 下、id 是 uuid 不会撞，加一个字段就能把「首页的日常问答」和
+  「工坊里造东西」分成两份清单——改名、置顶、归档、删除这些操作一份都不用重写。
+
+## 15. 第四轮新增的扩展点
+
+| 想加什么 | 改哪儿 |
+| --- | --- |
+| 一种新的消息内容块 | `agent/message.rs` 的 `ContentBlock` + 两个协议的编码 + `lib/types.ts` + `Chat.tsx` 的渲染 |
+| 一个新的 agent 模式 | `registry::AgentMode` + `prompt.rs` 一份提示词 + `agent/mod.rs` 的 `run_turn` 分支 + 前端一个视图 |
+| 一个新的主题变量 | `app.css` 的 `:root`（`theme.rs` 的单测会要求同步写进 `VAR_DOCS`） |
+| 工坊能造的新东西 | `studio.rs` 的目录约定 + `tools/studio.rs` 一个发布工具 + 规范文档里写清流程 |

@@ -45,6 +45,8 @@ export function Welcome({ topicName }: { topicName: string | null }) {
         { label: "今天该学什么", icon: "calendar", run: () => void setView("agenda") },
         { label: "找找以前的主题", icon: "search", run: () => setPaletteOpen(true) },
         { label: "新建一个主题", icon: "plus", run: () => void send("帮我建一个学习主题：我想学") },
+        // 工坊：不学东西，造东西（技能 / MCP 服务器）
+        { label: "去工坊造个技能", icon: "hammer", run: () => void useApp.getState().openStudio() },
       ];
 
   return (

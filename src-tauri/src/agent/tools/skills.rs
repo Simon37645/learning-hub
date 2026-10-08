@@ -17,6 +17,11 @@ impl Tool for SkillList {
         "skill_list"
     }
 
+    // 工坊模式的整个工作就是造技能与 MCP 服务器，这三个工具在那边更要紧
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "列出可用的技能（每项只有名字与适用场景）。技能是「怎么做某类事」的成文经验，\n\
          当任务与某个技能的说明对得上时，用 `skill_read` 读它的正文再照做。"
@@ -59,6 +64,11 @@ impl Tool for SkillRead {
         "skill_read"
     }
 
+    // 工坊模式的整个工作就是造技能与 MCP 服务器，这三个工具在那边更要紧
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "读一个技能的完整说明（正文 + 附带文件清单）。读完请严格按里面的步骤执行，\n\
          如果技能里引用了附加文件，再用 fs_read 读对应文件（路径要拼上技能目录）。"
@@ -90,6 +100,11 @@ pub struct McpStatus;
 impl Tool for McpStatus {
     fn name(&self) -> &'static str {
         "mcp_status"
+    }
+
+    // 工坊模式的整个工作就是造技能与 MCP 服务器，这三个工具在那边更要紧
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {

@@ -55,6 +55,8 @@ export type IconName =
   | "auto"
   | "puzzle"
   | "plug"
+  | "image"
+  | "hammer"
   | "box";
 
 const PATHS: Record<IconName, ReactNode> = {
@@ -251,6 +253,20 @@ const PATHS: Record<IconName, ReactNode> = {
       <rect x="2.2" y="2.6" width="11.6" height="3.2" rx="1" />
       <path d="M3.2 5.8v6.2c0 .7.5 1.2 1.2 1.2h7.2c.7 0 1.2-.5 1.2-1.2V5.8" />
       <path d="M6.6 8.6h2.8" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="2.2" y="3" width="11.6" height="10" rx="1.6" />
+      <circle cx="5.9" cy="6.4" r="1.1" />
+      <path d="M3 11.2l3-2.6 2.4 2 1.8-1.5 2.6 2.2" />
+    </>
+  ),
+  // 工坊：一把锤子（造东西），和「技能」的拼图块、「MCP」的插头区分开
+  hammer: (
+    <>
+      <path d="M9.6 2.4l3.9 3.9-1.6 1.6-1.1-1.1-5.4 5.4-1.7-1.7 5.4-5.4-1.1-1.1z" />
+      <path d="M4.3 11.1l1.6 1.6-1.2 1.2a1.1 1.1 0 0 1-1.6-1.6z" />
     </>
   ),
 };
@@ -568,6 +584,7 @@ export function AutoTextarea({
   value,
   onChange,
   onSend,
+  onPaste,
   placeholder,
   minRows = 1,
   maxHeight = 220,
@@ -576,6 +593,8 @@ export function AutoTextarea({
   value: string;
   onChange: (v: string) => void;
   onSend?: () => void;
+  /** 粘贴：输入框里用它接截图（Ctrl+V） */
+  onPaste?: (e: { clipboardData: DataTransfer | null; preventDefault: () => void }) => void;
   placeholder?: string;
   minRows?: number;
   maxHeight?: number;
@@ -612,6 +631,7 @@ export function AutoTextarea({
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
+      onPaste={onPaste}
       onKeyDown={(e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && onSend) {
           e.preventDefault();

@@ -24,6 +24,8 @@ pub mod paths;
 pub mod skills;
 pub mod state;
 pub mod store;
+pub mod studio;
+pub mod theme;
 pub mod viewer;
 
 use crate::config::AppConfig;
@@ -119,6 +121,16 @@ pub fn run() {
             commands::extend::mcp_delete,
             commands::extend::mcp_set_enabled,
             commands::extend::mcp_set_all,
+            // --- 工坊（独立于学习：照着内置规范造技能与 MCP 服务器）---
+            commands::studio::studio_info,
+            commands::studio::studio_spec,
+            commands::studio::studio_open_dir,
+            // --- 自定义外观主题 ---
+            commands::theme::themes_overview,
+            commands::theme::theme_set_active,
+            commands::theme::theme_save,
+            commands::theme::theme_delete,
+            commands::theme::theme_open_dir,
             // --- 长期记忆 ---
             commands::memory::memory_overview,
             commands::memory::memory_upsert,
@@ -156,6 +168,7 @@ pub fn run() {
             // --- 对话 ---
             commands::agent::agent_send,
             commands::agent::agent_cancel,
+            commands::agent::agent_image_load,
             commands::agent::agent_approve,
             commands::agent::agent_transcript,
             commands::agent::agent_chats,

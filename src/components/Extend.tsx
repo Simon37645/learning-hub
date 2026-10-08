@@ -60,6 +60,16 @@ export function SkillsDialog({ onClose }: { onClose: () => void }) {
           <span className="left muted" style={{ fontSize: 11.5 }}>
             {dirs ? `全局技能目录：${dirs.workspace}` : ""}
           </span>
+          <button
+            className="btn"
+            title="让 agent 照着内置规范帮你写一个（独立于学习的工坊模式）"
+            onClick={() => {
+              onClose();
+              void useApp.getState().openStudio();
+            }}
+          >
+            <Icon name="hammer" size={13} /> 去工坊造一个
+          </button>
           <button className="btn" onClick={() => void api.skillsReload().then((n) => (toast("success", `重新扫描到 ${n} 个全局技能`), void refresh()))}>
             <Icon name="refresh" size={13} /> 重新扫描
           </button>
@@ -391,6 +401,16 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
           <span className="left muted" style={{ fontSize: 11.5 }}>
             连上后它提供的工具会以 <code className="mono">mcp__服务器__工具</code> 出现在 agent 的工具列表里
           </span>
+          <button
+            className="btn"
+            title="让 agent 照着内置规范帮你写一个（独立于学习的工坊模式）"
+            onClick={() => {
+              onClose();
+              void useApp.getState().openStudio();
+            }}
+          >
+            <Icon name="hammer" size={13} /> 去工坊造一个
+          </button>
           <button
             className="btn"
             disabled={busy}

@@ -33,6 +33,27 @@ pub enum ContentBlock {
     Text {
         text: String,
     },
+    /// 用户随消息附上的一张图片。
+    ///
+    /// 只记**工作区相对路径**（`.hub/attachments/<id>.<ext>`），字节在磁盘上——
+    /// 见 `agent/attachment.rs` 里「为什么不内联 base64」的说明。
+    /// 发请求时才读盘，按各家的形状编码（OpenAI 的 `image_url` / Anthropic 的 `image` 块）。
+    Image {
+        path: String,
+        media_type: String,
+        /// 原文件名（只用于显示；用户起的名字可能带斜杠与中文标点，不参与路径）
+        #[serde(default)]
+        name: String,
+        /// 字节数（界面上显示大小）
+        #[serde(default)]
+        bytes: u64,
+        /// 像素尺寸。前端贴图时量得到就带上（估 token 用）；
+        /// 量不到也不影响发送——服务商自己会解码。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
     /// 模型的思考过程（DeepSeek-R1 的 reasoning_content / Claude 的 thinking）
     Thinking {
         text: String,
@@ -56,6 +77,29 @@ impl ContentBlock {
     pub fn is_tool_use(&self) -> bool {
         matches!(self, ContentBlock::ToolUse { .. })
     }
+    /// 图片块 → 借用形式的字段（协议编码与前端渲染都要问这个）。
+    pub fn as_image(&self) -> Option<ImageRef<'_>> {
+        match self {
+            ContentBlock::Image { path, media_type, name, width, height, .. } => Some(ImageRef {
+                path,
+                media_type,
+                name,
+                width: *width,
+                height: *height,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// 图片块里的字段（借用形式，避免每次都要拆 `ContentBlock`）。
+#[derive(Debug, Clone, Copy)]
+pub struct ImageRef<'a> {
+    pub path: &'a str,
+    pub media_type: &'a str,
+    pub name: &'a str,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -161,6 +205,44 @@ impl ChatMessage {
             .collect()
     }
 
+    /// 这条消息带的所有图片（顺序即块顺序）。
+    pub fn images(&self) -> Vec<ImageRef<'_>> {
+        self.blocks.iter().filter_map(|b| b.as_image()).collect()
+    }
+
+    pub fn has_images(&self) -> bool {
+        self.blocks.iter().any(|b| b.as_image().is_some())
+    }
+
+    /// 用户消息：若干张图 + 一段文字。
+    ///
+    /// 图片排在文字**前面**：两家服务商都推荐「图在前、问题在后」，模型对图的指代更稳
+    /// （「这张图里的第三行」不会指错）；界面上缩略图也在输入框文字上方。
+    pub fn user_with_images(text: &str, images: Vec<ContentBlock>) -> Self {
+        let mut blocks = images;
+        if !text.trim().is_empty() {
+            blocks.push(ContentBlock::text(text));
+        }
+        Self::new(Role::User, blocks)
+    }
+
+    /// 会话标题用的那点文字：没有文本块时（只贴了张图就问）给一句能看懂的占位。
+    pub fn display_text(&self) -> String {
+        let text = self.text();
+        if !text.trim().is_empty() {
+            return text;
+        }
+        let n = self.images().len();
+        if n > 0 {
+            return if n == 1 {
+                "（图片）".to_string()
+            } else {
+                format!("（{n} 张图片）")
+            };
+        }
+        String::new()
+    }
+
     pub fn is_empty_assistant(&self) -> bool {
         self.role == Role::Assistant
             && self.text().trim().is_empty()
@@ -192,6 +274,9 @@ pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> u32 {
                 .map(|b| match b {
                     ContentBlock::Text { text } => estimate_tokens(text),
                     ContentBlock::Thinking { text } => estimate_tokens(text),
+                    ContentBlock::Image { width, height, .. } => {
+                        crate::agent::attachment::estimate_image_tokens(*width, *height)
+                    }
                     ContentBlock::ToolUse { name, input, .. } => {
                         estimate_tokens(name) + estimate_tokens(&input.to_string())
                     }
@@ -230,5 +315,46 @@ mod tests {
     fn token_estimate_reasonable() {
         assert!(estimate_tokens("你好世界") >= 4);
         assert!(estimate_tokens("hello world") < 10);
+    }
+
+    /// 图片块要能原样落盘再读回来（字段名一旦写错，老对话就再也渲染不出图）。
+    #[test]
+    fn image_block_roundtrip_json() {
+        let m = ChatMessage::user_with_images(
+            "这张图里第 3 行是什么？",
+            vec![ContentBlock::Image {
+                path: ".hub/attachments/ab12.png".into(),
+                media_type: "image/png".into(),
+                name: "截图 2026-10-08.png".into(),
+                bytes: 1234,
+                width: Some(1200),
+                height: Some(800),
+            }],
+        );
+        let s = serde_json::to_string(&m).unwrap();
+        // 带 tag 的枚举：变体名是 snake_case，变体内的字段保持原样（snake_case）
+        assert!(s.contains("\"type\":\"image\""), "实际：{s}");
+        assert!(s.contains("\"media_type\":\"image/png\""), "实际：{s}");
+        let back: ChatMessage = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.images().len(), 1);
+        assert_eq!(back.images()[0].path, ".hub/attachments/ab12.png");
+        assert_eq!(back.images()[0].width, Some(1200));
+        // 图在前、文字在后
+        assert_eq!(back.blocks[0].as_image().is_some(), true);
+        assert_eq!(back.text(), "这张图里第 3 行是什么？");
+        // 只带图不带字时，标题要有一句能看懂的占位（否则侧栏那行是空的）
+        let bare = ChatMessage::new(Role::User, m.blocks.iter().take(1).cloned().collect());
+        assert_eq!(bare.display_text(), "（图片）");
+        assert_eq!(m.display_text(), "这张图里第 3 行是什么？");
+    }
+
+    /// 老对话没有 width/height（或整个字段都没有）也要能读——JSONL 是长期资产。
+    #[test]
+    fn image_block_tolerates_missing_optional_fields() {
+        let raw = r#"{"id":"m1","role":"user","blocks":[{"type":"image","path":".hub/attachments/a.png","media_type":"image/png"}],"createdAt":"2026-01-01T00:00:00Z","meta":{}}"#;
+        let m: ChatMessage = serde_json::from_str(raw).unwrap();
+        assert_eq!(m.images().len(), 1);
+        assert_eq!(m.images()[0].width, None);
+        assert_eq!(m.images()[0].name, "");
     }
 }

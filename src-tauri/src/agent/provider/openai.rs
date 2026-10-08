@@ -3,7 +3,10 @@
 //! 覆盖绝大多数国产与自建服务：DeepSeek、Moonshot、通义、智谱、硅基流动、
 //! Ollama / vLLM / LM Studio 的 OpenAI 兼容端点、以及各种中转网关。
 
-use super::{error_from_response, pump_sse, ChatRequest, LlmProvider, ProviderUsage, StreamEvent};
+use super::{
+    error_from_response, pump_sse, resolve_image, to_data_url, ChatRequest, LlmProvider, ProviderUsage,
+    ResolvedImage, StreamEvent,
+};
 use crate::agent::message::{ChatMessage, Role};
 use crate::agent::registry::ToolSpec;
 use crate::config::{ProviderKind, ProviderProfile};
@@ -36,7 +39,15 @@ impl LlmProvider for OpenAiProvider {
     async fn stream(&self, req: ChatRequest, tx: UnboundedSender<StreamEvent>) -> AppResult<()> {
         let mut body = Map::new();
         body.insert("model".into(), json!(req.model));
-        body.insert("messages".into(), json!(to_openai_messages(&req.system, &req.messages)));
+        body.insert(
+            "messages".into(),
+            json!(to_openai_messages(
+                &req.system,
+                &req.messages,
+                &req.attachments,
+                req.supports_vision
+            )),
+        );
         body.insert("stream".into(), json!(true));
         body.insert("temperature".into(), json!(req.temperature));
         body.insert("max_tokens".into(), json!(req.max_tokens));
@@ -201,7 +212,16 @@ fn usage_from_openai(u: &Value) -> Option<ProviderUsage> {
 }
 
 /// 消息 → OpenAI 格式。思考块不回传（DeepSeek 等会因此报错）。
-pub fn to_openai_messages(system: &str, messages: &[ChatMessage]) -> Vec<Value> {
+///
+/// `attachments` / `supports_vision` 只影响**带图**的用户消息：那种消息的 `content`
+/// 要写成 parts 数组（`[{"type":"text"},{"type":"image_url"}]`），
+/// 纯文字消息仍然给字符串——数组形式不是所有网关都吃得住，能不用就不用。
+pub fn to_openai_messages(
+    system: &str,
+    messages: &[ChatMessage],
+    attachments: &crate::agent::attachment::Attachments,
+    supports_vision: bool,
+) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     if !system.trim().is_empty() {
         out.push(json!({ "role": "system", "content": system }));
@@ -211,7 +231,12 @@ pub fn to_openai_messages(system: &str, messages: &[ChatMessage]) -> Vec<Value> 
         match m.role {
             Role::System => {}
             Role::User => {
-                out.push(json!({ "role": "user", "content": m.text() }));
+                let content = if m.has_images() {
+                    user_content_parts(m, attachments, supports_vision)
+                } else {
+                    json!(m.text())
+                };
+                out.push(json!({ "role": "user", "content": content }));
             }
             Role::Assistant => {
                 let text = m.text();
@@ -254,6 +279,46 @@ pub fn to_openai_messages(system: &str, messages: &[ChatMessage]) -> Vec<Value> 
         }
     }
     out
+}
+
+/// 带图用户消息的 `content`：按块顺序排，图在前（模型对图的指代更稳）。
+///
+/// 读不到图、或档案没开图片输入时，`resolve_image` 会给出一行文字占位——
+/// 请求照样发得出去，用户也能从回复/报错里看懂发生了什么。
+fn user_content_parts(
+    m: &ChatMessage,
+    attachments: &crate::agent::attachment::Attachments,
+    supports_vision: bool,
+) -> Value {
+    let mut parts: Vec<Value> = Vec::new();
+    for block in &m.blocks {
+        match block {
+            crate::agent::message::ContentBlock::Text { text } => {
+                if !text.is_empty() {
+                    parts.push(json!({ "type": "text", "text": text }));
+                }
+            }
+            crate::agent::message::ContentBlock::Image { .. } => {
+                let img = block.as_image().expect("分支已经确认是图片块");
+                match resolve_image(attachments, supports_vision, img) {
+                    ResolvedImage::Ready(loaded) => parts.push(json!({
+                        "type": "image_url",
+                        "image_url": { "url": to_data_url(&loaded) }
+                    })),
+                    ResolvedImage::Placeholder(text) => {
+                        parts.push(json!({ "type": "text", "text": text }))
+                    }
+                }
+            }
+            // 思考块与工具块不出现在用户消息里
+            _ => {}
+        }
+    }
+    if parts.is_empty() {
+        // 空 content 数组会被部分服务商拒掉，退成空串（它们接受空串）
+        return json!("");
+    }
+    Value::Array(parts)
 }
 
 /// 把思考强度写进 OpenAI 兼容的请求体。
@@ -330,13 +395,79 @@ mod tests {
             ),
             ChatMessage::tool_result("call_1", "内容", false),
         ];
-        let out = to_openai_messages("sys", &msgs);
+        let out = to_openai_messages(
+            "sys",
+            &msgs,
+            &crate::agent::attachment::Attachments::disabled(),
+            false,
+        );
         assert_eq!(out.len(), 4);
         assert_eq!(out[0]["role"], "system");
         assert_eq!(out[2]["tool_calls"][0]["function"]["name"], "fs_read");
         assert!(out[2]["tool_calls"][0]["function"]["arguments"].is_string());
         assert_eq!(out[3]["role"], "tool");
         assert_eq!(out[3]["tool_call_id"], "call_1");
+        // 纯文字消息仍然给字符串 content：数组形式不是所有网关都吃得住
+        assert_eq!(out[1]["content"], "读一下笔记");
+    }
+
+    /// 带图消息：content 变 parts 数组，图排在文字前面（模型指代更稳）。
+    #[test]
+    fn encodes_images_as_content_parts() {
+        let tmp = std::env::temp_dir().join(format!("lh-oai-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        let png: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+            v.extend_from_slice(b"data");
+            v
+        };
+        let stored = att.save("a.png", &png).unwrap();
+        let msg = ChatMessage::user_with_images(
+            "这张图里第 3 行是什么？",
+            vec![ContentBlock::Image {
+                path: stored.rel.clone(),
+                media_type: "image/png".into(),
+                name: "a.png".into(),
+                bytes: png.len() as u64,
+                width: Some(800),
+                height: Some(600),
+            }],
+        );
+
+        let out = to_openai_messages("", &[msg], &att, true);
+        let content = out[0]["content"].as_array().expect("带图时应当是 parts 数组");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image_url");
+        assert_eq!(content[1]["type"], "text");
+        assert!(content[0]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        // 档案没开图片输入：图消失、换成一行文字，请求本身仍然合法
+        let off = to_openai_messages(
+            "",
+            &[ChatMessage::user_with_images(
+                "看这张图",
+                vec![ContentBlock::Image {
+                    path: stored.rel.clone(),
+                    media_type: "image/png".into(),
+                    name: "a.png".into(),
+                    bytes: 4,
+                    width: None,
+                    height: None,
+                }],
+            )],
+            &att,
+            false,
+        );
+        let content = off[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert!(content[0]["text"].as_str().unwrap().contains("未开启图片输入"));
+        assert_eq!(content[1]["text"], "看这张图");
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

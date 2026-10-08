@@ -62,6 +62,16 @@ async function streamChat(res, body) {
   const toolResults = messages.filter((m) => m.role === "tool");
   const hasToolCall = messages.some((m) => m.role === "assistant" && m.tool_calls);
 
+  // 多模态：用户消息里的图片要按协议编码成 parts 数组（`image_url.url` 是内联 data URL）。
+  // 打一行日志就能验证客户端有没有真的把图发出来、发的是不是 base64。
+  const images = messages.flatMap((m) =>
+    Array.isArray(m.content) ? m.content.filter((p) => p?.type === "image_url") : [],
+  );
+  if (images.length > 0) {
+    const heads = images.map((p) => String(p.image_url?.url ?? "").slice(0, 32));
+    log(`收到 ${images.length} 张图：${heads.join(" | ")}`);
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache",

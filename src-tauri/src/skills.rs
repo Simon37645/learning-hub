@@ -36,7 +36,10 @@ pub struct Skill {
 
 /// 轻量 frontmatter 解析：只认 `key: value`，不引 YAML 依赖。
 /// 技能文件里的 frontmatter 就是这两个字段，够用且行为可预测。
-fn parse_front_matter(text: &str) -> (Option<String>, Option<String>, String) {
+///
+/// 公开是给工坊用的：发布技能后要从**正式目录**回读一遍，
+/// 让「description 没写对」在发布那一步就暴露出来，而不是等下次对话才发现描述是空的。
+pub fn parse_front_matter(text: &str) -> (Option<String>, Option<String>, String) {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if !text.trim_start().starts_with("---") {
         return (None, None, text.to_string());

@@ -30,6 +30,11 @@ pub struct ChatRequest {
     pub timeout: std::time::Duration,
     /// 用户点「停止」时置位，provider 在流循环里检查
     pub cancel: Arc<AtomicBool>,
+    /// 图片附件的落盘位置：消息里的 `image` 块只存路径，字节在这里读。
+    pub attachments: crate::agent::attachment::Attachments,
+    /// 当前档案的模型认不认图片。不认就把图片降级成一行文字——
+    /// 让请求失败是最坏的处理方式（用户只会看到一句看不懂的 400）。
+    pub supports_vision: bool,
 }
 
 /// 服务商报回来的**真实**用量（不是本地估算）。
@@ -190,6 +195,53 @@ pub(crate) async fn error_from_response(resp: reqwest::Response) -> AppError {
 /// 估算「输入 token」，用于界面上的用量显示。
 pub use crate::agent::message::estimate_messages_tokens;
 
+// ============================================================ 图片
+
+/// 一张图片的结果：要么能发，要么**降级成一行文字**。
+///
+/// 为什么降级而不是报错：下面三种情况都很常见，而且都不该让整轮对话失败——
+/// 用户会看到一句看不懂的 HTTP 400，却不知道是自己关着图片输入还是图被删了。
+/// - 文件被删了（对话还能继续，顺便告诉他图没了）
+/// - 模型档案没开图片输入（那是配置问题）
+/// - 文件超过上限
+pub(crate) enum ResolvedImage {
+    Ready(crate::agent::attachment::LoadedImage),
+    Placeholder(String),
+}
+
+pub(crate) fn resolve_image(
+    attachments: &crate::agent::attachment::Attachments,
+    supports_vision: bool,
+    img: crate::agent::message::ImageRef<'_>,
+) -> ResolvedImage {
+    let label = if img.name.trim().is_empty() { "图片" } else { img.name.trim() };
+    if !supports_vision {
+        return ResolvedImage::Placeholder(format!(
+            "［图片：{label}］（当前模型档案未开启图片输入，这张图没有发出去——\
+             可以在「设置 → 模型档案」里打开「支持图片输入」）"
+        ));
+    }
+    if !attachments.is_enabled() {
+        return ResolvedImage::Placeholder(format!("［图片：{label}］（没有打开工作区，读不到这张图）"));
+    }
+    match attachments.load(img.path) {
+        Ok(data) => ResolvedImage::Ready(data),
+        Err(e) => {
+            eprintln!("[provider] 图片读取失败，已降级成文字：{e}");
+            ResolvedImage::Placeholder(format!("［图片：{label}］（{e}）"))
+        }
+    }
+}
+
+/// OpenAI 兼容端点的 `image_url.url`：内联 data URL（本地文件没有公网地址）。
+pub(crate) fn to_data_url(img: &crate::agent::attachment::LoadedImage) -> String {
+    format!(
+        "data:{};base64,{}",
+        img.media_type,
+        crate::agent::attachment::b64_encode(&img.data)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +249,68 @@ mod tests {
     #[test]
     fn truncate_keeps_boundary() {
         assert_eq!(truncate("中文很长的一段话", 3), "中文很…");
+    }
+
+    /// 图片读不到 / 模型没开图片输入 → 都要降级成文字，绝不让整轮请求失败。
+    #[test]
+    fn image_failures_degrade_to_text() {
+        use crate::agent::message::ContentBlock;
+        let block = ContentBlock::Image {
+            path: ".hub/attachments/missing.png".into(),
+            media_type: "image/png".into(),
+            name: "截图.png".into(),
+            bytes: 10,
+            width: Some(100),
+            height: Some(100),
+        };
+        let img = block.as_image().unwrap();
+
+        // 档案标了「不支持图片」：直接降级，连盘都不读
+        let off = resolve_image(&crate::agent::attachment::Attachments::disabled(), false, img);
+        match off {
+            ResolvedImage::Placeholder(t) => {
+                assert!(t.contains("截图.png"));
+                assert!(t.contains("未开启图片输入"));
+            }
+            _ => panic!("不支持图片时必须降级"),
+        }
+
+        // 开着图片输入但文件没了：也要降级
+        let tmp = std::env::temp_dir().join(format!("lh-prov-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        match resolve_image(&att, true, img) {
+            ResolvedImage::Placeholder(t) => assert!(t.contains("截图.png")),
+            _ => panic!("文件不存在时必须降级"),
+        }
+    }
+
+    /// 正常路径：读盘 → data URL 的形状要能直接被服务商认出来。
+    #[test]
+    fn image_becomes_inline_data_url() {
+        let tmp = std::env::temp_dir().join(format!("lh-prov-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        let png: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+            v.extend_from_slice(b"data");
+            v
+        };
+        let stored = att.save("a.png", &png).unwrap();
+        let block = crate::agent::message::ContentBlock::Image {
+            path: stored.rel.clone(),
+            media_type: stored.media_type.clone(),
+            name: "a.png".into(),
+            bytes: png.len() as u64,
+            width: Some(2),
+            height: Some(2),
+        };
+        match resolve_image(&att, true, block.as_image().unwrap()) {
+            ResolvedImage::Ready(loaded) => {
+                assert_eq!(loaded.data, png);
+                let url = to_data_url(&loaded);
+                assert!(url.starts_with("data:image/png;base64,"), "实际：{url}");
+            }
+            ResolvedImage::Placeholder(t) => panic!("应当能读到：{t}"),
+        }
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

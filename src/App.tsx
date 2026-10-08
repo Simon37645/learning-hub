@@ -10,6 +10,7 @@ import { Workbench } from "./components/Workbench";
 import { ViewerPanel } from "./components/Viewer";
 import { Agenda } from "./components/Agenda";
 import { Settings } from "./components/Settings";
+import { Studio } from "./components/Studio";
 import { AppMark, Icon, Toasts } from "./components/ui";
 import { DropOverlay } from "./components/DragDrop";
 import { STAGE_LABEL } from "./lib/types";
@@ -94,6 +95,8 @@ export default function App() {
               <Settings />
             ) : view === "agenda" ? (
               <Agenda />
+            ) : view === "studio" ? (
+              <Studio />
             ) : topic ? (
               <TopicSurface />
             ) : (

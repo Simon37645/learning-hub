@@ -42,6 +42,13 @@ pub struct ChatMeta {
     /// 分叉来源：从哪条对话、哪个位置分出来的
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ForkInfo>,
+    /// 这条对话属于哪个模式：学习 / 工坊。
+    ///
+    /// 为什么记在这儿而不是另开一个目录：工作区级（没有主题）的对话本来就都存在
+    /// `.hub/chats/` 下，id 是 uuid、不会撞。「首页的日常问答」和「工坊里造东西」
+    /// 是两份清单，靠这一个字段分开——改名、置顶、归档、删除这些操作就都不用再写一遍。
+    #[serde(default)]
+    pub mode: crate::agent::registry::AgentMode,
 }
 
 /// 分叉血缘。只记「从哪来」，不记「分出去哪些」——
@@ -66,6 +73,7 @@ impl Default for ChatMeta {
             created_at: None,
             updated_at: None,
             forked_from: None,
+            mode: crate::agent::registry::AgentMode::Study,
         }
     }
 }
@@ -112,11 +120,15 @@ pub fn remove(chats_dir: &Path, chat_id: &str) {
 
 impl ChatMeta {
     /// 什么都没设过——这种元数据不值得落盘。
+    ///
+    /// 例外：工坊的对话一定要留侧车（`mode` 就是它的身份），
+    /// 否则它会被当成首页的日常问答，出现在另一份清单里。
     pub fn is_default(&self) -> bool {
         self.title.trim().is_empty()
             && !self.pinned
             && !self.archived
             && self.forked_from.is_none()
+            && self.mode == crate::agent::registry::AgentMode::Study
     }
 
     /// 界面上真正显示的标题：用户起过名就用它，否则取第一句用户消息。
@@ -128,7 +140,9 @@ impl ChatMeta {
         messages
             .iter()
             .find(|m| m.role == Role::User)
-            .map(|m| truncate(m.text().trim(), 40))
+            // display_text 而不是 text：只贴了一张图没打字的对话也要有标题
+            // （否则侧栏那一行是空的，看着像坏了）
+            .map(|m| truncate(m.display_text().trim(), 40))
             .unwrap_or_default()
     }
 
@@ -157,6 +171,8 @@ pub struct ChatOverviewItem {
     pub pinned: bool,
     pub archived: bool,
     pub forked_from: Option<ForkInfo>,
+    /// 学习 / 工坊（侧栏据此把两条清单分开）
+    pub mode: crate::agent::registry::AgentMode,
 }
 
 /// 排序：置顶在最前 → 归档沉到底 → 再按最近使用。
@@ -187,6 +203,7 @@ pub fn overview_item(
         pinned: meta.pinned,
         archived: meta.archived,
         forked_from: meta.forked_from.clone(),
+        mode: meta.mode,
     }
 }
 
@@ -211,6 +228,7 @@ mod tests {
             pinned,
             archived,
             forked_from: None,
+            mode: crate::agent::registry::AgentMode::Study,
         }
     }
 
@@ -262,6 +280,47 @@ mod tests {
         // 长标题要截断，别把侧栏撑开
         meta.rename(&"长".repeat(200));
         assert_eq!(meta.title.chars().count(), TITLE_MAX);
+    }
+
+    /// 只贴了图、没打字的对话：标题不能是空的（侧栏那一行会看着像坏了）。
+    #[test]
+    fn title_falls_back_to_image_placeholder() {
+        use crate::agent::message::ContentBlock;
+        let messages = vec![ChatMessage::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                path: ".hub/attachments/a.png".into(),
+                media_type: "image/png".into(),
+                name: "a.png".into(),
+                bytes: 10,
+                width: None,
+                height: None,
+            }],
+        )];
+        let meta = ChatMeta::default();
+        assert_eq!(meta.display_title(&messages), "（图片）");
+    }
+
+    /// 工坊的对话必须留下侧车（mode 就是它的身份），否则会跑进首页那份清单里。
+    #[test]
+    fn studio_chats_keep_their_meta() {
+        let dir = tmp();
+        let mut meta = ChatMeta {
+            mode: crate::agent::registry::AgentMode::Studio,
+            ..ChatMeta::default()
+        };
+        assert!(!meta.is_default(), "工坊对话不能算「什么都没设过」");
+        save(&dir, "s1", &mut meta).unwrap();
+        assert!(meta_path(&dir, "s1").exists());
+        assert_eq!(load(&dir, "s1").mode, crate::agent::registry::AgentMode::Studio);
+
+        // 老侧车文件里没有 mode 字段：要按学习模式读出来，而不是报错
+        std::fs::write(meta_path(&dir, "old"), r#"{"title":"旧对话"}"#).unwrap();
+        let old = load(&dir, "old");
+        assert_eq!(old.mode, crate::agent::registry::AgentMode::Study);
+        assert_eq!(old.title, "旧对话");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 排序规则：置顶最前、归档沉底、其余按最近使用。

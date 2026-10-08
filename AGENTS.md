@@ -11,7 +11,7 @@ npm run app:dev                                        # 开发模式（首次�
 npm run typecheck                                      # 前端类型检查（必须过）
 npm run build                                          # 前端构建
 npm run rust:check                                     # 后端类型检查
-npm run rust:test                                      # 后端单测（56 个）
+npm run rust:test                                      # 后端单测（79 个）
 npm run test:ui                                        # 前端单测（vitest：InkNote 回归网 + 应用自己的纯逻辑）
 npm run dist                                           # 打包（tauri build + scripts/package.mjs）
 npm run shortcut                                       # 把打包版同步到 release/app 并在桌面建快捷方式（应用开着时会跳过同步并提示）
@@ -196,6 +196,31 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **对话列表的排序只在 Rust 里算一次**（`chats::sort_items`：置顶 → 最近使用 → 归档沉底），
   前端照返回顺序渲染。两边各排一次迟早出现「显示置顶了、点进去排在后面」。
   条数上限（60）放在排序**之后**，否则置顶那条会被文件时间截掉。
+- **图片消息只存路径，不存字节**：用户贴的图落在 `<工作区>/.hub/attachments/`，
+  jsonl 里的块是 `{"type":"image","path":".hub/attachments/x.png",…}`。
+  别图省事把 base64 写进 jsonl（那个文件会被整份读进上下文预算、被全文检索扫、
+  被用户用记事本打开）。另注意**带 tag 的枚举里字段是 snake_case**：
+  前端类型里写 `media_type`，写成 `mediaType` 会永远取到 undefined。
+  发请求时才读盘编码，读不到/超上限/档案关了图片输入 → 降级成一行文字，别让请求失败。
+- **拖文件进窗口不会触发 HTML5 的 drop**（Tauri 接管了文件拖放，见下一条的姐妹坑）：
+  拖进来 = 导入到 `materials/`（没有主题就提示）。所以「贴图给 agent 看」这条路
+  走的是 **Ctrl+V 粘贴**和输入框里的「图片」按钮，别再花时间试拖拽。
+- **工具的默认 `scope()` 是 `Study`**：想在工坊模式下也出现的工具必须显式实现
+  `fn scope() -> ToolScope::Both`。反过来，工坊专用的工具写 `Studio`。
+  模式过滤在 `registry::ToolRegistry::specs_for` 一处做，主循环只管拿。
+- **工坊的对话身份在侧车文件里**（`ChatMeta.mode`）：工坊没有主题，它的对话和首页的
+  日常问答都在 `<工作区>/.hub/chats/` 下，靠这一个字段分成两份清单。
+  加新的「按模式分」的界面时照 `chat_overview(topic_slug, mode)` 的写法传 mode，
+  别去改 `chats_dir_for` 的路径规则。
+- **工坊模式下相对路径的根是练习目录**（`ToolCtx.root`），不是主题目录。
+  工具里别自己拼 `ctx.topic_or(...)?.dir`——用 `ctx.resolve_path` / `ctx.root_for`，
+  否则那个工具一到工坊就报「没有打开主题」。
+- **加/删 CSS 变量要同步 `theme.rs` 的 `VAR_DOCS`**：底下有个单测直接解析 `app.css`
+  对齐两边（文档漂了比没有文档更糟）。自定义主题只覆盖变量、用 `style.setProperty` 生效，
+  **不要**改成注入样式表——那样一个变量名写错就能把整个界面搞白。
+- **自定义主题自带底色**（`base`）：它生效时 `data-theme` 取 `base`，用户点「明亮/深色」
+  会先退回内置配色（并提示原主题还在）。别把 `applyTheme` 改成只看 `theme`——
+  那会让自定义主题在切模式后看起来「没生效」。
 - **归档只是元数据，文件不动**：归档的对话仍会被 `agent_transcripts` / 全文检索看到，
   语义是「先收起来」。侧栏把它渲染在各主题展开后的「已归档」分组里。
   分叉点定在**最后一条 assistant 消息之后**（不是字面上的最后一条），
@@ -216,12 +241,21 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 资料不看类型（`materials/` 里的 PDF / Markdown / txt / 图片都能列、能在内置浏览器预览、
   窗口回前台会自动重拉清单）、
 内置浏览器按标签读（agent 用 `viewer_list` + `viewer_read(tab_id)` 能读**任意**标签页，
-  包括用户当前没在看的后台标签，本地文件与网页都由后端直接提取）。
+  包括用户当前没在看的后台标签，本地文件与网页都由后端直接提取）、
+图片消息（输入框里 Ctrl+V 贴图 / 「图片」按钮选图；长边自动压到 1568px；
+  字节落在 `.hub/attachments/`，消息里只存路径；两个协议各自编码成 `image_url` / `image` 块；
+  点开是浮层大图）、
+自定义外观主题（`<工作区>/.hub/themes/*.json` 与 `~/.learning-hub/themes/*.json`；
+  一份「CSS 变量覆盖表」，设置页里能从当前配色复制一份来改，也有变量清单可查）、
+工坊（独立于学习的 agent 模式：读内置的 SKILL / MCP 规范 → 在练习目录
+  `.hub/workshop/` 里写 → `skill_publish` / `mcp_publish` 发布；发布即重连并回报状态；
+  自己的对话清单挂在侧栏「工坊」下面）。
 
 已知待办（按价值排序）：
 
-1. 语音/图片输入（多模态消息）
+1. 语音输入（图片已经能贴了，语音还没有）
 2. 复习提醒（系统通知 + 到点弹窗）
 3. 周报/月报生成（`sessions/` 的数据已经够用）
 4. SPA 网页的正文提取（现在依赖服务端渲染的 HTML）
 5. 父主题的进度汇总（子主题的待复习数、任务合并到父主题视图）
+6. 附件回收（删对话后 `.hub/attachments/` 里的孤儿图片要手动清）

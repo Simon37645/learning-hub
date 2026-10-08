@@ -351,6 +351,140 @@ pub fn build_system_prompt_with_stats(
     (p, sections)
 }
 
+// ============================================================ 工坊模式
+
+/// 工坊模式的提示词入参。
+///
+/// 单独一套而不是复用 [`PromptInputs`]：工坊**没有主题**，
+/// 那份输入里的 stage / topic / 资料清单在这里全是空的，硬塞进去只会让两份提示词的
+/// 分支互相纠缠（「这里为什么没有主题」在两边含义不一样）。
+pub struct StudioInputs<'a> {
+    pub config: &'a AppConfig,
+    pub supports_tools: bool,
+    pub tool_catalog: String,
+    pub tool_names: Vec<String>,
+    /// 已有的技能清单：造新技能前先看看有没有能续写的
+    pub skill_catalog: String,
+    /// 练习目录（工作区相对路径，例如 `.hub/workshop`）
+    pub bench: String,
+    /// 全局长期记忆（工坊里没有记忆工具，但知道用户是谁仍然有用）
+    pub memory: String,
+}
+
+pub fn build_studio_prompt(inp: &StudioInputs<'_>) -> String {
+    build_studio_prompt_with_stats(inp).0
+}
+
+/// 工坊模式的系统提示词（各版块大小同样算出来，给「上下文构成」浮层用）。
+pub fn build_studio_prompt_with_stats(inp: &StudioInputs<'_>) -> (String, Vec<PromptSectionStat>) {
+    use crate::agent::message::estimate_tokens;
+
+    let mut p = String::with_capacity(4096);
+    let mut marks: Vec<(&'static str, usize)> = vec![("系统提示词", 0)];
+
+    p.push_str(&format!(
+        "你是「学习中枢」里的**工坊助手**。这个模式不学任何具体课程，只做一件事：\
+         按用户的要求做出能装进这个应用的**技能（Skill）**与 **MCP 服务器**，并且真的把它们发布出去。\n\
+         \n\
+         ## 工作方式\n\
+         - 用中文回答（用户用其它语言时跟随用户）。输出用 Markdown。\n\
+         - **先读规范再动手**：造技能前 `spec_read` 读 `skill`，造 MCP 服务器前读 `mcp`。\n\
+         那两份文档写的是本应用**真正实现**的行为（目录约定、协议细节、发布参数怎么填），\n\
+         和你记忆里其它 agent 工具的做法不一样——不要凭印象写。\n\
+         - **先问清再开工**：一句话需求（「帮我做个查词的」）先落成具体约定：数据从哪来、\n\
+         输入什么、输出什么、谁在什么场景用。拿不准的细节一次问清（别挤牙膏），\n\
+         能按规范默认做法先做的就做，但要在回复里说明你替用户定了什么。\n\
+         - **写完要跑一遍**：技能发布后用 `skill_list` 确认它进了清单；\n\
+         MCP 服务器发布后看 `mcp_publish` 返回的连接状态与工具名，再**实际调用一次**那个工具验证行为。\n\
+         - **落盘而不是口述**：用 `fs_write` 把文件写全，别只在回复里贴一段代码说「大概这样」。\n\
+         - 一次做一步、做完了说清「现在能用了，你可以…」，不要把半成品说成成品。\n\
+         \n\
+         ## 边界\n\
+         - 你的工作目录是**练习目录** `{}`（相对路径都以它为根）：\n\
+         技能草稿放 `{}/<id>/`，服务器草稿放 `{}/<id>/`。只有发布之后才会进正式目录。\n\
+         - 这里没有主题、没有资料库、没有卡片与计划，也**没有 shell**：不能执行任意命令。\n\
+         服务器唯一的验证方式就是 `mcp_publish`——它会真的把进程起起来并握手，\n\
+         失败时把 stderr 摘要带回来。别指望用别的方式「先跑一下看看」。\n\
+         - 技能与服务器是用户**以后长期用**的东西：宁缺勿滥。一次性的任务不要造技能；\n\
+         两三句话能说清的事也不值得。\n\
+         - 不要写入练习目录与正式目录以外的位置。想改用户的主题内容，那是学习模式的事，\n\
+         提醒他切过去做。\n",
+        inp.bench, crate::studio::DRAFT_SKILLS, crate::studio::DRAFT_MCP
+    ));
+
+    marks.push(("记忆", p.len()));
+    if inp.memory.trim().is_empty() {
+        p.push_str("\n## 长期记忆\n现在还没有关于这位用户的长期记忆。\n");
+    } else {
+        p.push_str("\n## 长期记忆（以前记下的；这里只读，不能新增）\n");
+        p.push_str(inp.memory.trim());
+        p.push('\n');
+        p.push_str("上面这些说明用户是谁、习惯怎样——做工具时照顾到（例如他习惯中文界面、用 Windows）。\n");
+    }
+
+    if !inp.skill_catalog.trim().is_empty() {
+        marks.push(("技能", p.len()));
+        p.push_str("\n## 用户已有的技能（造新技能前先看这里，能续写就别新建）\n");
+        p.push_str(&inp.skill_catalog);
+    }
+
+    marks.push(("工具说明", p.len()));
+    if inp.supports_tools {
+        p.push_str(&format!(
+            "\n## 可用工具\n用原生 function calling 调用下列工具，不要用文字假装调用：\n{}\n\
+             只能用上面列出的工具名。\n",
+            inp.tool_catalog
+        ));
+    } else {
+        p.push_str(&format!(
+            "\n## 可用工具（当前模型未开启原生工具调用）\n\
+             把想做的操作写成如下格式放在回复末尾，由用户确认：\n\
+             ```tool\n{{\"name\": \"工具名\", \"input\": {{...}}}}\n```\n\
+             可用工具：\n{}\n",
+            inp.tool_catalog
+        ));
+    }
+
+    marks.push(("工坊", p.len()));
+    p.push_str(&format!(
+        "\n## 发布流程（照这个顺序做）\n\
+         1. `spec_read` 读对应规范（skill / mcp）。\n\
+         2. 用 `fs_list` 看一眼练习目录里已有什么，`skill_list` 看已有技能，`mcp_status` 看已登记的服务器。\n\
+         3. 用 `fs_write` 把文件写全（技能必须有 SKILL.md；服务器要有源码与 README）。\n\
+         4. `skill_publish(dir)` 或 `mcp_publish(dir, name, command, args, env)` 发布。\n\
+         5. 验证：技能看 `skill_list`，服务器看返回的状态并调用它暴露的工具。\n\
+         6. 有错就改文件再发布一次——发布是覆盖式的，不必先删。\n\
+         \n\
+         用户可以在侧栏的「技能」与「MCP 服务器」面板里查看、开关、删除这些东西；\n\
+         工坊练习目录的位置是 `<工作区>/{}/`（相对路径就是相对它）。\n",
+        inp.bench
+    ));
+
+    // ---- 用户自定义（和学模式一样，最高优先级） ----
+    if !inp.config.agent.system_prompt_extra.trim().is_empty() {
+        marks.push(("用户要求", p.len()));
+        p.push_str("\n## 用户的额外要求（优先级最高）\n");
+        p.push_str(inp.config.agent.system_prompt_extra.trim());
+        p.push('\n');
+    }
+
+    p.push_str(&format!(
+        "\n## 称呼\n用户希望被称作「{}」。\n",
+        inp.config.user_name
+    ));
+
+    let sections: Vec<PromptSectionStat> = marks
+        .iter()
+        .enumerate()
+        .map(|(i, (label, start))| {
+            let end = marks.get(i + 1).map(|(_, s)| *s).unwrap_or(p.len());
+            PromptSectionStat { label, tokens: estimate_tokens(&p[*start..end]) }
+        })
+        .filter(|s| s.tokens > 0)
+        .collect();
+    (p, sections)
+}
+
 pub fn current_date_line() -> String {
     format!("今天是 {}。", store::now().format("%Y-%m-%d %A"))
 }

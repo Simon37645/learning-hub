@@ -1,10 +1,11 @@
-// 设置页：用户 / 工作区 / 模型档案 / Agent 行为 / 内置浏览器 / 关于。
+// 设置页：用户 / 外观（含自定义主题）/ 工作区 / 模型档案 / Agent 行为 / 内置浏览器 / 关于。
 
 import { useEffect, useState } from "react";
 import { api, errText } from "../lib/api";
 import {
   PERMISSION_LABEL,
   STYLE_LABEL,
+  type CustomTheme,
   type PermissionMode,
   type ProfileInput,
   type ReasoningStyle,
@@ -76,27 +77,7 @@ export function Settings() {
         </section>
 
         {/* ---------------- 外观 ---------------- */}
-        <section className="col">
-          <h2>
-            外观 <span className="sub">明亮 / 深色 / 跟随系统</span>
-          </h2>
-          <div className="card-box">
-            <div className="row">
-              <Segmented
-                value={config.appearance.theme}
-                onChange={(v) => void useApp.getState().setTheme(v)}
-                options={[
-                  { id: "system", label: "跟随系统" },
-                  { id: "light", label: "明亮" },
-                  { id: "dark", label: "深色" },
-                ]}
-              />
-              <span className="muted" style={{ fontSize: 12 }}>
-                强制明亮适合长时间读讲义；侧栏底部也有一个快捷切换按钮
-              </span>
-            </div>
-          </div>
-        </section>
+        <AppearanceSection />
 
         {/* ---------------- 工作区 ---------------- */}
         <section className="col">
@@ -309,12 +290,17 @@ export function Settings() {
         {/* ---------------- 技能与 MCP 的入口 ---------------- */}
         <section className="col">
           <h2>
-            技能与 MCP <span className="sub">已挪到侧栏顶部，和「新建主题」放在一起</span>
+            技能与 MCP <span className="sub">开关在侧栏，造新的去工坊</span>
           </h2>
           <div className="card-box">
             <div className="sub" style={{ fontSize: 12.5 }}>
               侧栏顶部的「技能」与「MCP 服务器」两个入口里，可以按**全局**或**本主题**分别开关。
               全局的写进配置文件（所有主题可见），本主题的只影响当前主题。
+            </div>
+            <div className="row">
+              <button className="btn sm" onClick={() => void useApp.getState().openStudio()}>
+                <Icon name="hammer" size={13} /> 去工坊造一个技能 / MCP 服务器
+              </button>
             </div>
           </div>
         </section>
@@ -414,6 +400,289 @@ function PromptPreviewModal() {
   );
 }
 
+// ---------------------------------------------------------------- 外观
+
+/**
+ * 外观：内置三档配色 + 用户自己写的主题。
+ *
+ * 自定义主题就是「一堆 CSS 变量的覆盖值」，所以这里给的编辑方式是一份 JSON 文本——
+ * 与其做一个只能改颜色的表单（改不了字体、圆角、代码高亮），不如让用户直接改文件内容，
+ * 同时提供「从当前配色复制一份」当起点，省得他去猜变量名。
+ */
+function AppearanceSection() {
+  const config = useApp((s) => s.config)!;
+  const themes = useApp((s) => s.themes);
+  const loadThemes = useApp((s) => s.loadThemes);
+  const setCustomTheme = useApp((s) => s.setCustomTheme);
+  const deleteTheme = useApp((s) => s.deleteTheme);
+  const toast = useApp((s) => s.toast);
+  const [varsOpen, setVarsOpen] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadThemes();
+  }, [loadThemes]);
+
+  const activeId = config.appearance.customTheme ?? null;
+  const active = themes?.applied ?? null;
+  const list = themes?.themes ?? [];
+  const darkBase = (document.documentElement.dataset.theme ?? "light") === "dark";
+
+  const openDir = async (user: boolean) => {
+    try {
+      const p = await api.themeOpenDir(user);
+      toast("info", `已打开：${p}`);
+    } catch (e) {
+      toast("error", errText(e));
+    }
+  };
+
+  return (
+    <section className="col">
+      <h2>
+        外观 <span className="sub">明亮 / 深色 / 跟随系统，或者自己写一套配色</span>
+      </h2>
+      <div className="card-box">
+        <div className="row wrap">
+          <Segmented
+            value={config.appearance.theme}
+            onChange={(v) => void useApp.getState().setTheme(v)}
+            options={[
+              { id: "system", label: "跟随系统" },
+              { id: "light", label: "明亮" },
+              { id: "dark", label: "深色" },
+            ]}
+          />
+          <span className="muted" style={{ fontSize: 12 }}>
+            强制明亮适合长时间读讲义；侧栏底部也有一个快捷切换按钮
+          </span>
+        </div>
+
+        {active && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            当前用的是自定义主题「{active.name}」（自带{active.base === "dark" ? "深色" : "明亮"}底色）。
+            它没覆盖的颜色跟随内置的{active.base === "dark" ? "深色" : "明亮"}配色；点上面那三档会退回内置配色。
+          </div>
+        )}
+        {activeId && !active && (
+          <div style={{ fontSize: 12, color: "var(--warn)" }}>
+            配置里记着的主题「{activeId}」现在找不到（文件被删了或读不了），已经退回内置配色。
+          </div>
+        )}
+
+        <div className="theme-list">
+          {list.length === 0 ? (
+            <div className="muted" style={{ fontSize: 12 }}>
+              还没有自定义主题。可以「从当前配色新建一份」，也可以把自己写的 JSON 放进主题目录。
+            </div>
+          ) : (
+            list.map((t) => (
+              <div key={t.id} className={"theme-row" + (t.id === activeId ? " on" : "")}>
+                <span className="theme-swatch" style={{ background: t.vars["--bg"] ?? "var(--bg-sub)" }}>
+                  <i style={{ background: t.vars["--accent"] ?? "var(--accent)" }} />
+                  <i style={{ background: t.vars["--text"] ?? "var(--text)" }} />
+                </span>
+                <div className="grow">
+                  <div className="row" style={{ gap: 6 }}>
+                    <span style={{ fontWeight: 500 }}>{t.name}</span>
+                    <span className="muted mono" style={{ fontSize: 10.5 }}>
+                      {t.id}
+                    </span>
+                  </div>
+                  <div className="muted" style={{ fontSize: 11.5 }}>
+                    {t.error ? (
+                      <span style={{ color: "var(--danger)" }}>读不了：{t.error}</span>
+                    ) : (
+                      `${t.description || "（没有说明）"} · 来自${t.source} · ${Object.keys(t.vars).length} 个变量`
+                    )}
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 4 }}>
+                  <button
+                    className="btn sm"
+                    disabled={!!t.error}
+                    onClick={() => void setCustomTheme(t.id === activeId ? null : t.id)}
+                  >
+                    {t.id === activeId ? "取消使用" : "使用"}
+                  </button>
+                  <button className="icon-btn" title="编辑这份 JSON" onClick={() => setEditing(themeJson(t))}>
+                    <Icon name="pencil" size={13} />
+                  </button>
+                  {t.source === "工作区" && (
+                    <button className="icon-btn" title="删除（进回收站）" onClick={() => void deleteTheme(t.id)}>
+                      <Icon name="trash" size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="row wrap" style={{ gap: 6 }}>
+          <button className="btn sm" onClick={() => setEditing(themeTemplate(themes?.vars ?? [], darkBase))}>
+            <Icon name="plus" size={13} /> 从当前配色新建一份
+          </button>
+          <button className="btn sm" onClick={() => void openDir(false)}>
+            <Icon name="folder" size={13} /> 主题目录
+          </button>
+          <button className="btn sm" onClick={() => void openDir(true)}>
+            <Icon name="folder" size={13} /> 用户目录
+          </button>
+          <button className="btn sm" onClick={() => setVarsOpen((v) => !v)}>
+            <Icon name="list" size={13} /> 可用的变量（{themes?.vars.length ?? 0}）
+          </button>
+        </div>
+
+        {varsOpen && (
+          <div className="theme-vars">
+            <div className="muted" style={{ fontSize: 11.5 }}>
+              <code className="mono">vars</code> 里的键要写成下面这些名字，值就是 CSS 里能用的任何写法
+              （<code className="mono">#c9532a</code>、<code className="mono">oklch(0.7 0.1 40)</code> 都行）。
+              没写的变量沿用内置配色——所以只改几个颜色也是完整可用的主题。
+            </div>
+            <div className="grid-2">
+              {(themes?.vars ?? []).map((v) => (
+                <div key={v.name} className="theme-var-row">
+                  <code className="mono grow">{v.name}</code>
+                  <span className="muted">{v.hint}</span>
+                  <i className="theme-var-dot" style={{ background: `var(${v.name})` }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {editing !== null && <ThemeEditor initial={editing} onClose={() => setEditing(null)} />}
+    </section>
+  );
+}
+
+/** 一份主题 → 可直接编辑的 JSON 文本。 */
+function themeJson(t: CustomTheme): string {
+  return JSON.stringify(
+    {
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      base: t.base,
+      vars: t.vars,
+    },
+    null,
+    2,
+  );
+}
+
+/**
+ * 新建时的模板：把**当前界面上真实的变量值**抄下来当起点。
+ *
+ * 这样用户拿到的是一份「现在就长这样」的完整主题，改哪几个颜色就是改哪几个，
+ * 而不是面对一个空对象去猜变量名和取值。
+ */
+function themeTemplate(vars: { name: string; hint: string }[], dark: boolean): string {
+  const cs = getComputedStyle(document.documentElement);
+  const out: Record<string, string> = {};
+  for (const v of vars) {
+    const value = cs.getPropertyValue(v.name).trim();
+    if (value) out[v.name] = value;
+  }
+  return JSON.stringify(
+    {
+      id: "my-theme",
+      name: "我的主题",
+      description: "从当前配色复制出来的，改几个颜色试试",
+      base: dark ? "dark" : "light",
+      vars: out,
+    },
+    null,
+    2,
+  );
+}
+
+/** 主题 JSON 编辑器。保存＝写进工作区主题目录并立刻启用。 */
+function ThemeEditor({ initial, onClose }: { initial: string; onClose: () => void }) {
+  const saveTheme = useApp((s) => s.saveTheme);
+  const setCustomTheme = useApp((s) => s.setCustomTheme);
+  const toast = useApp((s) => s.toast);
+  const [text, setText] = useState(initial);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    let parsed: Partial<CustomTheme>;
+    try {
+      parsed = JSON.parse(text) as Partial<CustomTheme>;
+    } catch (e) {
+      toast("error", `JSON 有问题：${errText(e)}`);
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") {
+      toast("error", "这里要是一份 JSON 对象");
+      return;
+    }
+    const theme: CustomTheme = {
+      id: String(parsed.id ?? "").trim(),
+      name: String(parsed.name ?? "").trim(),
+      description: String(parsed.description ?? ""),
+      author: String(parsed.author ?? ""),
+      base: parsed.base === "dark" ? "dark" : "light",
+      vars: parsed.vars ?? {},
+      source: "",
+      path: "",
+      error: null,
+    };
+    if (!theme.id) {
+      toast("warn", "id 不能为空——它就是文件名（例如 my-theme → my-theme.json）");
+      return;
+    }
+    if (Object.keys(theme.vars).length === 0) {
+      toast("warn", "vars 里至少要写一个变量，否则这个主题什么也改不了");
+      return;
+    }
+    setBusy(true);
+    const ok = await saveTheme(theme);
+    if (ok) await setCustomTheme(theme.id);
+    setBusy(false);
+    if (ok) onClose();
+  };
+
+  return (
+    <Modal
+      title="编辑主题"
+      icon="pencil"
+      wide
+      onClose={onClose}
+      footer={
+        <>
+          <span className="left muted" style={{ fontSize: 11.5 }}>
+            保存后会写进 <code className="mono">工作区/.hub/themes/</code> 并立刻启用
+          </span>
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" onClick={() => void save()} disabled={busy}>
+            {busy ? "保存中…" : "保存并启用"}
+          </button>
+        </>
+      }
+    >
+      <div className="col" style={{ gap: 8 }}>
+        <div className="muted" style={{ fontSize: 11.5 }}>
+          <code className="mono">vars</code> 里的键是 CSS 变量名（以 <code className="mono">--</code> 开头），
+          值就是颜色、字体、圆角这类 CSS 取值。写错的键会被忽略，不影响其它变量。
+        </div>
+        <textarea
+          className="textarea mono"
+          style={{ minHeight: "46vh", fontSize: 12, lineHeight: 1.6 }}
+          value={text}
+          spellCheck={false}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </div>
+    </Modal>
+  );
+}
+
 // ---------------------------------------------------------------- 模型档案
 
 function ProfilesSection() {
@@ -443,6 +712,7 @@ function ProfilesSection() {
         temperature: current.temperature,
         maxTokens: current.maxTokens,
         supportsTools: current.supportsTools,
+        supportsVision: current.supportsVision,
         headers: {},
         apiKey: null,
         reasoning: current.reasoning,
@@ -465,6 +735,7 @@ function ProfilesSection() {
       temperature: 0.5,
       maxTokens: 8192,
       supportsTools: true,
+      supportsVision: true,
       headers: {},
       apiKey: "",
       reasoning: { effort: "off", style: "auto" },
@@ -599,6 +870,12 @@ function ProfilesSection() {
               checked={form.supportsTools}
               onChange={(v) => setForm({ ...form, supportsTools: v })}
               label="该模型支持原生工具调用（不支持时 agent 会降级成文字建议）"
+            />
+
+            <Switch
+              checked={form.supportsVision ?? true}
+              onChange={(v) => setForm({ ...form, supportsVision: v })}
+              label="该模型支持图片输入（关掉后贴的图不会发出去，会换成一行文字说明）"
             />
 
             <Field

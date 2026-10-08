@@ -15,6 +15,7 @@ import type {
   ReasoningEffort,
   ReasoningStyle,
   AgentEvent,
+  AgentMode,
   AgendaBucket,
   Card,
   ChatMessage,
@@ -22,6 +23,7 @@ import type {
   ConfigPatch,
   ContextPart,
   DailyBrief,
+  ImageUpload,
   MemoryEvent,
   Note,
   NoteSummary,
@@ -44,9 +46,12 @@ import type {
   ViewerSnapshot,
   ApprovalRequest,
   CardKind,
+  CustomTheme,
+  StudioInfo,
+  ThemesOverview,
 } from "../lib/types";
 
-export type ViewName = "home" | "topic" | "agenda" | "settings";
+export type ViewName = "home" | "topic" | "agenda" | "settings" | "studio";
 
 export interface ToolActivity extends ToolOutcomeView {
   startedAt: number;
@@ -100,6 +105,8 @@ interface AppStore {
   chatId: string | null;
   /** 每个主题的对话清单（侧栏把对话挂在对应主题下面）。键是主题 slug，首页对话用空串 */
   chatIndex: Record<string, ChatOverviewItem[]>;
+  /** 工坊的对话清单。工坊没有主题，所以单独一份，键不是 slug */
+  studioChats: ChatOverviewItem[];
   messages: ChatMessage[];
   streaming: { turnId: string; text: string; thinking: string } | null;
   activities: ToolActivity[];
@@ -133,6 +140,12 @@ interface AppStore {
   toasts: Toast[];
   inspectorOpen: boolean;
 
+  // --- 工坊 / 外观主题 ---
+  /** 工坊的信息（练习目录、内置规范清单），面板打开时拉一次 */
+  studio: StudioInfo | null;
+  /** 自定义主题总览（列表 + 当前生效的那份） */
+  themes: ThemesOverview | null;
+
   // --- 动作 ---
   init: () => Promise<void>;
   refreshTopics: () => Promise<void>;
@@ -159,20 +172,26 @@ interface AppStore {
   newChat: () => Promise<void>;
   loadChat: (chatId: string) => Promise<void>;
   /** 读某个主题的对话清单（不传就是当前主题）；侧栏树展开时按需调用 */
-  loadChats: (slug?: string | null) => Promise<void>;
+  loadChats: (slug?: string | null, mode?: AgentMode) => Promise<void>;
+  /** 读工坊的对话清单 */
+  loadStudioChats: () => Promise<void>;
+  /** 打开工坊：切到工坊视图并续上最近一条对话 */
+  openStudio: () => Promise<void>;
+  /** 工坊里开一条新对话 */
+  newStudioChat: () => Promise<void>;
   /** 把一条对话挪到另一个主题（侧栏拖拽整理） */
   moveChat: (chatId: string, fromSlug: string, toSlug: string) => Promise<void>;
   /** 改对话名字（空串＝恢复「第一句话」的自动标题） */
-  renameChat: (chatId: string, title: string, slug?: string | null) => Promise<void>;
+  renameChat: (chatId: string, title: string, slug?: string | null, mode?: AgentMode) => Promise<void>;
   /** 置顶 / 取消置顶 */
-  pinChat: (chatId: string, pinned: boolean, slug?: string | null) => Promise<void>;
+  pinChat: (chatId: string, pinned: boolean, slug?: string | null, mode?: AgentMode) => Promise<void>;
   /** 归档 / 取消归档（归档的收进侧栏「已归档」分组） */
-  archiveChat: (chatId: string, archived: boolean, slug?: string | null) => Promise<void>;
+  archiveChat: (chatId: string, archived: boolean, slug?: string | null, mode?: AgentMode) => Promise<void>;
   /** 从某条对话分叉出新的分支（原对话不动），返回新对话 id */
-  forkChat: (chatId: string, slug?: string | null) => Promise<string | null>;
+  forkChat: (chatId: string, slug?: string | null, mode?: AgentMode) => Promise<string | null>;
   /** 把一条对话移进回收站 */
-  deleteChat: (chatId: string, slug?: string | null) => Promise<void>;
-  send: (text: string, attachments?: string[]) => Promise<void>;
+  deleteChat: (chatId: string, slug?: string | null, mode?: AgentMode) => Promise<void>;
+  send: (text: string, attachments?: string[], images?: ImageUpload[]) => Promise<void>;
   stop: () => Promise<void>;
   approve: (allow: boolean, always: boolean) => Promise<void>;
 
@@ -181,6 +200,17 @@ interface AppStore {
   setReasoning: (effort: ReasoningEffort, style?: ReasoningStyle) => Promise<void>;
   upsertProfile: (input: ProfileInput) => Promise<void>;
   deleteProfile: (id: string) => Promise<void>;
+
+  // 工坊
+  loadStudio: () => Promise<void>;
+
+  // 外观主题
+  loadThemes: () => Promise<void>;
+  /** 切换自定义主题（null = 回到内置配色） */
+  setCustomTheme: (id: string | null) => Promise<void>;
+  /** 保存一份主题（新建或覆盖） */
+  saveTheme: (theme: CustomTheme) => Promise<boolean>;
+  deleteTheme: (id: string) => Promise<void>;
 
   // 内置浏览器
   openTab: (req: OpenRequest) => Promise<void>;
@@ -250,6 +280,7 @@ export const useApp = create<AppStore>((set, get) => ({
 
   chatId: null,
   chatIndex: {},
+  studioChats: [],
   messages: [],
   streaming: null,
   activities: [],
@@ -273,6 +304,9 @@ export const useApp = create<AppStore>((set, get) => ({
   paletteOpen: false,
   toasts: [],
   inspectorOpen: false,
+
+  studio: null,
+  themes: null,
 
   cards: [],
   tasks: [],
@@ -459,56 +493,100 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   /** 刷新侧栏的对话清单（换主题、开新对话、聊完一轮之后都要刷） */
-  async loadChats(slug) {
+  async loadChats(slug, mode) {
+    const m: AgentMode = mode ?? (get().view === "studio" ? "studio" : "study");
+    // 工坊的对话不是「某个主题的」：它有自己的那份清单
+    if (m === "studio") return get().loadStudioChats();
     const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
     try {
       // 带上归档的：它们要显示在「已归档」分组里，前端自己分拣
-      const items = await api.chatOverview(target, true);
+      const items = await api.chatOverview(target, true, m);
       set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
     } catch (e) {
       console.warn("读取对话清单失败", e);
     }
   },
 
+  async loadStudioChats() {
+    try {
+      const items = await api.chatOverview(null, true, "studio");
+      set({ studioChats: items });
+    } catch (e) {
+      console.warn("读取工坊对话清单失败", e);
+    }
+  },
+
+  /**
+   * 打开工坊：切到工坊视图、清掉当前主题（工坊里没有主题这回事），
+   * 并续上最近一条工坊对话——和 `openTopic` 的行为对齐。
+   */
+  async openStudio() {
+    set({ view: "studio", topic: null, cards: [], tasks: [], activities: [], streaming: null, chatError: null });
+    void get().loadStudioChats();
+    void get().loadStudio();
+    try {
+      const items = await api.chatOverview(null, false, "studio");
+      if (items.length > 0) await get().loadChat(items[0].id);
+      else await get().newStudioChat();
+    } catch (e) {
+      console.warn("打开工坊失败", e);
+    }
+  },
+
+  async newStudioChat() {
+    const chatId = await api.agentNewChat();
+    set({ chatId, messages: [], activities: [], streaming: null, chatError: null, usage: null });
+    void get().loadStudioChats();
+  },
+
+  async loadStudio() {
+    try {
+      set({ studio: await api.studioInfo() });
+    } catch (e) {
+      console.warn("读取工坊信息失败", e);
+    }
+  },
+
   // 改名 / 置顶 / 归档都由后端算好新清单，前端直接替换——
   // 排序规则（置顶在前、归档沉底）只在 Rust 里写一份，别在界面上再排一遍
-  async renameChat(chatId, title, slug) {
-    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+  async renameChat(chatId, title, slug, mode) {
+    const t = chatTarget(get, slug, mode);
     try {
-      const items = await api.chatRename(chatId, title, target);
-      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
+      const items = await api.chatRename(chatId, title, t.slug, t.mode);
+      putChatList(set, t.mode, t.slug, items);
       get().toast("success", title.trim() ? "对话已改名" : "已恢复自动标题");
     } catch (e) {
       get().toast("error", errText(e));
     }
   },
 
-  async pinChat(chatId, pinned, slug) {
-    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+  async pinChat(chatId, pinned, slug, mode) {
+    const t = chatTarget(get, slug, mode);
     try {
-      const items = await api.chatPin(chatId, pinned, target);
-      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
+      const items = await api.chatPin(chatId, pinned, t.slug, t.mode);
+      putChatList(set, t.mode, t.slug, items);
     } catch (e) {
       get().toast("error", errText(e));
     }
   },
 
-  async archiveChat(chatId, archived, slug) {
-    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+  async archiveChat(chatId, archived, slug, mode) {
+    const t = chatTarget(get, slug, mode);
     try {
-      const items = await api.chatArchive(chatId, archived, target);
-      set((s) => ({ chatIndex: { ...s.chatIndex, [target ?? ""]: items } }));
-      get().toast("info", archived ? "已归档，可在侧栏「已归档」里找回来" : "已取消归档");
+      const items = await api.chatArchive(chatId, archived, t.slug, t.mode);
+      putChatList(set, t.mode, t.slug, items);
+      get().toast("info", archived ? "已归档，可在「已归档」里找回来" : "已取消归档");
     } catch (e) {
       get().toast("error", errText(e));
     }
   },
 
-  async forkChat(chatId, slug) {
-    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+  async forkChat(chatId, slug, mode) {
+    const t = chatTarget(get, slug, mode);
     try {
-      const newId = await api.chatFork(chatId, target);
-      await get().loadChats(target);
+      const newId = await api.chatFork(chatId, t.slug, null, t.mode);
+      if (t.mode === "studio") void get().loadStudioChats();
+      else await get().loadChats(t.slug);
       get().toast("success", "已分叉出一条新对话（原对话没动）");
       return newId;
     } catch (e) {
@@ -517,14 +595,18 @@ export const useApp = create<AppStore>((set, get) => ({
     }
   },
 
-  async deleteChat(chatId, slug) {
-    const target = slug === undefined ? (get().topic?.slug ?? null) : slug;
+  async deleteChat(chatId, slug, mode) {
+    const t = chatTarget(get, slug, mode);
     try {
-      await api.chatDelete(chatId, target);
+      await api.chatDelete(chatId, t.slug);
       await get().refreshTopics();
-      await get().loadChats(target);
+      if (t.mode === "studio") void get().loadStudioChats();
+      else await get().loadChats(t.slug);
       // 正在看的就是被删的那条：换个空对话，免得接着聊又写回被删的文件
-      if (get().chatId === chatId) await get().newChat();
+      if (get().chatId === chatId) {
+        if (t.mode === "studio") await get().newStudioChat();
+        else await get().newChat();
+      }
       get().toast("info", "对话已移入回收站");
     } catch (e) {
       get().toast("error", errText(e));
@@ -549,22 +631,29 @@ export const useApp = create<AppStore>((set, get) => ({
     }
   },
 
-  async send(text, attachments) {
+  async send(text, attachments, images) {
     const t = text.trim();
-    if (!t || get().streaming) return;
+    const pics = images ?? [];
+    // 只贴图不打字是合法的（「这张图里的第三行是什么」可以省略）
+    if ((!t && pics.length === 0) || get().streaming) return;
     let chatId = get().chatId;
     if (!chatId) {
       chatId = await api.agentNewChat();
       set({ chatId });
     }
-    const slug = get().topic?.slug ?? null;
+    // 在哪个视图里说话就发给哪个模式：工坊里没有主题，
+    // 传 topicSlug 会让后端把对话写进主题目录（那就跑到学习那边去了）
+    const studio = get().view === "studio";
+    const slug = studio ? null : (get().topic?.slug ?? null);
     try {
       const res = await api.agentSend({
         chatId,
         text: t,
         topicSlug: slug,
-        stage: get().topic?.meta.stage ?? null,
+        stage: studio ? null : (get().topic?.meta.stage ?? null),
         attachments: attachments ?? [],
+        images: pics,
+        mode: studio ? "studio" : "study",
       });
       set((s) => ({
         messages: [...s.messages, res.message],
@@ -616,16 +705,73 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   async setTheme(theme) {
-    applyTheme(theme);
+    // 自定义主题自带底色：让它继续生效的话，切「明亮/深色」看起来像没反应。
+    // 所以这里明确退回内置配色，并在提示里说清「原来的主题还在，可以再选回来」。
+    const custom = get().config?.appearance?.customTheme ?? null;
+    if (custom) {
+      const name = get().themes?.applied?.name ?? custom;
+      await get().patchConfig({ theme });
+      await get().setCustomTheme(null);
+      get().toast("info", `已切回内置配色（自定义主题「${name}」仍可在设置里选回来）`);
+      return;
+    }
+    applyTheme(theme, null);
     await get().patchConfig({ theme });
   },
 
+  async loadThemes() {
+    try {
+      set({ themes: await api.themesOverview() });
+    } catch (e) {
+      console.warn("读取外观主题失败", e);
+    }
+  },
+
+  async setCustomTheme(id) {
+    try {
+      const config = await api.themeSetActive(id);
+      set({ config });
+      await get().loadThemes();
+      const applied = get().themes?.applied ?? null;
+      applyTheme(config.appearance?.theme ?? "system", applied);
+      if (applied) get().toast("success", `已启用主题「${applied.name}」`);
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
+
+  async saveTheme(theme) {
+    try {
+      set({ themes: await api.themeSave(theme) });
+      return true;
+    } catch (e) {
+      get().toast("error", errText(e));
+      return false;
+    }
+  },
+
+  async deleteTheme(id) {
+    try {
+      set({ themes: await api.themeDelete(id) });
+      // 删掉的正好是当前生效的那份：后端已经把配置清了，这里把配置与变量一起更新，
+      // 界面立刻回到内置配色（不这么做会出现「配置里还记着一个不存在的主题」）
+      const config = await api.configGet();
+      set({ config });
+      applyTheme(config.appearance?.theme ?? "system", get().themes?.applied ?? null);
+      get().toast("info", "主题已删除");
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
+  },
+
   async patchConfig(patch) {
+    const before = get().config?.appearance?.customTheme ?? null;
     try {
       const config = await api.configPatch(patch);
       set({ config });
-      // 主题跟着配置走，改完立刻生效
-      applyTheme(config.appearance?.theme ?? "system");
+      // 主题 id 变过（例如在工作区之间切换）→ 变量要重新拉一次
+      if ((config.appearance?.customTheme ?? null) !== before) await get().loadThemes();
+      applyTheme(config.appearance?.theme ?? "system", get().themes?.applied ?? null);
     } catch (e) {
       get().toast("error", errText(e));
     }
@@ -941,6 +1087,33 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 }));
 
+// ============================================================ 对话清单的去处
+
+type StoreSet = (p: Partial<AppStore> | ((s: AppStore) => Partial<AppStore>)) => void;
+
+/**
+ * 一条对话属于哪份清单。
+ *
+ * 工坊的对话**没有主题**（它和首页的日常问答共用工作区级的 chats 目录，
+ * 后端靠侧车文件里的 mode 分开），所以工坊那份要用单独的 state 字段装，
+ * 不能混进按 slug 索引的 `chatIndex` 里。
+ */
+function chatTarget(
+  get: () => AppStore,
+  slug?: string | null,
+  mode?: AgentMode,
+): { slug: string | null; mode: AgentMode } {
+  const m: AgentMode = mode ?? (get().view === "studio" ? "studio" : "study");
+  if (m === "studio") return { slug: null, mode: m };
+  return { slug: slug === undefined ? (get().topic?.slug ?? null) : slug, mode: m };
+}
+
+/** 后端返回的新清单放回正确的位置。 */
+function putChatList(set: StoreSet, mode: AgentMode, slug: string | null, items: ChatOverviewItem[]): void {
+  if (mode === "studio") set({ studioChats: items });
+  else set((s) => ({ chatIndex: { ...s.chatIndex, [slug ?? ""]: items } }));
+}
+
 // ============================================================ 主题
 
 /**
@@ -952,7 +1125,10 @@ export const useApp = create<AppStore>((set, get) => ({
  */
 let systemThemeListener: ((e: MediaQueryListEvent) => void) | null = null;
 
-function applyTheme(theme: ThemeMode): void {
+/** 上一次应用过的自定义主题变量名（换主题时要把它们撤掉，否则会一直叠着）。 */
+let appliedThemeVars: string[] = [];
+
+function applyTheme(theme: ThemeMode, custom?: CustomTheme | null): void {
   const root = document.documentElement;
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
 
@@ -961,18 +1137,32 @@ function applyTheme(theme: ThemeMode): void {
     systemThemeListener = null;
   }
 
+  // 自定义主题自带底色（base）：它没覆盖的变量跟随内置的那一套，
+  // 所以这里把跟随系统的逻辑让位给主题自己的选择。
+  const effective: ThemeMode = custom ? custom.base : theme;
+
   const set = (mode: "light" | "dark") => {
     root.dataset.theme = mode;
     // InkNote 编辑器认这个属性来切 markdown 主题
     if (!root.dataset.mdTheme) root.dataset.mdTheme = "github";
   };
 
-  if (theme === "system") {
+  if (effective === "system") {
     set(mq.matches ? "dark" : "light");
     systemThemeListener = (e) => set(e.matches ? "dark" : "light");
     mq.addEventListener("change", systemThemeListener);
   } else {
-    set(theme);
+    set(effective);
+  }
+
+  // 变量覆盖：用 style.setProperty 逐个设，不注入样式表——
+  // 变量名写错了只影响那一条，界面不会变成一片空白。
+  for (const name of appliedThemeVars) root.style.removeProperty(name);
+  appliedThemeVars = [];
+  if (!custom) return;
+  for (const [name, value] of Object.entries(custom.vars ?? {})) {
+    root.style.setProperty(name, value);
+    appliedThemeVars.push(name);
   }
 }
 
@@ -984,7 +1174,7 @@ async function bootstrapStore(
   get: () => AppStore,
 ): Promise<void> {
   // 先按系统主题铺一层，避免启动瞬间闪一下白（配置要等 bootstrap 回来才有）
-  applyTheme(get().config?.appearance?.theme ?? "system");
+  applyTheme(get().config?.appearance?.theme ?? "system", null);
 
   // 把 set/get 交给上面的防抖刷新用
   windowSet = set;
@@ -1004,7 +1194,10 @@ async function bootstrapStore(
     });
     // 配置到手后再按用户存的主题铺一次：上面那次拿不到 config，
     // 少了这一句「明亮模式」冷启动会被系统深色盖掉（看上去像设置没保存）。
-    applyTheme(boot.config.appearance?.theme ?? "system");
+    // 自定义主题的变量也在这里铺：先拉列表，再按用户选的那份设上去。
+    await get().loadThemes();
+    applyTheme(boot.config.appearance?.theme ?? "system", get().themes?.applied ?? null);
+    void get().loadStudio();
 
     // 事件订阅（生命周期与窗口一致）
     await listen<AgentEvent>("hub://agent", (e) => handleAgentEvent(e.payload, set, get));

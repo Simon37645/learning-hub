@@ -30,6 +30,11 @@ impl Tool for WebFetch {
         "web_fetch"
     }
 
+    // 工坊里也要查规范、查文档，联网工具两种模式都给
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "抓取一个网页并提取正文（自动去掉导航、广告、脚本），返回干净的 Markdown 供你阅读引用。\
          想查最新资料、看论文摘要、读文档时用它。open_viewer=true 时同时在内置浏览器打开，让用户一起看。"
@@ -106,6 +111,11 @@ pub struct WebSearch;
 impl Tool for WebSearch {
     fn name(&self) -> &'static str {
         "web_search"
+    }
+
+    // 工坊里也要查规范、查文档，联网工具两种模式都给
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {

@@ -60,7 +60,14 @@ impl LlmProvider for AnthropicProvider {
         if !req.system.trim().is_empty() {
             body.insert("system".into(), json!(req.system));
         }
-        body.insert("messages".into(), json!(to_anthropic_messages(&req.messages)));
+        body.insert(
+            "messages".into(),
+            json!(to_anthropic_messages(
+                &req.messages,
+                &req.attachments,
+                req.supports_vision
+            )),
+        );
         if !req.tools.is_empty() {
             body.insert("tools".into(), json!(to_anthropic_tools(&req.tools)));
         }
@@ -235,7 +242,14 @@ fn reasoning_for_anthropic(cfg: &crate::config::ReasoningConfig) -> Option<u32> 
 }
 
 /// 消息 → Anthropic 格式，并合并连续同角色消息。
-pub fn to_anthropic_messages(messages: &[ChatMessage]) -> Vec<Value> {
+///
+/// `attachments` / `supports_vision` 只影响带图的用户消息：Anthropic 的图是内容块
+/// （`{"type":"image","source":{"type":"base64",…}}`），和文字同一个数组里按顺序排。
+pub fn to_anthropic_messages(
+    messages: &[ChatMessage],
+    attachments: &crate::agent::attachment::Attachments,
+    supports_vision: bool,
+) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
 
     let mut push = |role: &str, blocks: Vec<Value>| {
@@ -257,8 +271,40 @@ pub fn to_anthropic_messages(messages: &[ChatMessage]) -> Vec<Value> {
         match m.role {
             Role::System => {}
             Role::User => {
-                let text = m.text();
-                push("user", vec![json!({ "type": "text", "text": text })]);
+                if m.has_images() {
+                    let mut blocks: Vec<Value> = Vec::new();
+                    for b in &m.blocks {
+                        match b {
+                            ContentBlock::Text { text } => {
+                                if !text.is_empty() {
+                                    blocks.push(json!({ "type": "text", "text": text }));
+                                }
+                            }
+                            ContentBlock::Image { .. } => {
+                                let img = b.as_image().expect("分支已确认是图片块");
+                                match super::resolve_image(attachments, supports_vision, img) {
+                                    super::ResolvedImage::Ready(loaded) => blocks.push(json!({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": loaded.media_type,
+                                            // Anthropic 要裸 base64，不要 data URL 前缀
+                                            "data": crate::agent::attachment::b64_encode(&loaded.data),
+                                        }
+                                    })),
+                                    super::ResolvedImage::Placeholder(text) => {
+                                        blocks.push(json!({ "type": "text", "text": text }))
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    push("user", blocks);
+                } else {
+                    let text = m.text();
+                    push("user", vec![json!({ "type": "text", "text": text })]);
+                }
             }
             Role::Assistant => {
                 let mut blocks: Vec<Value> = Vec::new();
@@ -356,10 +402,48 @@ mod tests {
             ChatMessage::tool_result("tu_1", "结果", false),
             ChatMessage::tool_result("tu_2", "结果2", false),
         ];
-        let out = to_anthropic_messages(&msgs);
+        let out = to_anthropic_messages(
+            &msgs,
+            &crate::agent::attachment::Attachments::disabled(),
+            false,
+        );
         // user / assistant / user（后两条工具结果合并）
         assert_eq!(out.len(), 3);
         assert_eq!(out[1]["content"][0]["type"], "tool_use");
         assert_eq!(out[2]["content"].as_array().unwrap().len(), 2);
+    }
+
+    /// 带图消息：图是内容块，source 里是**裸 base64**（不能带 data URL 前缀）。
+    #[test]
+    fn encodes_images_as_content_blocks() {
+        let tmp = std::env::temp_dir().join(format!("lh-ant-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        let png: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+            v.extend_from_slice(b"data");
+            v
+        };
+        let stored = att.save("a.png", &png).unwrap();
+        let msg = ChatMessage::user_with_images(
+            "看这张图",
+            vec![ContentBlock::Image {
+                path: stored.rel.clone(),
+                media_type: "image/png".into(),
+                name: "a.png".into(),
+                bytes: png.len() as u64,
+                width: Some(100),
+                height: Some(100),
+            }],
+        );
+        let out = to_anthropic_messages(&[msg], &att, true);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert!(!blocks[0]["source"]["data"].as_str().unwrap().contains("data:"));
+        assert_eq!(blocks[1]["type"], "text");
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

@@ -6,7 +6,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/app";
-import { STAGE_LABEL, THEME_LABEL, type StudyStage, type TopicSummary } from "../lib/types";
+import { STAGE_LABEL, THEME_LABEL, type AgentMode, type StudyStage, type TopicSummary } from "../lib/types";
 import { hotkey, relTime } from "../lib/format";
 import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal } from "./ui";
 import { McpDialog, SkillsDialog } from "./Extend";
@@ -50,6 +50,7 @@ export function Sidebar() {
   const topic = useApp((s) => s.topic);
   const activeChatId = useApp((s) => s.chatId);
   const chatIndex = useApp((s) => s.chatIndex);
+  const studioChats = useApp((s) => s.studioChats);
   const loadChat = useApp((s) => s.loadChat);
   const loadChats = useApp((s) => s.loadChats);
   const view = useApp((s) => s.view);
@@ -300,6 +301,68 @@ export function Sidebar() {
           <span className="grow">日程</span>
           {totalDue > 0 && <span className="side-kbd">{totalDue}</span>}
         </button>
+        <button
+          className="side-item"
+          style={view === "studio" ? { background: "var(--bg-active)", color: "var(--text)" } : undefined}
+          title="工坊：独立于学习，照着内置规范造技能与 MCP 服务器"
+          onClick={() => void useApp.getState().openStudio()}
+        >
+          <Icon name="hammer" />
+          <span className="grow">工坊</span>
+          {studioChats.length > 0 && <span className="side-kbd">{studioChats.length}</span>}
+        </button>
+
+        {/* 工坊的对话就挂在它下面（和主题的对话挂在主题下面一个道理）。
+            只在工坊视图里展开：平时不占侧栏的地方。 */}
+        {view === "studio" && (
+          <div className="studio-chats">
+            {studioChats.filter((c) => !c.archived).length === 0 && (
+              <div className="studio-chats-empty muted">还没有工坊对话</div>
+            )}
+            {studioChats
+              .filter((c) => !c.archived)
+              .map((c) => (
+                <ChatRow
+                  key={c.id}
+                  chatId={c.id}
+                  topicSlug=""
+                  mode="studio"
+                  title={c.title}
+                  time={c.updatedAt}
+                  depth={1}
+                  active={c.id === activeChatId}
+                  pinned={c.pinned}
+                  customTitle={c.customTitle}
+                  onClick={() => void loadChat(c.id)}
+                />
+              ))}
+            {studioChats.some((c) => c.archived) && (
+              <div className="chat-archived">
+                <div className="chat-archived-head">
+                  <Icon name="box" size={11} />
+                  已归档 {studioChats.filter((c) => c.archived).length}
+                </div>
+                {studioChats
+                  .filter((c) => c.archived)
+                  .map((c) => (
+                    <ChatRow
+                      key={c.id}
+                      chatId={c.id}
+                      topicSlug=""
+                      mode="studio"
+                      title={c.title}
+                      time={c.updatedAt}
+                      depth={1}
+                      active={c.id === activeChatId}
+                      archived
+                      customTitle={c.customTitle}
+                      onClick={() => void loadChat(c.id)}
+                    />
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="side-section">
@@ -446,6 +509,7 @@ export function Sidebar() {
 function ChatRow({
   chatId,
   topicSlug,
+  mode,
   title,
   time,
   depth,
@@ -457,6 +521,8 @@ function ChatRow({
 }: {
   chatId?: string;
   topicSlug: string;
+  /** 工坊的对话：没有主题，操作要走工坊那份清单 */
+  mode?: AgentMode;
   title: string;
   time: string | null;
   depth: number;
@@ -504,8 +570,9 @@ function ChatRow({
     !!(t instanceof Element && t.closest("button, input, textarea, select, a, [contenteditable=true]"));
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    // 正在改名时不拖：输入框里的拖选文字不能被当成「把对话搬走」
-    if (!chatId || editing || e.button !== 0 || innerInteractive(e.target)) return;
+    // 正在改名时不拖：输入框里的拖选文字不能被当成「把对话搬走」。
+    // 工坊的对话也不拖——它不属于任何主题，没有可搬去的目标。
+    if (!chatId || editing || mode === "studio" || e.button !== 0 || innerInteractive(e.target)) return;
     drag.current = {
       el: e.currentTarget,
       startX: e.clientX,
@@ -572,13 +639,13 @@ function ChatRow({
     const next = draft.trim();
     // 名字没动就不打扰后端（改名会写文件）
     if (next === title.trim()) return;
-    void renameChat(chatId, next, topicSlug);
+    void renameChat(chatId, next, topicSlug, mode);
   };
 
   /** 从这条对话分叉：复制成新对话，原对话不动 */
   const doFork = () => {
     if (!chatId) return;
-    void forkChat(chatId, topicSlug);
+    void forkChat(chatId, topicSlug, mode);
   };
 
   return (
@@ -587,7 +654,7 @@ function ChatRow({
         className={"chat-row" + (active ? " active" : "") + (archived ? " archived" : "")}
         style={{ paddingLeft: 9 + depth * 14 }}
         title={
-          chatId
+          chatId && mode !== "studio"
             ? `${title || "新对话"}（按住拖到别的主题可以搬过去）`
             : title
         }
@@ -652,7 +719,7 @@ function ChatRow({
                       {customTitle && (
                         <MenuItem
                           onClick={() => {
-                            void renameChat(chatId, "", topicSlug);
+                            void renameChat(chatId, "", topicSlug, mode);
                             close();
                           }}
                         >
@@ -661,7 +728,7 @@ function ChatRow({
                       )}
                       <MenuItem
                         onClick={() => {
-                          void pinChat(chatId, !pinned, topicSlug);
+                          void pinChat(chatId, !pinned, topicSlug, mode);
                           close();
                         }}
                       >
@@ -677,7 +744,7 @@ function ChatRow({
                       </MenuItem>
                       <MenuItem
                         onClick={() => {
-                          void archiveChat(chatId, !archived, topicSlug);
+                          void archiveChat(chatId, !archived, topicSlug, mode);
                           close();
                         }}
                       >
@@ -715,7 +782,7 @@ function ChatRow({
               <button
                 className="btn danger"
                 onClick={() => {
-                  void deleteChat(chatId!, topicSlug);
+                  void deleteChat(chatId!, topicSlug, mode);
                   setConfirming(false);
                 }}
               >

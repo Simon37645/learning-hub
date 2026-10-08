@@ -39,6 +39,55 @@ impl Access {
     }
 }
 
+/// agent 当前在哪种模式里干活。
+///
+/// - `Study`：学习模式。有主题（或首页的日常问答），相对路径以**主题目录**为根。
+/// - `Studio`：工坊模式。独立于学习，用来造技能与 MCP 服务器；
+///   相对路径以**工坊目录**（`<工作区>/.hub/workshop/`）为根。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMode {
+    #[default]
+    Study,
+    Studio,
+}
+
+impl AgentMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentMode::Study => "study",
+            AgentMode::Studio => "studio",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentMode::Study => "学习",
+            AgentMode::Studio => "工坊",
+        }
+    }
+
+    /// 认不出来的值一律当学习模式——老对话里没有这个字段，默认就是它。
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "studio" | "工坊" | "workshop" => AgentMode::Studio,
+            _ => AgentMode::Study,
+        }
+    }
+}
+
+/// 工具在哪个模式下出现。
+///
+/// 默认（不实现 `scope`）是**只给学习模式**：新加一个工具时不必记得来登记，
+/// 它至少不会莫名其妙出现在工坊里、然后因为「没有主题」而报错。
+/// 能在工坊里也成立的工具（读写文件、技能、MCP 状态、联网、记忆）显式声明 `Both`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolScope {
+    Study,
+    Studio,
+    Both,
+}
+
 /// 暴露给模型的工具声明（会转成各家 function calling 的格式）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +102,11 @@ pub struct ToolCtx {
     pub core: Arc<AppCore>,
     /// 当前主题（没有主题时的「布置」类工具会拒绝执行）
     pub topic: Option<Topic>,
+    /// 相对路径的根。学习模式 = 当前主题目录；工坊模式 = 工坊目录。
+    /// 工具不该自己去拼这个根，一律走 [`ToolCtx::resolve_path`]。
+    pub root: PathBuf,
+    /// 当前模式，决定 `topic` 缺省时算不算错误。
+    pub mode: AgentMode,
     pub turn_id: String,
     pub chat_id: String,
 }
@@ -70,6 +124,15 @@ impl ToolCtx {
             Some(s) if !s.trim().is_empty() => self.core.config_read().workspace().resolve(s),
             _ => self.topic().cloned(),
         }
+    }
+
+    /// 「不写路径时默认从哪儿开始」：学习模式＝当前主题目录（可用 `topic` 参数指别的主题），
+    /// 工坊模式＝工坊目录。工具不许自己拼这个根。
+    pub fn root_for(&self, topic: Option<&str>) -> AppResult<PathBuf> {
+        if self.mode == AgentMode::Studio {
+            return Ok(self.root.clone());
+        }
+        Ok(self.topic_or(topic)?.dir.clone())
     }
 
     /// 解析工具给的路径。三种写法：
@@ -110,12 +173,23 @@ impl ToolCtx {
             return Ok(path);
         }
 
+        // 工坊模式：相对路径以工坊目录为根。那里没有主题，
+        // 也不该拿主题的名义落盘——`topic_or` 在这种情况下会直接报错。
+        if self.mode == AgentMode::Studio {
+            return crate::paths::resolve_in_root(&self.root, raw);
+        }
+
         let topic = self.topic_or(topic)?;
         crate::paths::resolve_in_root(&topic.dir, raw)
     }
 
     /// 给模型看的路径标签：主题内用相对路径，主题外用绝对路径。
     pub fn label(&self, path: &Path) -> String {
+        if self.mode == AgentMode::Studio && crate::paths::is_within(&self.root, path) {
+            // 工坊里的文件不属于任何主题：标明它相对工坊根的位置，
+            // 模型才知道自己写的东西在哪儿（提示词里也是这么称呼它的）
+            return format!("workshop/{}", crate::paths::rel_in_root(&self.root, path));
+        }
         if let Some(t) = &self.topic {
             if crate::paths::is_within(&t.dir, path) {
                 return t.rel(path);
@@ -171,6 +245,10 @@ pub trait Tool: Send + Sync {
     }
     /// 人类可读的调用摘要，显示在确认弹窗和工具卡片上。
     fn summarize(&self, input: &Value) -> String;
+    /// 这个工具在哪些模式下出现。默认只在学习模式（见 [`ToolScope`]）。
+    fn scope(&self) -> ToolScope {
+        ToolScope::Study
+    }
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput>;
 }
 
@@ -212,6 +290,16 @@ impl ToolRegistry {
         self.order.clone()
     }
 
+    /// 这个工具在当前模式下该不该出现。
+    fn visible(&self, name: &str, mode: AgentMode) -> bool {
+        match self.tools.get(name).map(|t| t.scope()) {
+            Some(ToolScope::Both) => true,
+            Some(ToolScope::Study) => mode == AgentMode::Study,
+            Some(ToolScope::Studio) => mode == AgentMode::Studio,
+            None => false,
+        }
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.order
             .iter()
@@ -224,10 +312,40 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 生成给系统提示词用的工具清单（模型不支持 function calling 时的降级说明）。
-    pub fn describe_for_prompt(&self) -> String {
+    /// 某个模式下真正要发给模型的工具声明。
+    ///
+    /// 学习模式与工坊模式给的清单不同（工坊不需要「出卷」「写卡片」这些要主题的工具，
+    /// 但需要发布技能/登记 MCP 的工具）。过滤在这里做，主循环只管拿。
+    pub fn specs_for(&self, mode: AgentMode) -> Vec<ToolSpec> {
         self.order
             .iter()
+            .filter(|n| self.visible(n, mode))
+            .filter_map(|n| self.tools.get(n))
+            .map(|t| ToolSpec {
+                name: t.name().to_string(),
+                description: t.description().to_string(),
+                input_schema: t.schema(),
+            })
+            .collect()
+    }
+
+    pub fn names_for(&self, mode: AgentMode) -> Vec<String> {
+        self.order
+            .iter()
+            .filter(|n| self.visible(n, mode))
+            .cloned()
+            .collect()
+    }
+
+    /// 生成给系统提示词用的工具清单（模型不支持 function calling 时的降级说明）。
+    pub fn describe_for_prompt(&self) -> String {
+        self.describe_for_prompt_for(AgentMode::Study)
+    }
+
+    pub fn describe_for_prompt_for(&self, mode: AgentMode) -> String {
+        self.order
+            .iter()
+            .filter(|n| self.visible(n, mode))
             .filter_map(|n| self.tools.get(n))
             .map(|t| format!("- {}｜{}｜参数：{}", t.name(), t.description(), compact_schema(&t.schema())))
             .collect::<Vec<_>>()

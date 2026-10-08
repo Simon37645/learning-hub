@@ -82,6 +82,11 @@ impl Tool for FsList {
         "fs_list"
     }
 
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "列出目录里的文件与子目录（含大小）。路径相对当前主题目录；\
          想列别的主题就传 topic；绝对路径会触发越权申请。"
@@ -111,8 +116,7 @@ impl Tool for FsList {
         let depth = arg_u32(&input, "depth").unwrap_or(2).clamp(1, 5) as usize;
 
         let dir = if rel.trim().is_empty() {
-            let t = ctx.topic_or(topic_arg.as_deref())?;
-            t.dir.clone()
+            ctx.root_for(topic_arg.as_deref())?
         } else {
             ctx.resolve_path(&rel, topic_arg.as_deref(), Access::Read, "列目录")
                 .await?
@@ -159,6 +163,11 @@ pub struct FsRead;
 impl Tool for FsRead {
     fn name(&self) -> &'static str {
         "fs_read"
+    }
+
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {
@@ -209,6 +218,11 @@ pub struct FsWrite;
 impl Tool for FsWrite {
     fn name(&self) -> &'static str {
         "fs_write"
+    }
+
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {
@@ -306,6 +320,11 @@ impl Tool for FsMkdir {
         "fs_mkdir"
     }
 
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "创建目录（已存在则忽略）。用于按章节整理资料，例如 materials/第三章。"
     }
@@ -347,6 +366,11 @@ pub struct FsMove;
 impl Tool for FsMove {
     fn name(&self) -> &'static str {
         "fs_move"
+    }
+
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {
@@ -412,6 +436,11 @@ pub struct FsDelete;
 impl Tool for FsDelete {
     fn name(&self) -> &'static str {
         "fs_delete"
+    }
+
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {
@@ -486,6 +515,11 @@ impl Tool for FsSearch {
         "fs_search"
     }
 
+    // 工坊模式也能用：那里的相对路径以工坊目录为根（见 ToolCtx::root）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "在主题的笔记与资料里做全文检索（支持中文子串与正则），返回命中文件、行号与上下文。\
          PDF 也会被检索（按提取出的文字）。回答用户问题前先查一遍，能避免重复劳动、也能引用已有笔记。"
@@ -521,7 +555,7 @@ impl Tool for FsSearch {
                 ctx.resolve_path(&p, topic_arg.as_deref(), Access::Read, "检索目录")
                     .await?
             }
-            _ => ctx.topic_or(topic_arg.as_deref())?.dir.clone(),
+            _ => ctx.root_for(topic_arg.as_deref())?,
         };
 
         let matcher = build_matcher(&query, regex_mode, case_sensitive)?;

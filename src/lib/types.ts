@@ -13,6 +13,13 @@ export type ProviderKind = "open_ai" | "anthropic";
 export type Risk = "read" | "write" | "destructive";
 export type Role = "system" | "user" | "assistant" | "tool";
 
+/**
+ * agent 的工作模式。
+ * - `study`：学习模式（首页的日常问答、主题里的对话）
+ * - `studio`：工坊模式——独立于学习，照着内置规范造技能与 MCP 服务器
+ */
+export type AgentMode = "study" | "studio";
+
 export const STAGE_LABEL: Record<StudyStage, string> = {
   preview: "预习",
   learn: "学习",
@@ -36,6 +43,18 @@ export const RISK_LABEL: Record<Risk, string> = {
 
 export type ContentBlock =
   | { type: "text"; text: string }
+  | {
+      /** 用户随消息附上的图片。字节在磁盘上（下面那个工作区相对路径），前端用 asset 协议显示 */
+      type: "image";
+      /** 工作区相对路径：`.hub/attachments/<id>.<ext>` */
+      path: string;
+      /** 注意：带 tag 的枚举里字段仍是 snake_case */
+      media_type: string;
+      name: string;
+      bytes: number;
+      width?: number | null;
+      height?: number | null;
+    }
   | { type: "thinking"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean };
@@ -189,6 +208,8 @@ export interface ChatOverviewItem {
   archived: boolean;
   /** 分叉血缘（从哪条对话、第几条消息分出来的） */
   forkedFrom?: ChatForkInfo | null;
+  /** 属于哪个模式（工坊的对话与首页的日常问答都放在工作区级的 chats 目录里） */
+  mode: AgentMode;
 }
 
 /** 分叉血缘：只记「从哪来」，不记「分出去哪些」 */
@@ -368,6 +389,8 @@ export interface PublicProfile {
   temperature: number;
   maxTokens: number;
   supportsTools: boolean;
+  /** 该模型能不能读图片。关掉后贴的图不会发出去（会降级成一行文字） */
+  supportsVision: boolean;
   reasoning: ReasoningConfig;
   hasApiKey: boolean;
   keyHint: string;
@@ -383,6 +406,8 @@ export const THEME_LABEL: Record<ThemeMode, string> = {
 
 export interface AppearanceConfig {
   theme: ThemeMode;
+  /** 正在用的自定义主题 id（见「外观主题」一节）。null/undefined = 用内置配色 */
+  customTheme?: string | null;
 }
 
 export interface PublicConfig {
@@ -445,6 +470,8 @@ export interface ProfileInput {
   temperature: number;
   maxTokens: number;
   supportsTools: boolean;
+  /** 不传＝沿用原值（新建时默认开） */
+  supportsVision?: boolean | null;
   headers: Record<string, string>;
   reasoning?: ReasoningConfig;
 }
@@ -544,7 +571,18 @@ export type AgentEvent =
 export interface SendResult {
   turnId: string;
   chatId: string;
+  mode: AgentMode;
   message: ChatMessage;
+}
+
+/** 随消息上传的一张图片（前端把字节 base64 传过去，后端落盘成 image 块） */
+export interface ImageUpload {
+  /** 原文件名，只用于显示 */
+  name: string;
+  /** base64（可以带 `data:image/png;base64,` 前缀；真正的类型以字节里的魔数为准） */
+  data: string;
+  width?: number | null;
+  height?: number | null;
 }
 
 export interface TurnRequest {
@@ -553,6 +591,10 @@ export interface TurnRequest {
   text: string;
   stage?: string | null;
   attachments?: string[];
+  /** 随消息附上的图片 */
+  images?: ImageUpload[];
+  /** study（默认）/ studio（工坊） */
+  mode?: AgentMode;
 }
 
 // ---------------------------------------------------------------- 查看器
@@ -906,6 +948,69 @@ export interface MemoryInput {
 export interface MemoryEvent {
   scope: string;
   action: string;
+}
+
+// ---------------------------------------------------------------- 工坊（Studio）
+
+/** 一份内置规范文档（工坊面板里可以预览，agent 用 spec_read 读） */
+export interface StudioSpec {
+  /** 传给 `studio_spec` 的名字：skill / mcp */
+  doc: string;
+  title: string;
+  hint: string;
+  chars: number;
+}
+
+/** 工坊的总览：练习目录在哪儿、内置规范有哪些、工坊模式下 agent 能用什么工具 */
+export interface StudioInfo {
+  /** 练习目录（工坊模式下相对路径的根） */
+  dir: string;
+  /** 发布后的正式位置 */
+  skillsDir: string;
+  mcpDir: string;
+  specs: StudioSpec[];
+  tools: string[];
+  workspaceRoot: string;
+}
+
+// ---------------------------------------------------------------- 自定义外观主题
+
+/** 主题自带哪套内置配色作为底盘（用户没覆盖的变量跟随它） */
+export type ThemeBase = "light" | "dark";
+
+/**
+ * 一份自定义主题：一堆 CSS 变量的覆盖值。
+ * 文件在 `<工作区>/.hub/themes/<id>.json` 或 `~/.learning-hub/themes/<id>.json`。
+ */
+export interface CustomTheme {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  base: ThemeBase;
+  vars: Record<string, string>;
+  /** 「工作区」/「用户目录」 */
+  source: string;
+  path: string;
+  /** 文件读不了时的原因（这种主题不能启用，但仍然列出来） */
+  error?: string | null;
+}
+
+export interface ThemeVarDoc {
+  name: string;
+  hint: string;
+}
+
+export interface ThemesOverview {
+  themes: CustomTheme[];
+  /** 配置里记着的 id（可能已经找不到文件） */
+  active?: string | null;
+  /** 当前**真正生效**的那份；null ＝ 用内置配色 */
+  applied?: CustomTheme | null;
+  workspaceDir: string;
+  userDir?: string | null;
+  /** 可用的变量清单（写自己的主题时当参考） */
+  vars: ThemeVarDoc[];
 }
 
 

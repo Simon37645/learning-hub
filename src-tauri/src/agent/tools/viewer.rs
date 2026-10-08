@@ -225,6 +225,12 @@ impl Tool for ViewerList {
         "viewer_list"
     }
 
+    // 这些按 tab_id 干活，不依赖主题：工坊里也能读用户正开着的文档
+    // （viewer_open 例外——它要靠主题相对路径找到文件，所以只在学习模式出现）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "列出内置浏览器当前打开的所有标签页（含 id、页码、滚动位置、已读字数）。\
          要读**用户当前没在看**的那个标签（比如他把讲义开在另一个标签上），先调这个拿 id，\
@@ -282,6 +288,12 @@ pub struct ViewerRead;
 impl Tool for ViewerRead {
     fn name(&self) -> &'static str {
         "viewer_read"
+    }
+
+    // 这些按 tab_id 干活，不依赖主题：工坊里也能读用户正开着的文档
+    // （viewer_open 例外——它要靠主题相对路径找到文件，所以只在学习模式出现）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {
@@ -350,6 +362,12 @@ pub struct ViewerGoto;
 impl Tool for ViewerGoto {
     fn name(&self) -> &'static str {
         "viewer_goto"
+    }
+
+    // 这些按 tab_id 干活，不依赖主题：工坊里也能读用户正开着的文档
+    // （viewer_open 例外——它要靠主题相对路径找到文件，所以只在学习模式出现）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {
@@ -432,6 +450,12 @@ impl Tool for ViewerSearch {
         "viewer_search"
     }
 
+    // 这些按 tab_id 干活，不依赖主题：工坊里也能读用户正开着的文档
+    // （viewer_open 例外——它要靠主题相对路径找到文件，所以只在学习模式出现）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "在内置浏览器当前文档里检索关键词，返回命中所在页码与上下文。\
          读长 PDF 或长网页前先用它定位，比通读省时间。"
@@ -500,6 +524,12 @@ impl Tool for ViewerActivate {
         "viewer_activate"
     }
 
+    // 这些按 tab_id 干活，不依赖主题：工坊里也能读用户正开着的文档
+    // （viewer_open 例外——它要靠主题相对路径找到文件，所以只在学习模式出现）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
     fn description(&self) -> &'static str {
         "把某个标签页切到前台（用户当前看到的就是它）。"
     }
@@ -526,6 +556,12 @@ pub struct ViewerClose;
 impl Tool for ViewerClose {
     fn name(&self) -> &'static str {
         "viewer_close"
+    }
+
+    // 这些按 tab_id 干活，不依赖主题：工坊里也能读用户正开着的文档
+    // （viewer_open 例外——它要靠主题相对路径找到文件，所以只在学习模式出现）
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
     }
 
     fn description(&self) -> &'static str {

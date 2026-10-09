@@ -44,6 +44,8 @@ Markdown, and quizzes you the way a medical school exam does.
   - [14. Pictures in the chat](#14-pictures-in-the-chat)
   - [15. Themes you write yourself](#15-themes-you-write-yourself)
   - [16. Studio: build your own skills and MCP servers](#16-studio-build-your-own-skills-and-mcp-servers)
+  - [17. Demos drawn right in the reply](#17-demos-drawn-right-in-the-reply)
+  - [18. The agent can look at a page of a PDF](#18-the-agent-can-look-at-a-page-of-a-pdf)
 - [Install](#install)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
@@ -238,6 +240,9 @@ fit / 100% / zoom controls.
 The note editor is built on **CodeMirror 6**, adapted from InkNote: formulas, tables, diagrams and code
 blocks render *in place* — no split preview. Front matter becomes a compact widget, headings are
 numbered automatically, and `Ctrl+/` switches to raw source when you want it.
+**`F11`** gives you the whole screen: the window goes fullscreen and the titlebar, sidebar and side
+panel get out of the way — the editor keeps its own save row, because losing sight of “unsaved” is
+worse than a little chrome.
 
 <img src="docs/images/editor.png" alt="In-place Markdown editing" width="820" />
 
@@ -345,6 +350,38 @@ published things show up in the usual *Skills* / *MCP servers* panels with the s
 
 The Studio keeps its own chat list (under *Studio* in the sidebar) — no topic required.
 
+### 17. Demos drawn right in the reply
+
+Some things are hopeless in prose: a dynamic process, a spatial relationship, how a parameter changes
+the result. For those the agent **puts an ```html block in its reply**, and the app renders it as a
+card right there in the conversation — nothing to click open, animation already running. ```svg blocks
+render the same way for static figures. Each card has *source* (if you want to copy or tweak it) and
+*fullscreen* buttons.
+
+Cards render inside a sandboxed iframe that **cannot run JavaScript**: whatever the model writes is
+treated as a picture and cannot touch the app's UI or your local data. Animations therefore use CSS
+(`animation` / `transition`) or SVG's `<animate>`, and pure-CSS interactions (`:hover`, `:checked`,
+`<details>`) work as expected — the system prompt tells the agent exactly this. If a demo does contain
+`<script>`, the card says *scripts disabled (sandbox)* so you are not left wondering what broke.
+
+For longer demos you want to keep, the agent still writes a page into `lessons/<name>.html` and opens it
+in the built-in browser.
+
+### 18. The agent can look at a page of a PDF
+
+A PDF's text layer contains only text — figures, diagrams, formula images, scanned pages and
+handwriting are simply not in it. The `pdf_screenshot` tool **renders a page of the document into an
+image** and hands it to the model. It renders the page, it does not screenshot your screen: window
+occlusion and which page you happen to be looking at are irrelevant. The agent reaches for it when the
+text says “see figure 3”, or when the text layer is obviously garbled (scanned books). Up to 4 pages per
+call.
+
+Images follow the same rule as pasted pictures: bytes land in `.hub/attachments/`, the transcript stores
+only the path, so they are still there when you scroll back. They show up in the tool card — you can see
+exactly which page the agent looked at — and click to open them large. Each protocol encodes them its
+own way (Anthropic allows images inside `tool_result`; OpenAI's `tool` messages only take strings, so a
+short follow-up message carries the image).
+
 ---
 
 ## Install
@@ -354,6 +391,10 @@ The Studio keeps its own chat list (under *Studio* in the sidebar) — no topic 
 Download `LearningHub-<version>-x64-setup.exe` from [Releases](../../releases) and run it. The installer
 is per-user (no admin rights). Requires Windows 10/11 with the WebView2 runtime — preinstalled on
 Windows 11 and on most updated Windows 10 machines.
+
+There is also a **portable zip** (`LearningHub-<version>-x64-portable.zip`): unzip it and run
+`learning-hub.exe`, no installation and no leftovers. It reads the same config file as the installed
+version (`%APPDATA%\com.learninghub.desktop\config.json`), so the two do not fight.
 
 ### Build from source
 

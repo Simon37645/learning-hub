@@ -538,11 +538,11 @@ impl AgentService {
                     return Err(AppError::Cancelled);
                 }
                 let result = self.execute_tool(&core, &ctx, &turn_id, tc).await;
-                let (content, is_error) = match result {
-                    Ok(o) => (o.content, o.is_error),
-                    Err(e) => (format!("工具执行失败：{e}"), true),
+                let (content, is_error, images) = match result {
+                    Ok(o) => (o.content, o.is_error, o.images),
+                    Err(e) => (format!("工具执行失败：{e}"), true, Vec::new()),
                 };
-                let tool_msg = ChatMessage::tool_result(tc.id.clone(), content, is_error);
+                let tool_msg = ChatMessage::tool_result_with(tc.id.clone(), content, is_error, images);
                 messages.push(tool_msg.clone());
                 append_transcript(&core, topic.as_ref(), &req.chat_id, &tool_msg)?;
             }
@@ -589,6 +589,7 @@ impl AgentService {
                     preview: msg.clone(),
                     duration_ms: 0,
                     denied: false,
+                    images: Vec::new(),
                 },
             });
             return Ok(registry::ToolOutput::err(msg));
@@ -614,6 +615,7 @@ impl AgentService {
                     preview: "已被用户拒绝".into(),
                     duration_ms: 0,
                     denied: true,
+                    images: Vec::new(),
                 },
             });
             return Ok(registry::ToolOutput::err(msg));
@@ -641,6 +643,7 @@ impl AgentService {
                 preview: preview_of(&o.content),
                 duration_ms,
                 denied: false,
+                images: o.images.clone(),
             },
             Err(e) => ToolOutcomeView {
                 call_id: tc.id.clone(),
@@ -651,6 +654,7 @@ impl AgentService {
                 preview: e.to_string(),
                 duration_ms,
                 denied: false,
+                images: Vec::new(),
             },
         };
         core.emit_agent(&AgentEvent::ToolFinished {
@@ -848,7 +852,12 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, budget_chars: usize) -> u
                 ContentBlock::Text { text } => text.chars().count(),
                 ContentBlock::Thinking { text } => text.chars().count(),
                 ContentBlock::ToolUse { input, name, .. } => name.chars().count() + input.to_string().chars().count(),
-                ContentBlock::ToolResult { content, .. } => content.chars().count(),
+                ContentBlock::ToolResult { content, images, .. } => {
+                    content.chars().count()
+                        // 工具附带的图（PDF 页截图）和用户贴图一样占 token，
+                        // 按 4000 字符折算，否则看了几十页图的对话永远裁不掉
+                        + images.len() * 4_000
+                }
                 // 图片几乎没有字符，但很占 token：按一张 1100 token 的量级折算成字符，
                 // 否则贴了几十张图的对话永远不会被裁，请求会一路涨到服务商拒收。
                 ContentBlock::Image { .. } => 4_000,
@@ -964,7 +973,13 @@ fn context_breakdown(
     for m in messages {
         for b in &m.blocks {
             match b {
-                ContentBlock::ToolResult { content, .. } => tool_tokens += est(content),
+                ContentBlock::ToolResult { content, images, .. } => {
+                    tool_tokens += est(content);
+                    tool_tokens += images
+                        .iter()
+                        .map(|i| crate::agent::attachment::estimate_image_tokens(i.width, i.height))
+                        .sum::<u32>();
+                }
                 ContentBlock::Text { text } | ContentBlock::Thinking { text } => {
                     msg_tokens += est(text)
                 }

@@ -431,3 +431,70 @@ chats/<id>.jsonl 里的块：{ "type":"image", "path":".hub/attachments/x.png", 
 | 一个新的 agent 模式 | `registry::AgentMode` + `prompt.rs` 一份提示词 + `agent/mod.rs` 的 `run_turn` 分支 + 前端一个视图 |
 | 一个新的主题变量 | `app.css` 的 `:root`（`theme.rs` 的单测会要求同步写进 `VAR_DOCS`） |
 | 工坊能造的新东西 | `studio.rs` 的目录约定 + `tools/studio.rs` 一个发布工具 + 规范文档里写清流程 |
+
+## 16. 演示卡片与 PDF 看图（第五轮）
+
+### 16.1 对话里的 HTML/SVG 演示卡片
+
+讲动态过程、空间关系、参数怎么影响结果这类内容时，文字很吃亏。所以定了一条模型最不容易写错的
+表达方式：**在回复里放一个 ```html 代码块**，前端把它渲染成对话里的卡片
+（`markdown.ts` 的 `renderDemoBlocksIn`）。
+
+- 与 mermaid 同一套路：先让代码块照常渲染出来，再原地替换成卡片——这一步没跑到时用户看到的
+  也只是代码块，不会是空白。
+- 卡片里的 iframe 是 `sandbox=""`：**脚本不执行**。模型产出的 HTML 只被当成画面，碰不到应用的
+  DOM 与 IPC；动画靠 CSS animation / transition 或 SVG 的 `<animate>`，纯 CSS 的交互
+  （`:hover` / `:checked` / `<details>`）照常可用。提示词里写明了这条约束（`prompt.rs`），
+  卡片上也会标「脚本已禁用」——免得用户以为是应用坏了。
+- ```svg 代码块补一层 HTML 壳后同样处理（`demoDocument`），画静态示意图写 svg 更省。
+- 为什么不用「写文件 + `viewer_open`」那条路：那条适合**内容多、要长期回看**的演示页
+  （`lessons/*.html`）；顺手讲一个点时的演示要直接出现在对话里，多一步就没人看。
+- 高度写死 360px（卡片右上角可全屏）：演示页是按一屏看完设计的，跟着内容长会让对话变成一条长图。
+
+### 16.2 pdf_screenshot：看文字层里没有的东西
+
+PDF 的文字层里只有字——插图、示意图、公式图、扫描页、手写批注全都不在里面。`pdf_screenshot`
+把**文档的某一页**渲染成图片交给模型看。是渲染文档那一页，不是截屏：与窗口有没有被挡住、
+用户翻在第几页都无关，也不用把内置浏览器切到前台。
+
+链路是**请求-响应**，因为渲染器在前端（pdf.js 在界面上，Rust 侧没有渲染器）：
+
+```
+工具 pdf_screenshot
+  → register_render_pending(request_id)            viewer 服务里登记等待位
+  → hub://viewer { kind:"render_request" }         带页码与 request_id
+  → 前端 lib/pdfshot.ts 用 pdf.js 画到离屏画布      不依赖 PdfView 是否挂载（自己读字节、自己开文档）
+  → viewer_report_render(request_id, png base64)   成功失败都要回，否则工具一直等到超时
+  → 工具把 PNG 落进 .hub/attachments/，作为工具结果里的图片回灌给模型
+```
+
+前端那个模块按 tab 缓存已解析的文档（agent 常连着截好几页），文档被重新加载时
+`forgetPdfDoc` 清掉，免得截到旧版本的页。
+
+### 16.3 工具结果里的图片（`ToolResult.images`）
+
+`ContentBlock::ToolResult` 多了一个 `images: Vec<ToolImage>`：
+
+- 和用户贴图共用一套约定：**字节在磁盘上，消息里只存路径**（见第 12 节），
+  所以显示、估 token、裁剪上下文都复用同一条链路。
+- 两个协议编码不同：Anthropic 允许 `tool_result.content` 直接是内容块数组（图放里面）；
+  **OpenAI 的 `tool` 消息只能放字符串**，所以带图的工具结果后面会再补一条 `user` 消息专门放图。
+  这是各家 agent 通行的绕法，模型据此把「结果」与「图」对上号。
+- 图片随工具结果落盘：下一轮请求与历史回看都还看得见（不落盘的话模型只在当轮「看过一眼」）。
+- 前端把它渲染在**工具卡片里**（`ToolCard`），用户能直接看到「agent 刚才看的是哪一页」，
+  点开是大图浮层（和用户贴图同一个浮层）。
+
+### 16.4 专注模式（F11）
+
+写笔记时按 F11：窗口真全屏（`setFullscreen`，需要 capabilities 里的 `allow-set-fullscreen`），
+`.app-shell` 加一个 `zen` 类，把**应用外壳**收起来——自绘标题栏、侧栏、内置浏览器、顶部分段按钮。
+笔记编辑器自己那一条（路径 / 未保存 / 保存 / 模式切换）留着：全屏写作时看不见保存状态才是真的糟。
+进去时底部闪一句「按 F11 退出」，4 秒后淡掉——没有标题栏也没有菜单，不说一句用户会去按 Esc。
+
+## 17. 第五轮新增的扩展点
+
+| 想加什么 | 改哪儿 |
+| --- | --- |
+| 让某类代码块也渲染成卡片 | `markdown.ts` 的 `DEMO_LANGS` + `demoDocument` |
+| 让某个工具也能返回图片 | 工具里返回 `ToolOutput::with_images(...)`，协议编码已经通了 |
+| 让前端替 agent 渲染别的东西 | 照 `render_request` / `viewer_report_render` 这一对加事件与命令（请求-响应，别只发不收） |

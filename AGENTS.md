@@ -162,6 +162,25 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   设置页那一节都不在了。**别再往回加**：用户明确不要外部依赖。
   复习按钮上的「10 分钟 / 4 天」来自后端 `preview_secs`（同一个 `apply` 跑在副本上），
   别在前端另写一套间隔推算。
+- **```html 演示卡片里的脚本不会执行**（`markdown.ts` 的 `renderDemoBlocksIn`）：卡片是
+  `sandbox=""` 的 iframe——模型产出的 HTML 只被当成画面，碰不到应用的 DOM 与 IPC。
+  所以动画只能用 CSS（animation / transition）或 SVG 的 `<animate>`，交互只能用
+  `:hover` / `:checked` / `<details>` 这类纯 CSS 手段；提示词里已经这么要求模型了。
+  **别为了「让演示能动起来」把 sandbox 改成 `allow-scripts`**：那等于让模型写的脚本进到应用里跑
+  （srcdoc 还继承应用的 CSP，改成 allow-scripts 也大概率只是白忙）。卡片上会标「脚本已禁用」。
+- **`pdf_screenshot` 是请求-响应，前端必须回话**：工具在 Rust 侧登记等待位 → 发
+  `render_request` 事件 → 前端 `lib/pdfshot.ts` 用 pdf.js 渲染 → 调 `viewer_report_render`。
+  成功要回，**失败也要回**（带 `error`），否则工具一直等到 25s 超时才报错，用户盯着一个不动的卡片。
+  渲染模块自己读字节、自己开文档，**不依赖 `PdfView` 是否挂载**（内置浏览器收起来时也能用）；
+  它按 tab 缓存文档，`PdfView` 重新加载时会 `forgetPdfDoc`，别把那句删了（否则截到旧版本的页）。
+- **工具结果带图的编码两边不一样**：Anthropic 允许 `tool_result.content` 是内容块数组（图放里面），
+  **OpenAI 的 `tool` 消息只吃字符串**，所以 `to_openai_messages` 会在带图的工具结果后面
+  补一条 `user` 消息专门放图。改协议编码时别把这条丢了，也别在 `tool` 角色里塞数组。
+- **F11 专注模式动的是「应用外壳」**：`store.setZen` 同时改窗口全屏（需要 capabilities 里的
+  `core:window:allow-set-fullscreen`，漏了只在运行时报权限错）与 `.app-shell.zen` 样式。
+  隐藏的是标题栏 / 侧栏 / 内置浏览器 / 顶部分段，**笔记编辑器自己那一条要留着**（路径、未保存、保存）——
+  全屏写作看不见保存状态才是真的糟。
+
 - **长期记忆的作用域由文件位置决定，不是记录里的字段**
   （`<工作区>/.hub/memory/memories.jsonl` = 全局，`<主题>/.hub/memory/memories.jsonl` = 本主题）。
   同一份文件搬到别处语义就变了，所以别在 `Memory` 里再加一个 `scope` 字段——
@@ -249,7 +268,13 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   一份「CSS 变量覆盖表」，设置页里能从当前配色复制一份来改，也有变量清单可查）、
 工坊（独立于学习的 agent 模式：读内置的 SKILL / MCP 规范 → 在练习目录
   `.hub/workshop/` 里写 → `skill_publish` / `mcp_publish` 发布；发布即重连并回报状态；
-  自己的对话清单挂在侧栏「工坊」下面）。
+  自己的对话清单挂在侧栏「工坊」下面）、
+演示卡片（agent 讲难懂内容时在回复里直接放 ```html / ```svg 代码块，前端渲染成沙箱卡片；
+  脚本不执行，动画用 CSS / SVG SMIL，卡片可看源码、可全屏）、
+PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看——图、表、公式、扫描页；
+  渲染在前端 pdf.js，图片落进 `.hub/attachments/` 并作为工具结果的图片回灌，
+  工具卡片里能看到 agent 看了哪一页）、
+专注模式（F11：窗口全屏 + 收起标题栏/侧栏/内置浏览器，写笔记时整屏）。
 
 已知待办（按价值排序）：
 

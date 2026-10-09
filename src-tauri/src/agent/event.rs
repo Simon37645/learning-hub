@@ -69,6 +69,10 @@ pub struct ToolOutcomeView {
     pub duration_ms: u64,
     /// 这条工具调用是否被拒绝
     pub denied: bool,
+    /// 结果里附带的图片（PDF 页截图）。前端渲染在工具卡片里，
+    /// 用户能直接看到「agent 刚才看的那一页长什么样」。
+    #[serde(default)]
+    pub images: Vec<crate::agent::message::ToolImage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +208,17 @@ pub enum ViewerEvent {
     /// 请求前端把当前文档文本交上来
     SnapshotRequest {
         tab_id: String,
+    },
+    /// 请求前端把 PDF 的某一页**渲染成图片**交上来（`pdf_screenshot` 工具用）。
+    ///
+    /// 为什么绕一圈：PDF 是 pdf.js 在界面上画的（见 viewer 模块的说明），
+    /// Rust 侧没有渲染器。前端渲染完通过 `viewer_report_render` 把 PNG 交回来。
+    RenderRequest {
+        tab_id: String,
+        page: u32,
+        request_id: String,
+        /// 期望的栅格化倍率（相对 72dpi）。0 表示「按长边 1568px 自己算」。
+        scale: f32,
     },
     /// 让前端跳到指定页/锚点/百分比
     Goto {

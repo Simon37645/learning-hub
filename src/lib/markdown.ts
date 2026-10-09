@@ -281,8 +281,131 @@ function cleanupMermaidErrorNode(id: string): void {
   }
 }
 
-/** 判断一段文本是否几乎全是代码（用于选择更窄的排版） */
-export function looksLikeCode(text: string): boolean {
+/**
+ * 把 ```html / ```svg 代码块渲染成**演示卡片**（agent 用它讲难懂的东西）。
+ *
+ * 为什么这么做：动态过程、空间关系、参数怎么影响结果这类内容，文字讲十句不如看一眼。
+ * 约定就是「在回复里放一个 ```html 代码块」——模型最容易写对，用户也一眼看得见。
+ *
+ * 与 mermaid 同一套路：先让代码块照常渲染出来，再原地替换成卡片。
+ * 这样即使这一步没跑到、或 HTML 写坏了，用户看到的也只是代码块，不会是空白。
+ *
+ * 安全：iframe 是 `sandbox=""`（**不给 allow-scripts**），所以演示里的 <script> 不会执行，
+ * 也碰不到应用的 DOM 与 IPC。动画只能靠 CSS（animation / transition）或 SVG 的
+ * <animate>，纯 CSS 的交互（:hover / :checked / <details>）也照常能用。
+ * 提示词里就是这么要求模型的；卡片上会明说这一点，免得用户以为是应用坏了。
+ */
+const DEMO_LANGS = new Set(["html", "htm", "svg"]);
+
+/** 组装 iframe 里真正要渲染的那份文档（`svg` 代码块补一层 HTML 壳）。 */
+export function demoDocument(lang: string, source: string): string {
+  if (lang !== "svg") return source;
+  return (
+    "<!doctype html><html><head><meta charset=\"utf-8\"><style>" +
+    "html,body{margin:0;height:100%;display:grid;place-items:center;overflow:hidden}" +
+    "svg{max-width:100%;max-height:100%}" +
+    `</style></head><body>${source}</body></html>`
+  );
+}
+
+export function renderDemoBlocksIn(root: HTMLElement | null): number {
+  if (!root) return 0;
+  let rendered = 0;
+
+  for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code"))) {
+    const pre = code.parentElement as HTMLElement | null;
+    if (!pre || pre.dataset.demo === "done") continue;
+    const lang = Array.from(code.classList)
+      .find((c) => c.startsWith("language-"))
+      ?.slice("language-".length)
+      .toLowerCase();
+    if (!lang || !DEMO_LANGS.has(lang)) continue;
+    const source = code.textContent ?? "";
+    if (!source.trim()) continue;
+
+    pre.dataset.demo = "done";
+    const card = buildDemoCard(lang, source);
+    pre.replaceWith(card);
+    // 原始代码块留在卡片里（默认收起）：用户想抄走或改的时候用得上
+    pre.hidden = true;
+    card.appendChild(pre);
+    rendered++;
+  }
+  return rendered;
+}
+
+function buildDemoCard(lang: string, source: string): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "demo-card";
+  card.dataset.lang = lang;
+
+  const head = document.createElement("div");
+  head.className = "demo-head";
+  const label = document.createElement("span");
+  label.className = "demo-label";
+  label.textContent = lang === "svg" ? "演示 · SVG" : "演示";
+  head.appendChild(label);
+
+  // 写了脚本但不会跑——说清楚，否则用户会以为「动画坏了」
+  if (/<script[\s>]/i.test(source)) {
+    const warn = document.createElement("span");
+    warn.className = "demo-warn";
+    warn.textContent = "脚本已禁用（沙箱），只显示静态效果";
+    warn.title = "演示卡片在沙箱里渲染，不允许执行 JavaScript。动画请让 agent 用 CSS 或 SVG 的 <animate>。";
+    head.appendChild(warn);
+  }
+
+  const spacer = document.createElement("div");
+  spacer.className = "spacer";
+  head.appendChild(spacer);
+
+  const srcBtn = document.createElement("button");
+  srcBtn.type = "button";
+  srcBtn.className = "demo-btn";
+  srcBtn.textContent = "源码";
+  srcBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const pre = card.querySelector<HTMLElement>("pre");
+    if (!pre) return;
+    pre.hidden = !pre.hidden;
+    srcBtn.classList.toggle("on", !pre.hidden);
+  });
+  head.appendChild(srcBtn);
+
+  const fsBtn = document.createElement("button");
+  fsBtn.type = "button";
+  fsBtn.className = "demo-btn";
+  fsBtn.textContent = "全屏";
+  fsBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    // 全屏 API 在 WebView2 里可用；失败（被策略拦下）时什么都不做，
+    // 不能让它抛出去把点击事件整条打断
+    try {
+      if (document.fullscreenElement === card) void document.exitFullscreen();
+      else void card.requestFullscreen();
+    } catch {
+      /* 不支持就算了：卡片本身也能看 */
+    }
+  });
+  head.appendChild(fsBtn);
+
+  const body = document.createElement("div");
+  body.className = "demo-body";
+  const frame = document.createElement("iframe");
+  frame.className = "demo-frame";
+  // 空 sandbox：不给脚本、不给表单、不给同源——模型产出的 HTML 只被当成画面
+  frame.setAttribute("sandbox", "");
+  frame.setAttribute("title", "演示");
+  frame.setAttribute("loading", "lazy");
+  frame.srcdoc = demoDocument(lang, source);
+  body.appendChild(frame);
+
+  card.appendChild(head);
+  card.appendChild(body);
+  return card;
+}
+
+/** 判断一段文本是否几乎全是代码（用于选择更窄的排版） */export function looksLikeCode(text: string): boolean {
   const lines = text.split("\n").filter((l) => l.trim().length > 0);
   if (lines.length < 3) return false;
   const codeish = lines.filter((l) =>

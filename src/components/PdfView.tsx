@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api, errText } from "../lib/api";
+import { forgetPdfDoc } from "../lib/pdfshot";
 import type { PageText, TabView } from "../lib/types";
 import { registerSnapshotProvider, useApp } from "../store/app";
 import { Icon, Spinner } from "./ui";
@@ -38,6 +39,8 @@ export function PdfView({ tab, highlight }: { tab: TabView; highlight: string | 
     setDoc(null);
     setError(null);
     pagesRef.current = [];
+    // 文档被重新加载：pdf_screenshot 那边的文档缓存也要丢掉，否则截到的是旧版本
+    forgetPdfDoc(tab.id);
     (async () => {
       try {
         const bytes = await api.viewerLoadBytes(tab.id);

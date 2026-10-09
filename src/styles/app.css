@@ -265,6 +265,46 @@ a:hover {
   overflow: hidden;
 }
 
+/* 专注模式（F11）：只留当前内容。
+   隐藏的是「应用外壳」——自绘标题栏、侧栏、内置浏览器、顶部那排分段按钮；
+   笔记编辑器自己那一条（路径 / 未保存 / 保存）留着，不然全屏写作时看不见保存状态。
+   窗口本身由 store 的 setZen 调 setFullscreen，样式与窗口状态在同一个动作里改。 */
+.app-shell.zen .titlebar,
+.app-shell.zen .sidebar,
+.app-shell.zen .sidebar-resizer,
+.app-shell.zen .viewer,
+.app-shell.zen .chat-head {
+  display: none;
+}
+
+/* 进全屏时闪一下「怎么退出去」：没有标题栏也没有菜单，不说一句用户会去按 Esc。
+   4 秒后自己淡掉（pointer-events: none，不挡任何操作）。 */
+.zen-hint {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: var(--bg-inverse);
+  color: var(--text-inverse);
+  font-size: 12px;
+  opacity: 0.9;
+  pointer-events: none;
+  animation: zen-hint-out 4s ease forwards;
+}
+
+@keyframes zen-hint-out {
+  0%,
+  70% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* ------------------------------------------------------------------ 侧栏 */
 
 .sidebar {
@@ -1206,6 +1246,41 @@ body.dragging-chat {
   max-height: 260px;
   overflow: auto;
   color: var(--text-sub);
+}
+
+/* 工具卡片里的图：agent 截的 PDF 页（pdf_screenshot）摆在这里，
+   用户一眼能对上「它看的是哪一页」。缩略图比消息里的图小一号——它们是「过程」不是正文。 */
+.tool-imgs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.tool-img {
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+  cursor: zoom-in;
+  line-height: 0;
+  transition: border-color var(--speed), transform var(--speed);
+}
+
+.tool-img:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border-strong));
+  transform: translateY(-1px);
+}
+
+.tool-img img {
+  display: block;
+  max-width: 180px;
+  max-height: 220px;
+  width: auto;
+  height: auto;
+  object-fit: cover;
 }
 
 .risk-pill {
@@ -2853,6 +2928,98 @@ mark.hit {
   background: var(--accent-soft);
   border-color: var(--accent-border);
   color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ 演示卡片
+   agent 讲难懂的东西时写的 ```html / ```svg 代码块在这里变成一张卡片：
+   沙箱 iframe（不给脚本）+ 一行工具头（源码 / 全屏）。
+   高度写死 360px：演示页是按「一屏能看完」设计的，跟着内容长会让对话变成一条长图。 */
+.demo-card {
+  margin: 0.9em 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sub);
+  overflow: hidden;
+}
+
+.demo-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-sub);
+  user-select: none;
+}
+
+.demo-head .demo-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.demo-head .demo-warn {
+  font-size: 11px;
+  color: var(--warn);
+  cursor: help;
+}
+
+.demo-head .spacer {
+  flex: 1;
+}
+
+.demo-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text-sub);
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--speed);
+}
+
+.demo-btn:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.demo-btn.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.demo-body {
+  height: 360px;
+  background: var(--bg);
+}
+
+.demo-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: transparent;
+}
+
+/* 全屏：卡片铺满整屏，工具头留在最上面（不然退不出来） */
+.demo-card:fullscreen {
+  margin: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.demo-card:fullscreen .demo-body {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.demo-card pre[hidden] {
+  display: none;
 }
 
 .mermaid-error {

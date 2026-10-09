@@ -5,7 +5,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useApp, type ToolActivity } from "../store/app";
 import { api, errText } from "../lib/api";
-import { highlightWithin, linkifyCitations, renderMarkdown, renderMermaidIn } from "../lib/markdown";
+import { highlightWithin, linkifyCitations, renderDemoBlocksIn, renderMarkdown, renderMermaidIn } from "../lib/markdown";
 import { clampText, fmtClock, fmtTokens, hotkey } from "../lib/format";
 import { imageFilesFrom, prepareImage } from "../lib/images";
 import { contextShares, summarizeCache } from "../lib/usage";
@@ -27,6 +27,7 @@ import {
   type ReasoningStyle,
   type Risk,
   type StudyStage,
+  type ToolImage,
   type ToolOutcomeView,
 } from "../lib/types";
 import { Dropdown, Icon, MenuItem, MenuLabel, MenuSep, Modal, Spinner, AutoTextarea } from "./ui";
@@ -62,6 +63,8 @@ export function Markdown({ source, onLink }: { source: string; onLink?: (href: s
     });
     // 思维导图 / 流程图等 mermaid 块在这里画成图（异步，失败时保留代码块）
     void renderMermaidIn(ref.current);
+    // agent 写的 ```html / ```svg 演示块渲染成沙箱卡片（同步，讲难懂内容时用）
+    renderDemoBlocksIn(ref.current);
   }, [html]);
 
   return (
@@ -83,24 +86,38 @@ export function Markdown({ source, onLink }: { source: string; onLink?: (href: s
 
 // ---------------------------------------------------------------- 工具卡片
 
+/**
+ * 工具结果在前端有两种来源：本轮实时的 `activities`（带 summary / 耗时）
+ * 与回看历史时从 transcript 的 `tool` 消息重建（只有正文）。
+ * 两者都可能带图片（agent 截的 PDF 页），所以形状在这里统一。
+ */
+type ToolResultView = ToolOutcomeView | { content: string; isError: boolean; images?: ToolImage[] };
+
+/** 能放进大图浮层的对象：用户贴的图（ContentBlock）与 agent 截的图（ToolImage）都满足。 */
+type LightboxImage = Pick<ContentBlock & { type: "image" }, "path" | "name" | "bytes" | "width" | "height">;
+
 function ToolCard({
   name,
   summary,
   risk,
   result,
   running,
+  onImage,
 }: {
   name: string;
   summary: string;
   risk: Risk;
-  result?: ToolOutcomeView | { content: string; isError: boolean };
+  result?: ToolResultView;
   running?: boolean;
+  onImage?: (img: LightboxImage) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const workspaceRoot = useApp((s) => s.config?.workspaceRoot ?? "");
   const ok = result ? ("ok" in result ? result.ok : !result.isError) : true;
   const preview = result ? ("preview" in result ? result.preview : result.content) : "";
   const denied = result && "denied" in result ? result.denied : false;
   const ms = result && "durationMs" in result ? result.durationMs : 0;
+  const images = (result && "images" in result ? result.images : undefined) ?? [];
 
   return (
     <div className={"tool-card" + (running ? " running" : "") + (!ok ? " failed" : "")}>
@@ -112,6 +129,22 @@ function ToolCard({
         {ms > 0 && <span className="tool-time">{ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`}</span>}
         <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
       </div>
+      {/* agent 看过的图（PDF 页截图）直接摆在卡片里：用户能对上「它刚才看的是哪一页」 */}
+      {images.length > 0 && (
+        <div className="tool-imgs">
+          {images.map((img) => (
+            <button
+              key={img.path}
+              type="button"
+              className="tool-img"
+              title={`${img.name || "图片"}（点击放大）`}
+              onClick={() => onImage?.(img)}
+            >
+              <img src={assetUrl(workspaceRoot, img.path)} alt={img.name || "图片"} loading="lazy" />
+            </button>
+          ))}
+        </div>
+      )}
       {open && preview && <div className="tool-body">{clampText(preview, 4000)}</div>}
     </div>
   );
@@ -126,9 +159,9 @@ function MessageView({
   onImage,
 }: {
   msg: ChatMessage;
-  results: Map<string, ToolOutcomeView | { content: string; isError: boolean }>;
+  results: Map<string, ToolResultView>;
   onLink: (href: string) => void;
-  onImage: (block: ContentBlock) => void;
+  onImage: (img: LightboxImage) => void;
 }) {
   const user = msg.role === "user";
   const userName = useApp((s) => s.config?.userName ?? "我");
@@ -192,6 +225,7 @@ function MessageView({
               summary={liveSummary ?? summarizeInput(t.name, t.input)}
               risk={r && "risk" in r ? r.risk : "read"}
               result={r}
+              onImage={onImage}
             />
           );
         })}
@@ -209,10 +243,9 @@ function MessageView({
 }
 
 /** 点开一张图看大图。图片是用户自己贴上来的，所以这里不需要缩放以外的操作。 */
-function ImageLightbox({ block, onClose }: { block: ContentBlock; onClose: () => void }) {
+function ImageLightbox({ block, onClose }: { block: LightboxImage; onClose: () => void }) {
   const workspaceRoot = useApp((s) => s.config?.workspaceRoot ?? "");
   const [zoom, setZoom] = useState(1);
-  if (block.type !== "image") return null;
 
   return (
     <div className="img-lightbox" onClick={onClose}>
@@ -328,7 +361,7 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
   const error = useApp((s) => s.chatError);
   const approval = useApp((s) => s.approval);
   const setView = useApp((s) => s.setView);
-  const [lightbox, setLightbox] = useState<ContentBlock | null>(null);
+  const [lightbox, setLightbox] = useState<LightboxImage | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -345,11 +378,12 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
 
   // 结果索引：历史（tool 消息）+ 本轮实时（activities）
   const results = useMemo(() => {
-    const map = new Map<string, ToolOutcomeView | { content: string; isError: boolean }>();
+    const map = new Map<string, ToolResultView>();
     for (const m of messages) {
       if (m.role !== "tool") continue;
       for (const b of m.blocks) {
-        if (b.type === "tool_result") map.set(b.tool_use_id, { content: b.content, isError: b.is_error });
+        if (b.type === "tool_result")
+          map.set(b.tool_use_id, { content: b.content, isError: b.is_error, images: b.images });
       }
     }
     for (const a of activities) map.set(a.callId, a);
@@ -419,7 +453,7 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
                       <Icon name="sparkle" size={13} />
                     </div>
                     <div className="msg-col">
-                      <ToolCardForActivity a={a} />
+                      <ToolCardForActivity a={a} onImage={setLightbox} />
                     </div>
                   </div>
                 ))}
@@ -488,8 +522,10 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
   );
 }
 
-function ToolCardForActivity({ a }: { a: ToolActivity }) {
-  return <ToolCard name={a.name} summary={a.summary} risk={a.risk} result={a} running={a.running} />;
+function ToolCardForActivity({ a, onImage }: { a: ToolActivity; onImage: (img: LightboxImage) => void }) {
+  return (
+    <ToolCard name={a.name} summary={a.summary} risk={a.risk} result={a} running={a.running} onImage={onImage} />
+  );
 }
 
 function ChatHead({ mode = "study" }: { mode?: AgentMode }) {

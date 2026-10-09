@@ -57,6 +57,8 @@ export type IconName =
   | "plug"
   | "image"
   | "hammer"
+  | "expand"
+  | "collapse"
   | "box";
 
 const PATHS: Record<IconName, ReactNode> = {
@@ -198,6 +200,9 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   play: <path d="M5.4 3.4 12.2 8l-6.8 4.6z" />,
+  // 全屏 / 退出全屏：四角箭头朝外、朝内（和系统里那两个图标一个意思）
+  expand: <path d="M6.2 2.6H2.6v3.6M9.8 2.6h3.6v3.6M6.2 13.4H2.6V9.8M9.8 13.4h3.6V9.8" />,
+  collapse: <path d="M6.2 2.6v3.6H2.6M9.8 2.6v3.6h3.6M6.2 13.4V9.8H2.6M9.8 13.4V9.8h3.6" />,
   "zoom-in": (
     <>
       <circle cx="7" cy="7" r="4.4" />

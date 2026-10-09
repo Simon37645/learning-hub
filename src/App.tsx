@@ -20,6 +20,7 @@ export default function App() {
   const bootError = useApp((s) => s.bootError);
   const view = useApp((s) => s.view);
   const topic = useApp((s) => s.topic);
+  const zen = useApp((s) => s.zen);
 
   useEffect(() => {
     void useApp.getState().init();
@@ -50,6 +51,11 @@ export default function App() {
       } else if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         useApp.getState().setView("agenda");
+      } else if (e.key === "F11") {
+        // 专注模式：窗口真全屏 + 收起侧栏、标题栏、内置浏览器（写笔记时想要整屏）。
+        // 自己处理而不是交给 WebView2：它默认不认 F11，而这是用户唯一记得住的入口。
+        e.preventDefault();
+        useApp.getState().setZen(!useApp.getState().zen);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -83,8 +89,9 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={"app-shell" + (zen ? " zen" : "")}>
       <TitleBar />
+      {zen && <div className="zen-hint">专注模式 · 按 F11 退出</div>}
       <div className="app">
       <Sidebar />
       <SidebarResizer />

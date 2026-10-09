@@ -67,7 +67,45 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        /// 结果里附带的图片（目前只有「PDF 页截图」会用）。
+        /// 默认空：老对话里没有这个字段，读出来就是空的。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ToolImage>,
     },
+}
+
+/// 工具结果里附带的图片（`pdf_screenshot` 这类「模型要亲眼看一眼」的东西）。
+///
+/// 和用户贴图共用一套约定：**字节在磁盘上，消息里只存工作区相对路径**
+/// （见 `attachment.rs` 里「为什么不内联 base64」）。
+/// 为什么随工具结果落盘：模型读图才知道那一页画的是什么，而下一轮的请求与历史回看
+/// 都是从对话记录重建的——不落盘的话它只在当轮「看过一眼」，回看时那张图就没了。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolImage {
+    pub path: String,
+    pub media_type: String,
+    /// 显示用名字，例如「讲义.pdf 第 12 页」
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+impl ToolImage {
+    /// 借用形式的字段，喂给协议编码与图片解析（和 `ContentBlock::Image` 同一形状）。
+    pub fn as_image(&self) -> ImageRef<'_> {
+        ImageRef {
+            path: &self.path,
+            media_type: &self.media_type,
+            name: &self.name,
+            width: self.width,
+            height: self.height,
+        }
+    }
 }
 
 impl ContentBlock {
@@ -162,14 +200,38 @@ impl ChatMessage {
 
     /// 工具结果统一挂在 `tool` 角色上。
     pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+        Self::tool_result_with(tool_use_id, content, is_error, Vec::new())
+    }
+
+    /// 同上，但结果里还附了图片（PDF 页截图）。图片单独走一个字段，
+    /// 不混进 `content`：`content` 是给模型读的文字，图片要按协议编码成图片块。
+    pub fn tool_result_with(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+        images: Vec<ToolImage>,
+    ) -> Self {
         Self::new(
             Role::Tool,
             vec![ContentBlock::ToolResult {
                 tool_use_id: tool_use_id.into(),
                 content: content.into(),
                 is_error,
+                images,
             }],
         )
+    }
+
+    /// 这条消息（工具结果）附带的图片。
+    pub fn tool_images(&self) -> Vec<&ToolImage> {
+        self.blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { images, .. } => Some(images.iter()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     /// 把所有文本块拼起来（忽略工具与思考）。
@@ -280,7 +342,13 @@ pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> u32 {
                     ContentBlock::ToolUse { name, input, .. } => {
                         estimate_tokens(name) + estimate_tokens(&input.to_string())
                     }
-                    ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
+                    ContentBlock::ToolResult { content, images, .. } => {
+                        estimate_tokens(content)
+                            + images
+                                .iter()
+                                .map(|i| crate::agent::attachment::estimate_image_tokens(i.width, i.height))
+                                .sum::<u32>()
+                    }
                 })
                 .sum::<u32>()
                 + 4
@@ -356,5 +424,39 @@ mod tests {
         assert_eq!(m.images().len(), 1);
         assert_eq!(m.images()[0].width, None);
         assert_eq!(m.images()[0].name, "");
+    }
+
+    /// 工具结果附带的图片要能落盘再读回来；没有图片的老工具结果不能被新字段读挂。
+    #[test]
+    fn tool_result_images_roundtrip() {
+        let m = ChatMessage::tool_result_with(
+            "call_1",
+            "第 12 页的图已截给你",
+            false,
+            vec![ToolImage {
+                path: ".hub/attachments/p12.png".into(),
+                media_type: "image/png".into(),
+                name: "讲义.pdf 第 12 页".into(),
+                bytes: 4096,
+                width: Some(1568),
+                height: Some(2218),
+            }],
+        );
+        let s = serde_json::to_string(&m).unwrap();
+        assert!(s.contains("\"tool_use_id\":\"call_1\""), "实际：{s}");
+        assert!(s.contains("\"media_type\":\"image/png\""), "实际：{s}");
+        let back: ChatMessage = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.tool_images().len(), 1);
+        assert_eq!(back.tool_images()[0].width, Some(1568));
+
+        // 没有图片的工具结果不该写出空数组（老对话的形状保持不变）
+        let plain = ChatMessage::tool_result("call_2", "读完了", false);
+        let ps = serde_json::to_string(&plain).unwrap();
+        assert!(!ps.contains("images"), "实际：{ps}");
+        let old: ChatMessage = serde_json::from_str(
+            r#"{"id":"m2","role":"tool","blocks":[{"type":"tool_result","tool_use_id":"c","content":"x","is_error":false}],"createdAt":"2026-01-01T00:00:00Z","meta":{}}"#,
+        )
+        .unwrap();
+        assert!(old.tool_images().is_empty());
     }
 }

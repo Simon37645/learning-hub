@@ -211,15 +211,24 @@ impl ToolCtx {
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
+    /// 结果里附带的图片（PDF 页截图这类「模型要亲眼看一眼」的东西）。
+    /// 会跟着工具结果一起落盘，并按协议编码成图片块发给模型。
+    pub images: Vec<crate::agent::message::ToolImage>,
 }
 
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false }
+        Self { content: content.into(), is_error: false, images: Vec::new() }
     }
 
     pub fn err(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true }
+        Self { content: content.into(), is_error: true, images: Vec::new() }
+    }
+
+    /// 带图片的成功结果。`content` 仍然要写清楚「这几张图是什么」——
+    /// 模型读文字知道该看哪一张，用户回看时也看得懂。
+    pub fn with_images(content: impl Into<String>, images: Vec<crate::agent::message::ToolImage>) -> Self {
+        Self { content: content.into(), is_error: false, images }
     }
 
     /// 结构化结果：序列化成 JSON 交给模型（模型对 JSON 的解析最稳）。

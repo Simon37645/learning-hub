@@ -9,7 +9,9 @@
 
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errText } from "../lib/api";
+import { renderPdfPage } from "../lib/pdfshot";
 import type {
   ThemeMode,
   ReasoningEffort,
@@ -136,6 +138,8 @@ interface AppStore {
 
   // --- UI ---
   view: ViewName;
+  /** 专注/全屏模式（F11）：窗口真全屏，界面上只留当前内容（见 App.tsx 与 .app-shell.zen） */
+  zen: boolean;
   paletteOpen: boolean;
   toasts: Toast[];
   inspectorOpen: boolean;
@@ -153,6 +157,8 @@ interface AppStore {
   refreshAgenda: () => Promise<void>;
 
   setView: (v: ViewName) => void;
+  /** 切换专注模式：F11 与界面上的按钮都走这里（窗口全屏与样式在同一个动作里改，避免两边不同步） */
+  setZen: (on: boolean) => void;
   openTopic: (slug: string) => Promise<void>;
   leaveTopic: () => void;
   /** 窗口回到前台时轻量重拉当前主题的文件清单（见实现处的说明） */
@@ -301,6 +307,7 @@ export const useApp = create<AppStore>((set, get) => ({
   reloadSeq: {},
 
   view: "home",
+  zen: false,
   paletteOpen: false,
   toasts: [],
   inspectorOpen: false,
@@ -356,6 +363,15 @@ export const useApp = create<AppStore>((set, get) => ({
     if (v !== "topic") {
       void api.viewerSetVisible(get().viewer.visible);
     }
+  },
+
+  setZen(on) {
+    set({ zen: on });
+    // 窗口全屏交给 Tauri（需要 capabilities 里的 allow-set-fullscreen）。
+    // 失败只记一行：样式那边已经切好了，功能不会因此断掉。
+    void getCurrentWindow()
+      .setFullscreen(on)
+      .catch((e) => console.warn("切换全屏失败", e));
   },
 
   async openTopic(slug) {
@@ -1374,6 +1390,16 @@ function handleViewerEvent(
         // 前端拿不到（例如 PDF 还没加载完），让后端自己想办法
         void api.viewerReportSnapshot(ev.tab_id, { error: "前端无法提供内容快照" }).catch(() => {});
       }
+      break;
+    }
+    case "render_request": {
+      // agent 要看某一页的图（pdf_screenshot）：渲染完必须回一次话，
+      // 无论成功还是失败——不回的话工具那边会一直等到超时。
+      void renderPdfPage(ev.tab_id, ev.page, ev.scale)
+        .then((r) => api.viewerReportRender(ev.request_id, { data: r.data, width: r.width, height: r.height }))
+        .catch((e) =>
+          api.viewerReportRender(ev.request_id, { error: errText(e) }).catch(() => {}),
+        );
       break;
     }
     case "goto":

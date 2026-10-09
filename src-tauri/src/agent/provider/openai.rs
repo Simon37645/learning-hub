@@ -267,12 +267,46 @@ pub fn to_openai_messages(
             }
             Role::Tool => {
                 for block in &m.blocks {
-                    if let crate::agent::message::ContentBlock::ToolResult { tool_use_id, content, .. } = block {
-                        out.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_use_id,
-                            "content": content,
-                        }));
+                    let crate::agent::message::ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        images,
+                        ..
+                    } = block
+                    else {
+                        continue;
+                    };
+                    out.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tool_use_id,
+                        "content": content,
+                    }));
+                    // OpenAI 的 tool 消息只能放字符串，**塞不进图片**。
+                    // 所以带图的工具结果后面再补一条 user 消息专门放图——
+                    // 这是各家 agent 通行的绕法，模型据此把「结果」和「图」对上号。
+                    if !images.is_empty() {
+                        let label = images
+                            .iter()
+                            .map(|i| i.name.trim())
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        let mut parts = vec![json!({
+                            "type": "text",
+                            "text": format!("（上面那次工具调用附带的图片：{label}）"),
+                        })];
+                        for img in images {
+                            match resolve_image(attachments, supports_vision, img.as_image()) {
+                                ResolvedImage::Ready(loaded) => parts.push(json!({
+                                    "type": "image_url",
+                                    "image_url": { "url": to_data_url(&loaded) }
+                                })),
+                                ResolvedImage::Placeholder(text) => {
+                                    parts.push(json!({ "type": "text", "text": text }))
+                                }
+                            }
+                        }
+                        out.push(json!({ "role": "user", "content": parts }));
                     }
                 }
             }
@@ -409,6 +443,67 @@ mod tests {
         assert_eq!(out[3]["tool_call_id"], "call_1");
         // 纯文字消息仍然给字符串 content：数组形式不是所有网关都吃得住
         assert_eq!(out[1]["content"], "读一下笔记");
+    }
+
+    /// 工具结果带的图（PDF 页截图）要另起一条 user 消息：OpenAI 的 tool 消息只吃字符串。
+    /// 不带图时不能多出这条消息（老对话的请求形状保持不变）。
+    #[test]
+    fn tool_images_ride_in_a_followup_user_message() {
+        let tmp = std::env::temp_dir().join(format!("lh-oai-shot-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        let png: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+            v.extend_from_slice(b"page-12");
+            v
+        };
+        let stored = att.save("p12.png", &png).unwrap();
+        let shot = crate::agent::message::ToolImage {
+            path: stored.rel.clone(),
+            media_type: "image/png".into(),
+            name: "讲义.pdf 第 12 页".into(),
+            bytes: png.len() as u64,
+            width: Some(1568),
+            height: Some(2218),
+        };
+
+        let msgs = vec![
+            ChatMessage::user("这一页的图讲的是什么？"),
+            ChatMessage::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "pdf_screenshot".into(),
+                    input: json!({"page": 12}),
+                }],
+            ),
+            ChatMessage::tool_result_with("call_1", "第 12 页已截给你", false, vec![shot.clone()]),
+        ];
+        let out = to_openai_messages("sys", &msgs, &att, true);
+        // system + user + assistant + tool + 补的那条 user
+        assert_eq!(out.len(), 5, "实际：{out:?}");
+        assert_eq!(out[3]["role"], "tool");
+        assert_eq!(out[4]["role"], "user");
+        let parts = out[4]["content"].as_array().expect("带图消息要用 parts 数组");
+        assert!(parts[0]["text"].as_str().unwrap().contains("讲义.pdf 第 12 页"));
+        assert!(parts[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        // 档案没开图片输入：降级成一行文字，但仍然是一条消息（模型知道有图没发出去）
+        let off = to_openai_messages("sys", &msgs, &att, false);
+        let off_parts = off[4]["content"].as_array().unwrap();
+        assert_eq!(off_parts.len(), 2);
+        assert!(off_parts[1]["text"].as_str().unwrap().contains("未开启图片输入"));
+
+        // 不带图的工具结果不补消息
+        let plain = vec![
+            ChatMessage::user("读笔记"),
+            ChatMessage::tool_result("call_1", "内容", false),
+        ];
+        assert_eq!(to_openai_messages("sys", &plain, &att, true).len(), 3);
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// 带图消息：content 变 parts 数组，图排在文字前面（模型指代更稳）。

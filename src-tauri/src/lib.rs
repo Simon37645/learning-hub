@@ -190,6 +190,7 @@ pub fn run() {
             commands::viewer::viewer_set_visible,
             commands::viewer::viewer_report_state,
             commands::viewer::viewer_report_snapshot,
+            commands::viewer::viewer_report_render,
             commands::viewer::viewer_load_text,
             commands::viewer::viewer_load_bytes,
             commands::viewer::viewer_get_content,

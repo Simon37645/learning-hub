@@ -440,6 +440,177 @@ impl Tool for ViewerGoto {
     }
 }
 
+// ---------------------------------------------------------------- pdf_screenshot
+
+/// 等前端渲染一页 PDF 的最长时间。
+///
+/// 比等文本快照（8s）宽：第一次渲染要先从磁盘读整份 PDF 并初始化 pdf.js，
+/// 大讲义慢一点很正常；但也不能无限等——用户会盯着一个不动的工具卡片。
+const RENDER_WAIT: Duration = Duration::from_secs(25);
+
+/// 一次最多截几页：每页都是一张要花 token 的图，一次给太多页反而看不清重点。
+const MAX_SHOT_PAGES: u32 = 4;
+
+/// 把 PDF 的某一页渲染成图片给模型看。
+///
+/// 为什么需要它：PDF 的文字层里只有字——插图、示意图、图表、公式、扫描页、
+/// 手写批注全都不在里面，模型读 `viewer_read` 只会得到一段没有上下文的文字
+/// （甚至什么都没有）。有了这个工具，agent 才能像人一样「看一眼那一页」。
+///
+/// 为什么不是截屏：渲染的是**文档那一页**，跟窗口有没有被挡住、用户翻到第几页都无关，
+/// 也不需要把内置浏览器切到前台。
+pub struct PdfScreenshot;
+
+#[async_trait]
+impl Tool for PdfScreenshot {
+    fn name(&self) -> &'static str {
+        "pdf_screenshot"
+    }
+
+    // 和别的 viewer_* 一样按 tab_id 干活，不依赖主题：工坊里也能看用户开着的 PDF
+    fn scope(&self) -> crate::agent::registry::ToolScope {
+        crate::agent::registry::ToolScope::Both
+    }
+
+    fn description(&self) -> &'static str {
+        "把内置浏览器里 PDF 的某一页**渲染成图片**交给你看（不是截屏，不受窗口遮挡影响）。\
+         用来读文字层拿不到的东西：插图、示意图、图表、公式截图、扫描页、手写批注、排版本身。\
+         用法：讲到「这张图」时先 viewer_read 读文字（更省），看到正文里出现\
+         「如图」「下图」「表 3」「(a)(b)」这类指代、或文字明显不成句（扫描版），\
+         再对那一页调用它。一次最多 4 页；图片会记进对话，用户也看得到你看了哪一页。\
+         参数 page 不传就是当前页；用户说「看我开的这份」时先 viewer_list 拿 tab_id。"
+    }
+
+    fn schema(&self) -> Value {
+        object_schema(
+            json!({
+                "page": num_prop("页码（从 1 开始），默认当前页"),
+                "page_to": num_prop("结束页；要给一段就用它，一次最多 4 页"),
+                "tab_id": str_prop("标签页 id，默认当前激活的标签"),
+            }),
+            &[],
+        )
+    }
+
+    fn summarize(&self, input: &Value) -> String {
+        match (arg_u32(input, "page"), arg_u32(input, "page_to")) {
+            (Some(a), Some(b)) if b > a => format!("截图 PDF 第 {a}-{b} 页"),
+            (Some(a), _) => format!("截图 PDF 第 {a} 页"),
+            _ => "截图 PDF 当前页".into(),
+        }
+    }
+
+    async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
+        let tab = resolve_tab(ctx, arg_str(&input, "tab_id")).await?;
+        if tab.kind != ViewerKind::Pdf {
+            return Err(AppError::invalid(format!(
+                "「{}」不是 PDF（{}）。这个工具只对 PDF 页截图；图片可以直接用 viewer_open 打开看。",
+                tab.title,
+                kind_label(tab.kind)
+            )));
+        }
+
+        let from = arg_u32(&input, "page").unwrap_or(tab.page.max(1)).max(1);
+        let to = arg_u32(&input, "page_to").unwrap_or(from).max(from);
+        if to - from + 1 > MAX_SHOT_PAGES {
+            return Err(AppError::invalid(format!(
+                "一次最多截 {MAX_SHOT_PAGES} 页（这次要了 {} 页）。分几次调用，先看最要紧的那几页。",
+                to - from + 1
+            )));
+        }
+        if tab.total_pages > 0 && from > tab.total_pages {
+            return Err(AppError::invalid(format!(
+                "这份 PDF 一共 {} 页，没有第 {from} 页。",
+                tab.total_pages
+            )));
+        }
+
+        // 附件按工作区定位（和用户贴图同一套约定：字节在磁盘，消息里只存路径）
+        let attachments = crate::agent::attachment::Attachments::new(
+            ctx.core.config_read().workspace_root.clone(),
+        );
+
+        let mut images: Vec<crate::agent::message::ToolImage> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        for page in from..=to {
+            match render_page(ctx, &tab, page).await {
+                Ok(shot) => {
+                    let label = format!("{} 第 {page} 页", tab.title);
+                    match attachments.save(&label, &shot.data) {
+                        Ok(stored) => {
+                            images.push(crate::agent::message::ToolImage {
+                                path: stored.rel,
+                                media_type: stored.media_type,
+                                name: label,
+                                bytes: stored.bytes,
+                                width: Some(shot.width),
+                                height: Some(shot.height),
+                            });
+                            notes.push(format!(
+                                "第 {page} 页：{}×{} 像素（图片已附在本次结果里，你直接看得见）",
+                                shot.width, shot.height
+                            ));
+                        }
+                        Err(e) => notes.push(format!("第 {page} 页：渲染出来了但存不下（{e}）")),
+                    }
+                }
+                Err(e) => notes.push(format!("第 {page} 页：渲染失败（{e}）")),
+            }
+        }
+
+        if images.is_empty() {
+            return Ok(ToolOutput::err(format!(
+                "没能截到「{}」的图：\n{}\n\
+                 如果只是想读文字，用 viewer_read（page_from / page_to）；\
+                 扫描版 PDF 没有文字层时，可以让用户把那一页另存成图片再贴进来。",
+                tab.title,
+                notes.join("\n")
+            )));
+        }
+
+        let mut out = format!(
+            "已把「{}」的 {} 页渲染成图片交给你（在下面的图片里，可以直接看图回答）：\n{}",
+            tab.title,
+            images.len(),
+            notes.join("\n")
+        );
+        if images.len() < (to - from + 1) as usize {
+            out.push_str("\n（有页面没截成，详见上面的说明）");
+        }
+        out.push_str(
+            "\n看图时以图为准：正文文字里对不上号的地方（公式写法、单位、坐标轴）按图来。",
+        );
+        Ok(ToolOutput::with_images(out, images))
+    }
+}
+
+/// 请前端把一页渲染成 PNG（pdf.js 在界面上，Rust 侧没有渲染器）。
+async fn render_page(
+    ctx: &ToolCtx,
+    tab: &ViewerTab,
+    page: u32,
+) -> AppResult<crate::viewer::RenderedPage> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let rx = ctx.core.viewer.register_render_pending(&request_id);
+    ctx.core.emit_viewer(ViewerEvent::RenderRequest {
+        tab_id: tab.id.clone(),
+        page,
+        request_id: request_id.clone(),
+        // 0 = 让前端按「长边 1568px」自己算倍率（和贴图的上限一致）
+        scale: 0.0,
+    });
+
+    match tokio::time::timeout(RENDER_WAIT, rx).await {
+        Ok(Ok(result)) => result,
+        // 发送端被丢掉（前端没有响应这个请求）
+        Ok(Err(_)) => Err(AppError::other("前端没有响应渲染请求（窗口可能正在刷新）")),
+        Err(_) => {
+            ctx.core.viewer.cancel_render_pending(&request_id);
+            Err(AppError::other("等前端渲染超时了"))
+        }
+    }
+}
+
 // ---------------------------------------------------------------- viewer_search
 
 pub struct ViewerSearch;

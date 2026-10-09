@@ -330,12 +330,37 @@ pub fn to_anthropic_messages(
                     .blocks
                     .iter()
                     .filter_map(|b| match b {
-                        ContentBlock::ToolResult { tool_use_id, content, is_error } => Some(json!({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": content,
-                            "is_error": is_error,
-                        })),
+                        ContentBlock::ToolResult { tool_use_id, content, is_error, images } => {
+                            // 纯文字结果保持字符串形状（最兼容）；带图的才升级成内容块数组
+                            // ——Anthropic 允许 tool_result 的 content 里直接放 image 块
+                            let body = if images.is_empty() {
+                                json!(content)
+                            } else {
+                                let mut parts = vec![json!({ "type": "text", "text": content })];
+                                for img in images {
+                                    match super::resolve_image(attachments, supports_vision, img.as_image()) {
+                                        super::ResolvedImage::Ready(loaded) => parts.push(json!({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": loaded.media_type,
+                                                "data": crate::agent::attachment::b64_encode(&loaded.data),
+                                            }
+                                        })),
+                                        super::ResolvedImage::Placeholder(text) => {
+                                            parts.push(json!({ "type": "text", "text": text }))
+                                        }
+                                    }
+                                }
+                                json!(parts)
+                            };
+                            Some(json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": body,
+                                "is_error": is_error,
+                            }))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -411,6 +436,57 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[1]["content"][0]["type"], "tool_use");
         assert_eq!(out[2]["content"].as_array().unwrap().len(), 2);
+        // 纯文字的工具结果保持字符串形状
+        assert!(out[2]["content"][0]["content"].is_string());
+    }
+
+    /// 工具结果带图（PDF 页截图）：tool_result 的 content 升级成内容块数组，
+    /// 图用裸 base64；文字块仍在最前面。
+    #[test]
+    fn tool_result_images_become_content_blocks() {
+        let tmp = std::env::temp_dir().join(format!("lh-ant-shot-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        let png: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+            v.extend_from_slice(b"page-3");
+            v
+        };
+        let stored = att.save("p3.png", &png).unwrap();
+        let msgs = vec![
+            ChatMessage::user("第三页那个图"),
+            ChatMessage::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "tu_9".into(),
+                    name: "pdf_screenshot".into(),
+                    input: json!({"page": 3}),
+                }],
+            ),
+            ChatMessage::tool_result_with(
+                "tu_9",
+                "第 3 页已截给你",
+                false,
+                vec![crate::agent::message::ToolImage {
+                    path: stored.rel.clone(),
+                    media_type: "image/png".into(),
+                    name: "讲义.pdf 第 3 页".into(),
+                    bytes: png.len() as u64,
+                    width: Some(1568),
+                    height: Some(2218),
+                }],
+            ),
+        ];
+        let out = to_anthropic_messages(&msgs, &att, true);
+        let result = &out[2]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        let blocks = result["content"].as_array().expect("带图的工具结果要用内容块数组");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+        assert!(!blocks[1]["source"]["data"].as_str().unwrap().starts_with("data:"));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// 带图消息：图是内容块，source 里是**裸 base64**（不能带 data URL 前缀）。

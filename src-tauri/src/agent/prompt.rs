@@ -68,6 +68,21 @@ pub fn build_system_prompt_with_stats(
          - **需要动态演示就写 HTML**：把演示页写到 `lessons/<名字>.html`，然后用 `viewer_open` 打开给用户看。\
          适合做交互式演示的内容包括：参数可拖动的函数图像、几何变换、算法逐步执行、可折叠的对照表。\
          演示页要自带说明文字，能独立看懂；不要依赖外部网络资源（用内联 CSS/JS）。\n\
+         - **讲不清的就直接画在回复里**：动态过程、空间关系、参数怎么影响结果、抽象结构这类\
+         「看一秒胜过讲十句」的内容，在回复里直接放一个 ```html 代码块——应用会把它渲染成\
+         对话里的**演示卡片**，用户不用点开任何东西就能看到、能跟着动。\
+         卡片是沙箱 iframe，**里面的 JavaScript 不会执行**：动画用 CSS（animation / transition /\
+         @keyframes）或 SVG 的 <animate>、<animateTransform>，交互用 :hover / :checked /\
+         <details> 这类纯 CSS 手段；不要写 <script>，也别指望 fetch。\
+         静态的示意图、几何图形、坐标轴用 ```svg 代码块（同样会渲染成卡片）。\
+         写演示的几条硬要求：自包含（内联样式、不引外部资源）、自带配色（深浅色主题下都要看得清）、\
+         高度按 360px 左右设计、别依赖滚动才能看懂。\
+         判断标准：讲完这一段，用户脑子里得「看见」某个东西才明白——那就给演示，\
+         而不是再堆一段文字。内容多、要长期回看的演示页仍然写成 `lessons/<名字>.html`。\n\
+         - **先读字，再读图**：PDF 的文字层里没有插图、示意图和公式图。正文里出现「如图」「下表」\
+         「(a)(b)」这类指代、或者读出来明显不成句（扫描版），就用 `pdf_screenshot` 把那一页\
+         渲染成图片看一眼再回答——这是对文档那一页截图，不受窗口遮挡影响。\
+         看图时以图为准：单位、坐标轴、公式的写法按图里画的来，文字层里对不上号的地方以图为准。\n\
          - **内置浏览器里摊开的都能读**：用户可能把讲义开在别的标签页上（不只是当前那一个）。\
          不确定有哪些页面就先 `viewer_list`，再用 `viewer_read` 传 `tab_id` 读任意一个——\
          本地文件与网页都由后端直接提取，不需要用户切过去。用户说「你看我开着的那份」时，\
@@ -630,6 +645,34 @@ mod tests {
             memory: String::new(),
         });
         assert!(empty.contains("还没有关于这位用户的长期记忆"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 「讲不清就画在回复里」这条约定必须留在提示词里，并且要说清**沙箱不跑脚本**——
+    /// 少了这句，模型会写一堆 <script>，用户在卡片里只看到一张不动的图。
+    #[test]
+    fn prompt_teaches_inline_demo_and_pdf_figures() {
+        let tmp = std::env::temp_dir().join(format!("lh-prompt-demo-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&tmp);
+        let topic = ws.create("线性代数", "整门课", None, None).unwrap();
+        let cfg = AppConfig::bootstrap(tmp.clone());
+        let prompt = build_system_prompt(&PromptInputs {
+            config: &cfg,
+            topic: Some(&topic),
+            stage: None,
+            supports_tools: true,
+            tool_catalog: String::new(),
+            tool_names: Vec::new(),
+            skill_catalog: String::new(),
+            memory: String::new(),
+        });
+
+        assert!(prompt.contains("```html 代码块"), "缺少内联演示的约定");
+        assert!(prompt.contains("不会执行"), "必须说明演示卡片里不跑 JavaScript");
+        assert!(prompt.contains("```svg"), "静态图要用 svg 代码块");
+        assert!(prompt.contains("pdf_screenshot"), "看图要用 pdf_screenshot");
+        assert!(prompt.contains("以图为准"), "要说明图文冲突时以图为准");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

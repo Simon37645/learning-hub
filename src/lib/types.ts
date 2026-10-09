@@ -57,7 +57,30 @@ export type ContentBlock =
     }
   | { type: "thinking"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean };
+  | {
+      type: "tool_result";
+      tool_use_id: string;
+      content: string;
+      is_error: boolean;
+      /** 结果里附带的图片（目前只有 pdf_screenshot 会带）。老对话没有这个字段 */
+      images?: ToolImage[];
+    };
+
+/**
+ * 工具结果里附带的图片：字节在磁盘上（`.hub/attachments/`），消息里只存路径。
+ *
+ * 和用户贴图同一套约定，所以显示、发请求、估 token 都复用同一条链路。
+ * **字段是 snake_case**（带 tag 的枚举变体内部不做 rename），写成 mediaType 会永远取到 undefined。
+ */
+export interface ToolImage {
+  path: string;
+  media_type: string;
+  /** 显示用名字，例如「讲义.pdf 第 12 页」 */
+  name: string;
+  bytes: number;
+  width?: number | null;
+  height?: number | null;
+}
 
 export interface MessageMeta {
   model?: string | null;
@@ -510,6 +533,8 @@ export interface ToolOutcomeView {
   preview: string;
   durationMs: number;
   denied: boolean;
+  /** 结果里附带的图片（pdf_screenshot 截的那一页），渲染在工具卡片里 */
+  images?: ToolImage[];
 }
 
 /** 越权申请：agent 想访问工作区之外的文件 */
@@ -642,6 +667,8 @@ export interface OpenRequest {
 export type ViewerEvent =
   | { kind: "sync"; snapshot: ViewerSnapshot }
   | { kind: "snapshot_request"; tab_id: string }
+  /** agent 要某一页的位图（pdf_screenshot）：前端用 pdf.js 渲染后走 viewerReportRender 交回去 */
+  | { kind: "render_request"; tab_id: string; page: number; request_id: string; scale: number }
   | { kind: "goto"; tab_id: string; page: number | null; scroll: number | null; anchor: string | null; highlight: string | null }
   | { kind: "reload"; tab_id: string }
   | { kind: "updated"; tab: TabView };

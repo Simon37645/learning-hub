@@ -215,6 +215,21 @@ export const api = {
       error: payload.error ?? null,
     }),
   viewerLoadText: (tabId: string) => invoke<string>("viewer_load_text", { tabId }),
+  /**
+   * 把 agent 要的那一页位图交回后端（`pdf_screenshot` 用）。
+   * 渲染不出来时也必须回一次（带 `error`），否则工具那边会一直等到超时。
+   */
+  viewerReportRender: (
+    requestId: string,
+    payload: { data?: string; width?: number; height?: number; error?: string },
+  ) =>
+    invoke<void>("viewer_report_render", {
+      requestId,
+      data: payload.data ?? null,
+      width: payload.width ?? null,
+      height: payload.height ?? null,
+      error: payload.error ?? null,
+    }),
   viewerLoadBytes: (tabId: string) => invoke<ArrayBuffer>("viewer_load_bytes", { tabId }),
   viewerGetContent: (tabId: string) => invoke<string>("viewer_get_content", { tabId }),
   viewerReload: (tabId: string) => invoke<void>("viewer_reload", { tabId }),

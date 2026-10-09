@@ -3,7 +3,7 @@
 use crate::agent::event::ViewerEvent;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use crate::viewer::{OpenRequest, PageText, TabView, ViewerKind, ViewerSnapshot};
+use crate::viewer::{OpenRequest, PageText, RenderedPage, TabView, ViewerKind, ViewerSnapshot};
 use tauri::ipc::Response;
 use serde::Serialize;
 use tauri::State;
@@ -166,6 +166,33 @@ pub async fn viewer_report_snapshot(
     if let Some(t) = core.viewer.find(&tab_id).await {
         core.emit_viewer(ViewerEvent::Updated { tab: TabView::from(&t) });
     }
+    Ok(())
+}
+
+/// 前端把 `pdf_screenshot` 要的那一页交回来（PNG base64），或说明为什么渲染不了。
+///
+/// 这一趟是**请求-响应**：工具侧先登记一个等待位（`register_render_pending`），
+/// 发 `render_request` 事件，然后在这里被唤醒。所以这个命令必须在没有图片时也能返回——
+/// 前端渲染失败（页不存在、文档没加载出来）时报 `error`，工具会把它转成一句人话给模型。
+#[tauri::command]
+pub async fn viewer_report_render(
+    state: State<'_, AppState>,
+    request_id: String,
+    data: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    error: Option<String>,
+) -> AppResult<()> {
+    let result = match (data, error) {
+        (Some(b64), _) => crate::agent::attachment::b64_decode(&b64).map(|bytes| RenderedPage {
+            data: bytes,
+            width: width.unwrap_or(0),
+            height: height.unwrap_or(0),
+        }),
+        (None, Some(e)) => Err(AppError::other(e)),
+        (None, None) => Err(AppError::other("前端没有给出图片数据")),
+    };
+    state.0.viewer.report_render(&request_id, result);
     Ok(())
 }
 

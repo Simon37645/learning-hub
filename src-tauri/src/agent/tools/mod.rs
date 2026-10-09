@@ -79,6 +79,7 @@ pub fn registry() -> ToolRegistry {
         .register(Arc::new(viewer::ViewerRead))
         .register(Arc::new(viewer::ViewerGoto))
         .register(Arc::new(viewer::ViewerSearch))
+        .register(Arc::new(viewer::PdfScreenshot))
         .register(Arc::new(viewer::ViewerActivate))
         .register(Arc::new(viewer::ViewerClose));
 

@@ -84,6 +84,15 @@ pub struct PageText {
     pub text: String,
 }
 
+/// 前端渲染回来的一页位图（PDF 页截图）。
+#[derive(Debug, Clone)]
+pub struct RenderedPage {
+    /// PNG 字节
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Rust 侧的完整标签页（含大字段，不直接发给前端）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +211,8 @@ pub struct ViewerService {
     inner: AsyncRwLock<Inner>,
     /// 正在等待前端上报快照的请求
     pending: parking_lot::Mutex<HashMap<String, oneshot::Sender<()>>>,
+    /// 正在等待前端渲染 PDF 页的请求（key 是 request_id）
+    pending_render: parking_lot::Mutex<HashMap<String, oneshot::Sender<AppResult<RenderedPage>>>>,
 }
 
 impl Default for Inner {
@@ -412,6 +423,24 @@ impl ViewerService {
 
     pub fn cancel_pending(&self, id: &str) {
         self.pending.lock().remove(id);
+    }
+
+    /// 登记一个「等前端把这一页渲染好」的位子，返回接收端。
+    pub fn register_render_pending(&self, request_id: &str) -> oneshot::Receiver<AppResult<RenderedPage>> {
+        let (tx, rx) = oneshot::channel();
+        self.pending_render.lock().insert(request_id.to_string(), tx);
+        rx
+    }
+
+    /// 前端把渲染结果（或失败原因）交上来。
+    pub fn report_render(&self, request_id: &str, result: AppResult<RenderedPage>) {
+        if let Some(tx) = self.pending_render.lock().remove(request_id) {
+            let _ = tx.send(result);
+        }
+    }
+
+    pub fn cancel_render_pending(&self, request_id: &str) {
+        self.pending_render.lock().remove(request_id);
     }
 
     /// 在快照里做关键词检索，返回命中位置与上下文。

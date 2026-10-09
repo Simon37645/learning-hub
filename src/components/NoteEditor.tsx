@@ -19,6 +19,7 @@ import { applyEditorLayoutPrefs } from "../inknote/lib/preferences";
 import { notifyToast, useToast } from "../inknote/lib/useToast";
 import Toast from "../inknote/components/Toast";
 import { api, errText } from "../lib/api";
+import { useApp } from "../store/app";
 import { Icon } from "./ui";
 
 interface Props {
@@ -39,6 +40,8 @@ export function NoteEditor({ slug, topicDir, path, onSaved, onDirtyChange }: Pro
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mode, setMode] = useState<EditorMode>(() => "preview");
+  const zen = useApp((s) => s.zen);
+  const setZen = useApp((s) => s.setZen);
   const toast = useToast();
 
   // 编辑器偏好（字号/行高/宽度）用 InkNote 那套键存在 localStorage
@@ -184,6 +187,14 @@ export function NoteEditor({ slug, topicDir, path, onSaved, onDirtyChange }: Pro
         {dirty && <span className="tag accent">未保存</span>}
         {saving && <span className="spinner" />}
         <div className="grow" />
+        {/* 全屏专注（F11）：写长笔记时想要整屏，只留文档本身 */}
+        <button
+          className="icon-btn"
+          title={zen ? "退出全屏专注（F11）" : "全屏专注（F11）"}
+          onClick={() => setZen(!zen)}
+        >
+          <Icon name={zen ? "collapse" : "expand"} />
+        </button>
         <button
           className="icon-btn"
           title={mode === "preview" ? "切到源码模式（Ctrl+/）" : "切到所见即所得（Ctrl+/）"}

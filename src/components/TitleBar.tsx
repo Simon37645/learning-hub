@@ -17,7 +17,8 @@
 // - 需要 tauri.conf.json 里 `decorations: false`，以及 capabilities 里的窗口权限
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { fitOuter } from "../lib/winfit";
 import { useApp } from "../store/app";
 import { AppMark, Icon } from "./ui";
 
@@ -35,6 +36,10 @@ export function TitleBar() {
 
   /** 窗口超出工作区就拉回来——不管它是怎么变大的（贴靠、系统快捷键、上次遗留） */
   const clampToWorkArea = useCallback(async () => {
+    // 专注模式（F11）期间不插手：系统刚把窗口铺满整块屏，这里再按「工作区」拉一下
+    // 会把它缩成工作区大小（任务栏露出来），多显示器时还可能摆到别的屏上。
+    if (useApp.getState().zen) return;
+    if (await win.isFullscreen().catch(() => false)) return;
     const wa = await workArea();
     if (!wa) return;
     const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
@@ -48,12 +53,11 @@ export function TitleBar() {
       pos.x >= wa.position.x - 1 &&
       pos.y >= wa.position.y - 1;
     if (fits) return;
+    // 尺寸与位置一起按**外框**口径设：setSize 设的是内容区，拿工作区尺寸直接设
+    // 会永远差那圈边框（见 lib/winfit.ts），窗口就一直是「大出去一点点」的状态。
     const w = Math.min(size.width, wa.size.width);
     const h = Math.min(size.height, wa.size.height);
-    if (w !== size.width || h !== size.height) await win.setSize(new PhysicalSize(w, h));
-    if (pos.x < wa.position.x || pos.y < wa.position.y || right > waRight || bottom > waBottom) {
-      await win.setPosition(new PhysicalPosition(wa.position.x, wa.position.y));
-    }
+    await fitOuter(win, wa.position.x, wa.position.y, w, h);
   }, [win, workArea]);
 
   useEffect(() => {
@@ -82,15 +86,11 @@ export function TitleBar() {
     if (!filled) {
       const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
       restore.current = { x: pos.x, y: pos.y, w: size.width, h: size.height };
-      await win.setSize(new PhysicalSize(wa.size.width, wa.size.height));
-      await win.setPosition(new PhysicalPosition(wa.position.x, wa.position.y));
+      await fitOuter(win, wa.position.x, wa.position.y, wa.size.width, wa.size.height);
       setFilled(true);
     } else {
       const back = restore.current;
-      if (back) {
-        await win.setSize(new PhysicalSize(back.w, back.h));
-        await win.setPosition(new PhysicalPosition(back.x, back.y));
-      }
+      if (back) await fitOuter(win, back.x, back.y, back.w, back.h);
       setFilled(false);
     }
   }

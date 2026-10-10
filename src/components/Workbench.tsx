@@ -312,7 +312,8 @@ function NotesPane() {
   if (openPath) {
     return (
       <div className="note-surface">
-        <div className="row" style={{ padding: "6px 12px", gap: 8, borderBottom: "1px solid var(--border)" }}>
+        {/* 这一行是笔记自己的头部（返回 / 文件名 / 快捷键提示）：全屏专注时收起 */}
+        <div className="row note-head" style={{ padding: "6px 12px", gap: 8, borderBottom: "1px solid var(--border)" }}>
           <button className="icon-btn" title="返回笔记本列表" onClick={() => setOpenPath(null)}>
             <Icon name="arrow-left" />
           </button>

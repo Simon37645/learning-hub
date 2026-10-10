@@ -176,10 +176,22 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **工具结果带图的编码两边不一样**：Anthropic 允许 `tool_result.content` 是内容块数组（图放里面），
   **OpenAI 的 `tool` 消息只吃字符串**，所以 `to_openai_messages` 会在带图的工具结果后面
   补一条 `user` 消息专门放图。改协议编码时别把这条丢了，也别在 `tool` 角色里塞数组。
-- **F11 专注模式动的是「应用外壳」**：`store.setZen` 同时改窗口全屏（需要 capabilities 里的
-  `core:window:allow-set-fullscreen`，漏了只在运行时报权限错）与 `.app-shell.zen` 样式。
-  隐藏的是标题栏 / 侧栏 / 内置浏览器 / 顶部分段，**笔记编辑器自己那一条要留着**（路径、未保存、保存）——
-  全屏写作看不见保存状态才是真的糟。
+- **`setSize` 设的是「内容区」尺寸，显示器/工作区给的是「外框」尺寸**——差那圈隐形边框
+  （无边框可缩放窗口照样有，实测 **22×13 物理像素**）。拿外框尺寸直接 `setSize`，窗口就永远
+  「大出去一点点」：多显示器时右边那 22px 正好落到旁边那块屏上（用户报的「突出一部分到
+  另一块屏幕」）。更坑的是「贴合工作区」的兜底逻辑用同样的口径去量、去设，是个不动点，
+  永远修不回来。所以**所有「贴满某块屏 / 某个工作区」都走 `lib/winfit.ts` 的 `fitOuter`**
+  （先量一次边框，减掉再设；全屏时内外相等，减 0）。位置那边不用管：`setPosition` 与
+  `outerPosition` 都是外框口径。
+- **F11 专注模式的窗口几何要自己指定显示器**（`store/app.ts` 的 `applyZenWindow`）：
+  直接 `setFullscreen(true)` 时由系统挑屏，**多显示器下会摆到别的那块屏上**。现在按
+  `currentMonitor()` 用 `setFullscreenOnMonitor`（Tauri 2.12 起有，capabilities 要
+  `core:window:allow-set-fullscreen-on-monitor`）指定目标屏，再 `fitOuter` 对齐一次。
+  另一个连带坑：**TitleBar 的「贴合工作区」在全屏期间必须让路**（`clampToWorkArea` 开头有守卫），
+  否则它会在系统刚铺好全屏之后把窗口缩成工作区大小（任务栏露出来）。
+  样式那边 `.app-shell.zen` 收起的范围：标题栏 / 侧栏 / 内置浏览器 / 顶部分段 /
+  工作台功能区（`.wb-head`、`.wb-tabs`）与笔记自己的头部（`.note-head`）——
+  **只留编辑区和「路径 / 未保存 / 保存」那一行**：全屏写作看不见保存状态才是真的糟。
 
 - **长期记忆的作用域由文件位置决定，不是记录里的字段**
   （`<工作区>/.hub/memory/memories.jsonl` = 全局，`<主题>/.hub/memory/memories.jsonl` = 本主题）。

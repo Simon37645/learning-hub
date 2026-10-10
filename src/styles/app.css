@@ -273,7 +273,11 @@ a:hover {
 .app-shell.zen .sidebar,
 .app-shell.zen .sidebar-resizer,
 .app-shell.zen .viewer,
-.app-shell.zen .chat-head {
+.app-shell.zen .chat-head,
+/* 工作台的功能区（面包屑 + 统计 + 页签）与笔记自己的头部一起收起，只留正文 */
+.app-shell.zen .wb-head,
+.app-shell.zen .wb-tabs,
+.app-shell.zen .note-head {
   display: none;
 }
 

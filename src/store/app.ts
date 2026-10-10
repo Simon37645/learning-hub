@@ -9,7 +9,8 @@
 
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
+import { fitOuter } from "../lib/winfit";
 import { api, errText } from "../lib/api";
 import { renderPdfPage } from "../lib/pdfshot";
 import type {
@@ -367,11 +368,9 @@ export const useApp = create<AppStore>((set, get) => ({
 
   setZen(on) {
     set({ zen: on });
-    // 窗口全屏交给 Tauri（需要 capabilities 里的 allow-set-fullscreen）。
+    // 窗口几何在 applyZenWindow 里自己管（见那里的说明：多显示器时系统的全屏会挑错屏）。
     // 失败只记一行：样式那边已经切好了，功能不会因此断掉。
-    void getCurrentWindow()
-      .setFullscreen(on)
-      .catch((e) => console.warn("切换全屏失败", e));
+    void applyZenWindow(on);
   },
 
   async openTopic(slug) {
@@ -1249,6 +1248,58 @@ async function bootstrapStore(
     }
   } catch (e) {
     set({ bootError: errText(e), ready: false });
+  }
+}
+
+// ============================================================ 专注模式的窗口几何
+
+/** 进全屏前的窗口几何（退出时还原用） */
+let zenGeometry: { x: number; y: number; w: number; h: number } | null = null;
+
+/**
+ * 专注模式（F11）的窗口几何：进全屏、退出还原。
+ *
+ * 为什么不直接 setFullscreen(true)：**多显示器时它会挑错屏**——Windows 自己决定
+ * 「哪块屏算全屏的目标」，窗口摆到旁边那块屏上就会突出去一部分（用户报过：
+ * 一块屏上全屏，右边那部分跑到另一块屏上）。所以：
+ *
+ * 1. 按**窗口当前所在的那块屏**全屏（setFullscreenOnMonitor，Tauri 2.12 起有）；
+ * 2. 再显式对齐一次位置与尺寸——个别情况下系统只铺满「工作区」，任务栏那条还露在外面；
+ * 3. 退出时把进来之前的几何摆回去，免得还原到别处或大小漂移。
+ *
+ * 另外 TitleBar 的「贴合工作区」逻辑在全屏期间必须让路（见那里的守卫），
+ * 否则它会在系统刚铺好全屏之后把窗口缩成工作区大小。
+ */
+async function applyZenWindow(on: boolean): Promise<void> {
+  const win = getCurrentWindow();
+  try {
+    if (!on) {
+      await win.setFullscreen(false);
+      const back = zenGeometry;
+      // 退出时按进来之前记下的外框几何摆回去（fitOuter 内部换算成内容区尺寸）
+      if (back) await fitOuter(win, back.x, back.y, back.w, back.h);
+      return;
+    }
+
+    // 几何一律按**外框**记（fitOuter 内部会换算成 setSize 要的内容区尺寸）
+    const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+    zenGeometry = { x: pos.x, y: pos.y, w: size.width, h: size.height };
+
+    const mon = (await currentMonitor()) ?? (await primaryMonitor());
+    if (!mon) {
+      await win.setFullscreen(true);
+      return;
+    }
+    await win.setFullscreenOnMonitor(mon.position);
+    await fitOuter(win, mon.position.x, mon.position.y, mon.size.width, mon.size.height);
+  } catch (e) {
+    // 权限漏了（capabilities）、或者系统拒绝：退回最简单的全屏，界面样式不受影响
+    console.warn("切换全屏失败", e);
+    try {
+      await win.setFullscreen(on);
+    } catch {
+      /* 连这个都不行就只能当它没有 */
+    }
   }
 }
 

@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, errText } from "../lib/api";
-import { SCOPE_LABEL, type McpEntryView, type McpOverview, type Scope, type SkillEntry, type SkillDirs, type SkillsOverview } from "../lib/types";
+import { SCOPE_LABEL, type AgentsMcpCandidate, type McpEntryView, type McpOverview, type Scope, type SkillEntry, type SkillDirs, type SkillsOverview } from "../lib/types";
 import { useApp } from "../store/app";
 import { Field, Icon, Modal, Segmented, Spinner, Switch } from "./ui";
 
@@ -337,6 +337,10 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", command: "", args: "", env: "", scope: "global" as Scope });
+  // 「从本机导入」：~/.agents/servers/ 里的配置清单（打开区块时才拉）
+  const [importOpen, setImportOpen] = useState(false);
+  const [candidates, setCandidates] = useState<AgentsMcpCandidate[] | null>(null);
+  const [importingId, setImportingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -345,6 +349,14 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
       toast("error", errText(e));
     }
   }, [slug, toast]);
+
+  const reloadCandidates = useCallback(async () => {
+    try {
+      setCandidates(await api.agentsMcpCandidates());
+    } catch (e) {
+      toast("error", errText(e));
+    }
+  }, [toast]);
 
   useEffect(() => {
     void refresh();
@@ -390,6 +402,34 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /** 展开收起「从本机导入」；展开时拉一次清单 */
+  async function toggleImport() {
+    const next = !importOpen;
+    setImportOpen(next);
+    if (next) {
+      setAdding(false);
+      setCandidates(null);
+      await reloadCandidates();
+    }
+  }
+
+  async function doImport(c: AgentsMcpCandidate) {
+    setBusy(true);
+    setImportingId(c.id);
+    try {
+      const status = await api.agentsMcpImport(c.id);
+      await Promise.all([refresh(), reloadCandidates()]);
+      const n = status.find((s) => s.name === c.id)?.toolCount ?? 0;
+      const verb = c.imported ? "已更新" : "已导入";
+      toast("success", `${verb}「${c.label}」并重连（${n} 个工具）`);
+    } catch (e) {
+      toast("error", errText(e));
+    } finally {
+      setBusy(false);
+      setImportingId(null);
+    }
+  }
+
   return (
     <Modal
       title="MCP 服务器"
@@ -432,9 +472,36 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
           <button className="btn primary" onClick={() => setAdding((v) => !v)}>
             <Icon name="plus" size={13} /> 添加服务器
           </button>
+          <button className="btn" onClick={() => void toggleImport()}>
+            <Icon name="download" size={13} /> 从本机导入
+          </button>
         </>
       }
     >
+      {importOpen && (
+        <div className="card-box" style={{ background: "var(--bg-sub)", gap: 8 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <span style={{ fontWeight: 500, fontSize: 13 }}>本机 ~/.agents/servers/</span>
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              其它 CLI agent 配置好的 MCP 服务器，导入即写进全局配置并连接（只支持 stdio）
+            </span>
+          </div>
+          {candidates === null ? (
+            <div className="row" style={{ justifyContent: "center", padding: 12 }}>
+              <Spinner />
+            </div>
+          ) : candidates.length === 0 ? (
+            <div className="muted" style={{ fontSize: 12 }}>
+              没有在本机 ~/.agents/servers/ 里发现可导入的 MCP 配置
+            </div>
+          ) : (
+            candidates.map((c) => (
+              <AgentCandidateRow key={c.id} c={c} busy={busy} importingId={importingId} onImport={doImport} />
+            ))
+          )}
+        </div>
+      )}
+
       {adding && (
         <div className="card-box" style={{ background: "var(--bg-sub)" }}>
           <div className="grid-2">
@@ -566,6 +633,59 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
         </div>
       )}
     </Modal>
+  );
+}
+
+/** 「从本机导入」清单里的一行：label + id + 描述 + 状态徽标 + 行尾按钮 */
+function AgentCandidateRow({
+  c,
+  busy,
+  importingId,
+  onImport,
+}: {
+  c: AgentsMcpCandidate;
+  busy: boolean;
+  importingId: string | null;
+  onImport: (c: AgentsMcpCandidate) => void;
+}) {
+  const blocked = !!c.blockedReason;
+  return (
+    <div className="card-box" style={{ padding: 12, gap: 6 }}>
+      <div className="row" style={{ gap: 8 }}>
+        <Icon name="plug" size={13} style={{ opacity: blocked ? 0.4 : 1 }} />
+        <span style={{ fontWeight: 500 }}>{c.label}</span>
+        <span className="tag mono" style={{ fontSize: 10.5 }}>
+          {c.id}
+        </span>
+        {c.imported && <span className="tag ok">已导入</span>}
+        {!blocked && c.transport && <span className="tag">{c.transport}</span>}
+        <div className="grow" />
+        {blocked && (
+          <span className="muted" style={{ fontSize: 11.5 }}>
+            {c.blockedReason}
+          </span>
+        )}
+        <button
+          className="btn sm"
+          disabled={blocked || busy}
+          title={c.imported ? "按本机配置覆盖当前条目（开关状态保留）" : undefined}
+          onClick={() => onImport(c)}
+        >
+          {importingId === c.id ? <Spinner /> : <Icon name="download" size={12} />}
+          {c.imported ? "更新" : "导入"}
+        </button>
+      </div>
+      {c.description && (
+        <div className="sub muted clamp-2" style={{ fontSize: 12 }}>
+          {c.description}
+        </div>
+      )}
+      {c.command && (
+        <div className="mono muted" style={{ fontSize: 11 }}>
+          {c.command} {c.args.join(" ")}
+        </div>
+      )}
+    </div>
   );
 }
 

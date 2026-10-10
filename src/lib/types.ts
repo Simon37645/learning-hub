@@ -905,6 +905,24 @@ export interface McpOverview {
   topicName?: string | null;
 }
 
+/**
+ * `~/.agents/servers/` 里发现的一份本机 MCP 配置（其它 CLI agent 写下的）。
+ * 解析失败的文件也会出现在清单里：label 退回文件名，blockedReason 带原因。
+ */
+export interface AgentsMcpCandidate {
+  id: string;
+  label: string;
+  description: string;
+  transport: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  /** 配置里已有同名服务器（按钮显示「更新」） */
+  imported: boolean;
+  /** 非空 = 导入不了（transport 不是 stdio / command 为空 / 文件解析失败） */
+  blockedReason?: string | null;
+}
+
 // ---------------------------------------------------------------- 长期记忆
 
 /**

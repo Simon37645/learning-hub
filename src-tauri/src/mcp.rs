@@ -13,6 +13,7 @@ use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -370,5 +371,256 @@ async fn read_loop(
                 break;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- 本机 agents 配置（~/.agents/servers/*.json）
+//
+// 本机的 CLI agent 生态共享一份 MCP 服务器配置目录（`~/.agents/servers/*.json`）。
+// 这份格式**不是我们定的**，解析按「能救就救」来：
+// - 字段可能缺（url / headers / description 都可能没有）→ 给默认值；
+// - 字段可能多（各家工具自己加的扩展字段）→ 直接忽略（serde 默认行为）；
+// - 类型可能漂（args 里混进数字）→ 单个元素跳过或转成字符串，不整体报错。
+// 只有 `id` 缺失/为空才让整个文件解析失败——没有 id 就没有工具名前缀
+// （`mcp__<id>__<tool>`），救不了。
+//
+// 「配置本身是好的，只是我们用不了」（transport=http 这类）不算解析失败，
+// 单独用 `blocked_reason` 表达：用户要看到的是原因，而不是「文件坏了」。
+
+/// `~/.agents/servers/` 里发现的一份本机 MCP 配置。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentServerSource {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    /// transport 不是 stdio、或 command 为空、或带 url 时的拒绝原因；None = 可导入
+    pub blocked_reason: Option<String>,
+}
+
+/// 从 `Value` 里取一个「看起来像字符串」的字段：非空字符串才算是写了。
+fn str_field(raw: &Value, key: &str) -> Option<String> {
+    raw.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// 解析一份本机 agents 的 MCP 配置文本。
+pub fn parse_agent_server(text: &str) -> AppResult<AgentServerSource> {
+    // 先整个当成 Value 读：字段集不固定，手动挑比定义结构体更宽容
+    let raw: Value = serde_json::from_str(text).map_err(|e| AppError::invalid(format!("不是合法的 JSON：{e}")))?;
+    if !raw.is_object() {
+        return Err(AppError::invalid("顶层不是 JSON 对象"));
+    }
+
+    let id = str_field(&raw, "id")
+        .ok_or_else(|| AppError::invalid("缺少 id（或 id 为空）——没有它就没法登记工具"))?;
+    let label = str_field(&raw, "label").unwrap_or_else(|| id.clone());
+    let description = raw
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let transport = str_field(&raw, "transport").unwrap_or_default();
+
+    // args/env 类型漂移时宽容处理：数字、布尔转字符串，其它类型跳过该元素
+    let args = raw
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Number(n) => Some(n.to_string()),
+                    Value::Bool(b) => Some(b.to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let env = raw
+        .get("env")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| match v {
+                    Value::String(s) => Some((k.clone(), s.clone())),
+                    Value::Number(n) => Some((k.clone(), n.to_string())),
+                    Value::Bool(b) => Some((k.clone(), b.to_string())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let command = str_field(&raw, "command").unwrap_or_default();
+    // url 有值 = 远程传输；空串与 null 都当「没写」
+    let has_url = raw
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    let blocked_reason = if !transport.is_empty() && !transport.eq_ignore_ascii_case("stdio") {
+        Some(format!("transport 是 {transport}，本应用只支持 stdio"))
+    } else if has_url {
+        Some("带 url（远程服务器），本应用只支持本地 stdio 传输".to_string())
+    } else if command.is_empty() {
+        Some("command 为空，没有可启动的命令".to_string())
+    } else {
+        None
+    };
+
+    Ok(AgentServerSource {
+        id,
+        label,
+        description,
+        transport,
+        command,
+        args,
+        env,
+        blocked_reason,
+    })
+}
+
+/// 扫一个目录下的 `*.json`（本机 agents 的 MCP 配置）。
+/// 目录不存在返回空；单个文件读不了 / 解析不了也作为 Err 条目返回，不拖垮整个列表。
+pub fn scan_agent_servers(dir: &std::path::Path) -> Vec<(std::path::PathBuf, AppResult<AgentServerSource>)> {
+    let mut out: Vec<(PathBuf, AppResult<AgentServerSource>)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|e| AppError::other(format!("读不了这个文件：{e}")))
+            .and_then(|text| parse_agent_server(&text));
+        out.push((path, parsed));
+    }
+    out
+}
+
+#[cfg(test)]
+mod agent_source_tests {
+    use super::*;
+
+    #[test]
+    fn parses_standard_sample() {
+        let text = r#"{
+            "id": "agent-browser",
+            "label": "Agent Browser",
+            "description": "Drives your already-open real Chrome",
+            "transport": "stdio",
+            "command": "E:/MCP/agent-browser-mcp/.venv/Scripts/agent-browser-mcp.exe",
+            "args": ["--verbose"],
+            "env": { "DEBUG": "1" },
+            "url": null,
+            "headers": {}
+        }"#;
+        let src = parse_agent_server(text).unwrap();
+        assert_eq!(src.id, "agent-browser");
+        assert_eq!(src.label, "Agent Browser");
+        assert_eq!(src.description, "Drives your already-open real Chrome");
+        assert_eq!(src.transport, "stdio");
+        assert_eq!(src.args, vec!["--verbose"]);
+        assert_eq!(src.env.get("DEBUG").map(String::as_str), Some("1"));
+        assert!(src.blocked_reason.is_none());
+    }
+
+    #[test]
+    fn missing_fields_get_defaults() {
+        let src = parse_agent_server(r#"{"id":"fastctx","command":"fastctx"}"#).unwrap();
+        assert_eq!(src.label, "fastctx"); // label 缺省用 id
+        assert_eq!(src.description, "");
+        assert_eq!(src.transport, "");
+        assert!(src.args.is_empty());
+        assert!(src.env.is_empty());
+        // transport 缺省也算 stdio，可以导入
+        assert!(src.blocked_reason.is_none());
+    }
+
+    #[test]
+    fn unknown_fields_are_tolerated() {
+        let text = r#"{"id":"x","command":"x.exe","headers":{"Authorization":"Bearer 1"},"vendorExtra":{"a":1}}"#;
+        let src = parse_agent_server(text).unwrap();
+        assert_eq!(src.id, "x");
+        assert!(src.blocked_reason.is_none());
+    }
+
+    #[test]
+    fn http_transport_with_url_is_blocked() {
+        let text = r#"{"id":"remote","transport":"http","command":"x","url":"https://example.com/mcp"}"#;
+        let src = parse_agent_server(text).unwrap();
+        let reason = src.blocked_reason.unwrap();
+        assert!(reason.contains("http"), "原因里要点名 transport：{reason}");
+    }
+
+    #[test]
+    fn url_with_default_transport_is_blocked() {
+        let src = parse_agent_server(r#"{"id":"remote","command":"x","url":"https://example.com"}"#).unwrap();
+        let reason = src.blocked_reason.unwrap();
+        assert!(reason.contains("url"), "原因里要点名 url：{reason}");
+    }
+
+    #[test]
+    fn empty_command_is_blocked() {
+        let src = parse_agent_server(r#"{"id":"nope","command":""}"#).unwrap();
+        let reason = src.blocked_reason.unwrap();
+        assert!(reason.contains("command"), "{reason}");
+    }
+
+    #[test]
+    fn missing_id_is_an_error() {
+        assert!(parse_agent_server(r#"{"command":"x"}"#).is_err());
+        assert!(parse_agent_server(r#"{"id":"","command":"x"}"#).is_err());
+        assert!(parse_agent_server("不是 JSON").is_err());
+    }
+
+    #[test]
+    fn args_and_env_with_wrong_element_types_are_tolerated() {
+        // 字符串数组里混数字：数字转成字符串，对象这类救不了的跳过
+        let text = r#"{"id":"x","command":"x","args":["a",1,true,null,{"bad":1}],"env":{"A":"1","B":2,"C":null}}"#;
+        let src = parse_agent_server(text).unwrap();
+        assert_eq!(src.args, vec!["a", "1", "true"]);
+        assert_eq!(src.env.get("A").map(String::as_str), Some("1"));
+        assert_eq!(src.env.get("B").map(String::as_str), Some("2"));
+        assert!(!src.env.contains_key("C"));
+    }
+
+    #[test]
+    fn scan_lists_broken_files_without_dropping_good_ones() {
+        let dir = std::env::temp_dir().join(format!("hub-mcp-scan-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("good.json"), r#"{"id":"good","command":"good.exe"}"#).unwrap();
+        std::fs::write(dir.join("broken.json"), "{ 不是 JSON").unwrap();
+        std::fs::write(dir.join("no-id.json"), r#"{"command":"x"}"#).unwrap();
+        std::fs::write(dir.join("readme.txt"), "not json").unwrap();
+
+        let found = scan_agent_servers(&dir);
+        // .txt 不认；json 按文件名排序，三个都在列表里
+        assert_eq!(found.len(), 3);
+        assert!(found[0].0.ends_with("broken.json"));
+        assert!(found[0].1.is_err());
+        assert!(found[1].0.ends_with("good.json"));
+        let good = found[1].1.as_ref().unwrap();
+        assert_eq!(good.id, "good");
+        assert!(found[2].0.ends_with("no-id.json"));
+        assert!(found[2].1.is_err());
+
+        // 目录不存在 → 空列表，不是错误
+        assert!(scan_agent_servers(&dir.join("nope")).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -12,6 +12,7 @@ use crate::mcp::McpServerConfig;
 use crate::state::{AppState, McpStatusEntry};
 use crate::store;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tauri::State;
 
 /// 作用域。
@@ -467,6 +468,155 @@ pub async fn mcp_set_all(
     core.update_config(|c| {
         for s in c.agent.mcp_servers.iter_mut() {
             s.enabled = enabled;
+        }
+    })?;
+    Ok(core.mcp_reload().await)
+}
+
+// ---------------------------------------------------------------- 本机 agents 配置导入
+//
+// 本机的 CLI agent 生态共享一份 MCP 配置目录（`~/.agents/servers/*.json`），
+// 这里负责「发现 → 导入 → 落盘 → 重连」。导入对目录里所有文件一视同仁，
+// 不对任何具体的名字写特例——用户以后往里加什么，规则都一样。
+
+/// `~/.agents/servers/` 里发现的一份本机 MCP 配置（含是否已导入）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsMcpCandidate {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    /// 配置里已有同名服务器（界面上按钮显示「更新」）
+    pub imported: bool,
+    /// 非空 = 导入不了（transport 不是 stdio / command 为空 / 文件解析失败）
+    pub blocked_reason: Option<String>,
+}
+
+/// `~/.agents/servers/` 里发现的 MCP 配置清单（含是否已导入）。
+///
+/// 目录不存在返回空 Vec，**不是错误**——本机没装过别的 agent 很正常。
+/// 解析失败的文件也列出来（label 退回文件名），用户看得见「有个文件坏了」，
+/// 而不是清单里凭空少一条。
+#[tauri::command]
+pub async fn agents_mcp_candidates(state: State<'_, AppState>) -> AppResult<Vec<AgentsMcpCandidate>> {
+    let core = state.0.clone();
+    let cfg = core.config_read();
+    let Some(home) = crate::skills::home_dir() else {
+        return Ok(Vec::new());
+    };
+    let dir = home.join(".agents").join("servers");
+    let is_imported =
+        |id: &str| cfg.agent.mcp_servers.iter().any(|s| s.name == id);
+
+    let mut out = Vec::new();
+    for (path, parsed) in crate::mcp::scan_agent_servers(&dir) {
+        match parsed {
+            Ok(src) => {
+                let imported = is_imported(&src.id);
+                out.push(AgentsMcpCandidate {
+                    id: src.id,
+                    label: src.label,
+                    description: src.description,
+                    transport: src.transport,
+                    command: src.command,
+                    args: src.args,
+                    env: src.env,
+                    imported,
+                    blocked_reason: src.blocked_reason,
+                });
+            }
+            Err(e) => {
+                let label = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "未知文件".into());
+                let msg = e.to_string();
+                out.push(AgentsMcpCandidate {
+                    id: label.clone(),
+                    imported: false,
+                    label,
+                    // 错误在描述位显示一遍，按钮旁的禁用原因也来自 blocked_reason
+                    description: msg.clone(),
+                    transport: String::new(),
+                    command: String::new(),
+                    args: Vec::new(),
+                    env: HashMap::new(),
+                    blocked_reason: Some(msg),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 导入（或更新）一个本机 agents 配置：按 id 建全局 `McpServerConfig` 并重连。
+///
+/// **不信任前端传来的任何内容**：id 只用来定位磁盘上的 `{id}.json`，配置重读一遍。
+/// id 必须是纯文件名成分——含 `/`、`\`、`..` 的一律拒绝，否则拼接路径就是穿越。
+#[tauri::command]
+pub async fn agents_mcp_import(
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<Vec<McpStatusEntry>> {
+    let core = state.0.clone();
+    let id = id.trim();
+    let looks_like_filename = !id.is_empty()
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !id.contains(':')
+        && std::path::Path::new(id)
+            .file_name()
+            .is_some_and(|f| f.to_string_lossy() == id);
+    if !looks_like_filename {
+        return Err(AppError::invalid("id 必须是纯文件名（不能带路径成分）"));
+    }
+
+    let home = crate::skills::home_dir()
+        .ok_or_else(|| AppError::other("找不到用户目录（USERPROFILE / HOME 都没设）"))?;
+    let file = home
+        .join(".agents")
+        .join("servers")
+        .join(format!("{id}.json"));
+    let text = std::fs::read_to_string(&file)
+        .map_err(|_| AppError::NotFound(format!("本机 ~/.agents/servers/ 里没有 {id}.json")))?;
+    let src = crate::mcp::parse_agent_server(&text)?;
+    if let Some(reason) = &src.blocked_reason {
+        return Err(AppError::invalid(format!("导入不了「{}」：{reason}", src.label)));
+    }
+
+    // 已导入过则保留现有开关状态：用户手动关掉的，不该被一次导入悄悄打开
+    let enabled = core
+        .config_read()
+        .agent
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == src.id)
+        .map(|s| s.enabled)
+        .unwrap_or(true);
+    let server = McpServerConfig {
+        name: src.id,
+        command: src.command,
+        args: src.args,
+        env: src.env,
+        enabled,
+        cwd: None,
+    };
+
+    // 与 mcp_upsert 的 global 分支同一套落盘路径：按 name 覆盖或追加，然后重连
+    core.update_config(|c| {
+        match c
+            .agent
+            .mcp_servers
+            .iter_mut()
+            .find(|s| s.name == server.name)
+        {
+            Some(slot) => *slot = server.clone(),
+            None => c.agent.mcp_servers.push(server.clone()),
         }
     })?;
     Ok(core.mcp_reload().await)

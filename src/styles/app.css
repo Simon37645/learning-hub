@@ -2769,6 +2769,14 @@ mark.hit {
   min-width: 0;
 }
 
+/* 长描述最多两行，超出省略（本机 MCP 导入清单里的说明文字） */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Toast */
 .toast-host {
   position: fixed;

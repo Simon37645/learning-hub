@@ -41,6 +41,7 @@ import type {
   McpOverview,
   McpStatusEntry,
   McpServerConfig,
+  AgentsMcpCandidate,
   MemoryInput,
   MemoryKindInfo,
   MemoryOverview,
@@ -374,6 +375,10 @@ export const api = {
     invoke<McpStatusEntry[]>("mcp_set_enabled", { name, enabled, scope, topicSlug: topicSlug ?? null }),
   /** 一键开关全部 MCP 服务器 */
   mcpSetAll: (enabled: boolean) => invoke<McpStatusEntry[]>("mcp_set_all", { enabled }),
+  /** ~/.agents/servers/ 里发现的本机 MCP 配置清单（含是否已导入） */
+  agentsMcpCandidates: () => invoke<AgentsMcpCandidate[]>("agents_mcp_candidates"),
+  /** 导入（或更新）一个本机配置：按 id 覆盖全局条目并重连 */
+  agentsMcpImport: (id: string) => invoke<McpStatusEntry[]>("agents_mcp_import", { id }),
 
   // ---------------- 工坊（独立于学习：造技能与 MCP 服务器）----------------
   studioInfo: () => invoke<StudioInfo>("studio_info"),

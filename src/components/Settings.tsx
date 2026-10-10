@@ -1,6 +1,8 @@
-// 设置页：用户 / 外观（含自定义主题）/ 工作区 / 模型档案 / Agent 行为 / 内置浏览器 / 关于。
+// 设置页：用户 / 外观（含自定义主题）/ 工作区 / 模型档案 / Agent 行为 / 内置浏览器 / 版本与更新 / 关于。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errText } from "../lib/api";
 import {
   PERMISSION_LABEL,
@@ -10,6 +12,8 @@ import {
   type ProfileInput,
   type ReasoningStyle,
   type ProviderKind,
+  type UpdateInfo,
+  type UpdateProgressEvent,
 } from "../lib/types";
 import { useApp } from "../store/app";
 import { Field, Icon, Modal, Segmented, Spinner, Switch } from "./ui";
@@ -304,6 +308,9 @@ export function Settings() {
             </div>
           </div>
         </section>
+
+        {/* ---------------- 版本与更新 ---------------- */}
+        <UpdateSection />
 
         {/* ---------------- 关于 ---------------- */}
         <section className="col">
@@ -681,6 +688,199 @@ function ThemeEditor({ initial, onClose }: { initial: string; onClose: () => voi
       </div>
     </Modal>
   );
+}
+
+// ---------------------------------------------------------------- 版本与更新
+
+/**
+ * 一键更新：检测 GitHub release → 确认 → 下载（进度条）→ 静默安装并自动重启。
+ *
+ * 只在用户点按钮时才去问 GitHub（无认证限额 60 次/小时），挂载时的那一次
+ * 是为了把「当前版本 + 有没有新版」摆出来；不做任何自动轮询。
+ * 安装是「分离启动 NSIS 安装器」：应用自己先关掉，装完由安装器负责拉起新版。
+ */
+function UpdateSection() {
+  const toast = useApp((s) => s.toast);
+  const version = useApp((s) => s.version);
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  /** idle → downloading → installing（装完 1.5 秒后关窗口，停在 installing 免得按钮闪回） */
+  const [phase, setPhase] = useState<"idle" | "downloading" | "installing">("idle");
+  const [progress, setProgress] = useState<{ received: number; total: number | null }>({ received: 0, total: null });
+  const [confirming, setConfirming] = useState(false);
+  /** 最近一次检查是否失败：失败要跟「还没检查过」分开说，别误导用户 */
+  const [failed, setFailed] = useState(false);
+
+  const check = useCallback(async () => {
+    setChecking(true);
+    try {
+      setInfo(await api.updateCheck());
+      setFailed(false);
+    } catch (e) {
+      setFailed(true);
+      toast("error", errText(e));
+    } finally {
+      setChecking(false);
+    }
+  }, [toast]);
+
+  // 卡片挂载时拉一次：常显当前版本，顺便知道有没有新版
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  // 下载进度。监听挂在组件里、卸载时真的退订——StrictMode 会挂两遍，
+  // 不退订的话进度事件会被处理两次（这是一开始就把 init 做成幂等的同一个坑）
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen<UpdateProgressEvent>("hub://update", (e) => {
+      if (e.payload.kind === "progress") {
+        setProgress({ received: e.payload.received, total: e.payload.total });
+      }
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const install = async () => {
+    if (!info?.assetUrl || phase !== "idle") return;
+    setConfirming(false);
+    setPhase("downloading");
+    setProgress({ received: 0, total: info.assetSize ?? null });
+    try {
+      const path = await api.updateDownload(info.assetUrl, info.assetSize ?? null);
+      setPhase("installing");
+      await api.updateRun(path);
+      toast("info", "安装程序已启动，应用即将关闭并在安装完成后自动重启");
+      // 给 toast 一点显示时间，再让安装器接管（它自己会处理「应用还在运行」）
+      setTimeout(() => {
+        void getCurrentWindow().close();
+      }, 1500);
+    } catch (e) {
+      setPhase("idle");
+      toast("error", errText(e));
+    }
+  };
+
+  const busy = phase !== "idle";
+  const pct = progress.total ? Math.min(100, (progress.received / progress.total) * 100) : null;
+
+  return (
+    <section className="col">
+      <h2>
+        版本与更新 <span className="sub">新版本发布在 GitHub，应用内直接装</span>
+      </h2>
+      <div className="card-box">
+        <div className="row">
+          <span className="sub" style={{ fontSize: 12.5 }}>
+            当前版本 v{info?.current ?? (version || "…")}
+          </span>
+          <div className="grow" />
+          <button className="btn sm" disabled={checking || busy} onClick={() => void check()}>
+            {checking ? <Spinner /> : <Icon name="refresh" size={13} />} 检查更新
+          </button>
+        </div>
+
+        {info?.available && info.version ? (
+          <div className="col" style={{ gap: 8 }}>
+            <div className="row wrap" style={{ gap: 8 }}>
+              <span style={{ fontWeight: 500 }}>有新版本：v{info.version}</span>
+              {info.publishedAt && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  发布于 {formatPublished(info.publishedAt)}
+                </span>
+              )}
+              {info.assetSize != null && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  安装包约 {mb(info.assetSize)} MB
+                </span>
+              )}
+            </div>
+            {info.notes && <pre className="update-notes">{info.notes}</pre>}
+            {phase === "downloading" && (
+              <div className="col" style={{ gap: 6 }}>
+                <div className={"progress" + (pct === null ? " indeterminate" : "")}>
+                  <div className="progress-fill" style={{ width: pct === null ? undefined : `${pct}%` }} />
+                </div>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  {pct === null
+                    ? `已下载 ${mb(progress.received)} MB`
+                    : `已下载 ${mb(progress.received)} / ${mb(progress.total!)} MB`}
+                </div>
+              </div>
+            )}
+            {phase === "installing" && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                正在启动安装程序…
+              </div>
+            )}
+            {phase === "idle" && (
+              <div className="row">
+                <button className="btn primary" disabled={!info.assetUrl} onClick={() => setConfirming(true)}>
+                  <Icon name="download" size={13} /> 下载并安装
+                </button>
+                {!info.assetUrl && (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    这个版本没有找到安装包，可以去 GitHub 手动下载
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          !checking && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              {info
+                ? "已是最新版本。"
+                : failed
+                  ? "这次没能查成（原因见提示），可以稍后再点一次「检查更新」。"
+                  : "还没有检查过，点上面的「检查更新」试试。"}
+            </div>
+          )
+        )}
+      </div>
+
+      {confirming && (
+        <Modal
+          title={`更新到 v${info?.version ?? ""}？`}
+          icon="download"
+          onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setConfirming(false)}>
+                取消
+              </button>
+              <button className="btn primary" onClick={() => void install()}>
+                下载并安装
+              </button>
+            </>
+          }
+        >
+          <div className="sub">
+            会下载安装包（{info?.assetSize != null ? `约 ${mb(info.assetSize)} MB` : "大小未知"}）并静默安装，
+            期间应用会自动关闭，安装完成后自动重新打开。
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+/** GitHub 的 ISO 时间 → 本地时间短句；解析不了就原样返回。 */
+function formatPublished(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** 字节 → MB 文本（进度条旁边的数字）。 */
+function mb(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(1);
 }
 
 // ---------------------------------------------------------------- 模型档案

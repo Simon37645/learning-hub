@@ -315,6 +315,7 @@ PDF 的文字层里只有字——插图、示意图、公式图、扫描页、�
 
 到 [Releases](../../releases) 下载 `LearningHub-<版本>-x64-setup.exe` 运行即可。安装到当前用户，不需要管理员权限。
 需要 Windows 10/11 与 WebView2 运行时（Windows 11 自带，打过补丁的 Win10 一般也有）。
+已经装好了？设置页的「版本与更新」可以一键检测（含 β 预发布）并静默安装新版本。
 
 也有**绿色版**（`LearningHub-<版本>-x64-portable.zip`）：解压后直接跑 `learning-hub.exe`，
 不安装、不留残留。它和安装版共用同一份配置（`%APPDATA%\com.learninghub.desktop\config.json`），

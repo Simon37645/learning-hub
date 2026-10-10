@@ -26,6 +26,7 @@ pub mod state;
 pub mod store;
 pub mod studio;
 pub mod theme;
+pub mod updater;
 pub mod viewer;
 
 use crate::config::AppConfig;
@@ -131,6 +132,10 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             commands::app::reveal_in_explorer,
             commands::app::open_with_system,
             commands::app::config_summary,
+            // --- 一键更新 ---
+            commands::updater::update_check,
+            commands::updater::update_download,
+            commands::updater::update_run,
             // --- 技能与 MCP ---
             commands::extend::skills_overview,
             commands::extend::skills_reload,

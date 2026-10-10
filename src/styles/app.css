@@ -3354,3 +3354,51 @@ pre[data-mermaid="failed"] {
   font-size: 11.5px;
   padding: 4px 10px 6px 23px;
 }
+
+/* ---------------------------------------------------------------- 一键更新 */
+
+/* 设置页「版本与更新」的下载进度条。总大小未知时退化为来回滑的不定进度 */
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-sub);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.progress.indeterminate .progress-fill {
+  width: 30%;
+  transition: none;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  from {
+    margin-left: -30%;
+  }
+  to {
+    margin-left: 100%;
+  }
+}
+
+/* 更新说明（release body）：等宽小字，限高滚动，别把设置页撑长 */
+.update-notes {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-height: 200px;
+  overflow: auto;
+}

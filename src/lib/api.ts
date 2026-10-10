@@ -61,6 +61,7 @@ import type {
   CustomTheme,
   StudioInfo,
   ThemesOverview,
+  UpdateInfo,
 } from "./types";
 
 /** 后端返回的错误是纯字符串 */
@@ -468,4 +469,13 @@ export const api = {
       highlights: highlights ?? null,
       openQuestions: openQuestions ?? null,
     }),
+
+  // ---------------- 一键更新 ----------------
+  /** 查 GitHub 有没有新 release（含 β 预发布）。只在用户点按钮时调，别做自动轮询 */
+  updateCheck: () => invoke<UpdateInfo>("update_check"),
+  /** 下载安装包到临时目录，进度走 hub://update 事件，返回落盘路径 */
+  updateDownload: (url: string, total?: number | null) =>
+    invoke<string>("update_download", { url, total: total ?? null }),
+  /** 分离启动安装器（静默安装，装完应用自动重启） */
+  updateRun: (path: string) => invoke<void>("update_run", { path }),
 };

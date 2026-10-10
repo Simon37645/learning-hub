@@ -293,6 +293,16 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
     `main_invoke_handler` 里用两张表合并，release 构建没有这两个符号）。
     依赖只有 `webview2-com 0.39` + `windows-core 0.62`——**必须跟 wry/tauri
     依赖树里的版本一致**（0.62 不是 0.61，差一个 minor HSTRING 就是两个类型）。
+- **一键更新走自研三步，别换成 tauri-plugin-updater**（`updater.rs`）：官方插件要
+  minisign 签名 + 固定 endpoint 的 latest.json，预发布也不在 `/releases/latest`
+  别名里，跟「β 满天飞、`gh release` 手动发」对不上。要点：GitHub API **无认证
+  限流 60 次/小时**，所以只在用户点按钮时查（挂载时那一次 + 手动按钮），别加自动
+  轮询；`/releases` 列表里 draft 要跳过、prerelease 要算（semver 原生支持
+  `0.3.2-beta.1 < 0.3.2`）；asset 名字必须与 `scripts/package.mjs` 产出的
+  `LearningHub-<版本>-x64-setup.exe` 对齐（没有安装包的版本跳过、退而取次新的）；
+  安装是分离启动 NSIS 安装器 `/S /R`（静默 + 装完自动重启，应用还在运行由安装器
+  处理），`creation_flags` 里的 `CREATE_BREAKAWAY_FROM_JOB` 失败要去掉它**降级重试**——
+  有的宿主不让脱离 job，硬失败会让「下载成功却装不上」。
 
 ## 当前状态（v1）
 

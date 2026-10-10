@@ -15,5 +15,6 @@ pub mod quiz;
 pub mod studio;
 pub mod study;
 pub mod theme;
+pub mod updater;
 pub mod topic;
 pub mod viewer;

@@ -397,7 +397,8 @@ short follow-up message carries the image).
 
 Download `LearningHub-<version>-x64-setup.exe` from [Releases](../../releases) and run it. The installer
 is per-user (no admin rights). Requires Windows 10/11 with the WebView2 runtime — preinstalled on
-Windows 11 and on most updated Windows 10 machines.
+Windows 11 and on most updated Windows 10 machines. Already installed? Settings → 版本与更新
+checks GitHub for a newer release (β prereleases included) and installs it in one click.
 
 There is also a **portable zip** (`LearningHub-<version>-x64-portable.zip`): unzip it and run
 `learning-hub.exe`, no installation and no leftovers. It reads the same config file as the installed

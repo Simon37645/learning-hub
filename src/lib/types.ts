@@ -1067,3 +1067,27 @@ export interface ThemesOverview {
 }
 
 
+
+// ---------------------------------------------------------------- 一键更新
+
+/** update_check 的结果。available: false 包括「当前版本号解析不了」这种边界 */
+export interface UpdateInfo {
+  current: string;
+  available: boolean;
+  /** 新版本号（不带前导 v） */
+  version?: string | null;
+  /** release 说明（后端已截断到 4000 字符） */
+  notes?: string | null;
+  /** 安装包下载地址 */
+  assetUrl?: string | null;
+  assetSize?: number | null;
+  /** GitHub 原样的 ISO 时间串，给「发布于 …」显示用 */
+  publishedAt?: string | null;
+}
+
+/** hub://update 事件：安装包下载进度。total 为 null 表示总大小未知 */
+export interface UpdateProgressEvent {
+  kind: "progress";
+  received: number;
+  total: number | null;
+}

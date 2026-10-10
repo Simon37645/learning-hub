@@ -22,6 +22,7 @@ pub mod studio;
 pub mod study;
 pub mod viewer;
 pub mod web;
+pub mod webbrowser;
 
 use crate::agent::registry::ToolRegistry;
 use std::sync::Arc;
@@ -82,6 +83,11 @@ pub fn registry() -> ToolRegistry {
         .register(Arc::new(viewer::PdfScreenshot))
         .register(Arc::new(viewer::ViewerActivate))
         .register(Arc::new(viewer::ViewerClose));
+
+    // --- 网页操作（scan / eval / 截图，走原生子 WebView 的程序化通道）---
+    r.register(Arc::new(webbrowser::WebScan))
+        .register(Arc::new(webbrowser::WebEval))
+        .register(Arc::new(webbrowser::WebScreenshot));
 
     // --- 技能与 MCP ---
     r.register(Arc::new(skills::SkillList))

@@ -1,6 +1,6 @@
 [package]
 name = "learning-hub"
-version = "0.3.1"
+version = "0.3.2-beta.1"
 description = "学习中枢 — 个人 AI 学习助手"
 authors = ["Simon37645"]
 license = "GPL-2.0-only"
@@ -50,6 +50,12 @@ reqwest = { version = "0.12", default-features = true, features = ["json", "stre
 scraper = "0.23"          # 网页正文提取（其 DOM 句柄类型来自 ego-tree）
 ego-tree = "0.10"         # 与 scraper 同版本，用来在遍历时持有节点引用
 pdf-extract = "0.8"       # PDF 全文提取（喂给 agent / 全文检索）
+
+# --- 网页操作（仅 Windows；给 agent 的 webbrowser 工具走 DevTools 截图）---
+# 版本跟 tauri/wry 依赖树里的现版本对齐（见 Cargo.lock），不另拉新版
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
 
 [features]
 # 默认不启用自定义协议；前端统一走 IPC 读文件字节

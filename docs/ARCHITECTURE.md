@@ -126,6 +126,17 @@ on_navigation / on_document_title_changed / on_page_load
 - bounds 是前端量的 **CSS px**，Rust 按 `scale_factor` 换算成物理像素（`to_physical_rect`，有单测）；
   w/h 不足 2 视为不可见，只藏不摆。iframe 只剩两个角色：本地 HTML（`sandbox=""`）与
   原生视图创建失败时的兜底（`web_frame_check` 自动切阅读模式的逻辑只保留在兜底路径里）。
+- **子 WebView 的程序化通道**（`eval_js` / `cdp_call`，agent 的
+  `web_scan` / `web_eval` / `web_screenshot` 工具走这两条）：
+  eval 走 tauri 的 `eval_with_callback`（完成值以 **JSON 编码字符串**送回，
+  Windows 上页面异常被吞成 null——注入的脚本必须自己 try/catch）；
+  CDP（如 `Page.captureScreenshot`）必须 `run_on_main_thread` +
+  `with_webview` 拿到 `ICoreWebView2` 后发起，完成回调**只 send 不等待**，
+  等待段包在 `spawn_blocking` 里。两条通道都先过 `require_remote_web_tab`：
+  只放行「kind == Web 且没有本地 path」的标签，本地 HTML / PDF / Markdown 一律拒绝——
+  本地内容有自己的读取方式，多开一个 JS 通道只多一个不受控的执行面。
+  web_scan 给可交互元素打的 `data-lh-ref` 标记是**页面上的临时属性**
+  （编号在 `window.__lhRefSeq` 递增、同页复用），刷新即失效。
 
 ## 5. 磁盘格式
 
@@ -352,6 +363,12 @@ impl Tool for MyTool {
 - **技能的 frontmatter 不做完整 YAML 解析**：只认 `key: value` 两行。理由是可预测——
   技能文件是用户手写的，解析失败要让用户看到「没写 description」而不是静默出错。
 - **MCP 手写而不引 SDK**：只用四个方法，300 行能讲清楚；出问题时日志就在自己手里。
+- **本机 agents 配置可一键导入**：其它 CLI agent 共享 `~/.agents/servers/*.json`，MCP 面板的
+  「从本机导入」走「发现 → 导入 → 落盘 → 重连」一条线——`mcp.rs` 的纯解析把每份配置读成候选
+  （字段能救就救；transport 不是 stdio / command 为空 / 带 url 只标 `blocked_reason`，不算文件坏了），
+  `agents_mcp_import` **重新从磁盘读** `{id}.json`（id 按文件名校验，防路径穿越）落进全局配置
+  （覆盖同名时保留现有 enabled），然后 `mcp_reload` 带回连接状态。**工具名前缀用配置里的 `id`
+  不是 label**——label 可能带空格，`mcp__<名>__<工具>` 的调用名会废。
 - **外部 MCP 工具一律按「写入」级处理**：它们的能力不可知，宁可多问一次。
 - **主观题判分复用 `agent::complete_once`**：不起对话循环、不带工具，只做一次结构化输出，
   并要求返回 JSON（`extract_json` 会容忍 ``` 围栏与前后解释）。

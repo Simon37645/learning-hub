@@ -158,6 +158,9 @@ PDF, Markdown, web pages, images and code — tabbed, in a side panel.
   shows exactly what the agent extracted.
 - **`viewer_*` tools** let the agent open files, turn pages, search inside a document and scroll to a
   hit while you watch.
+- **It can drive web pages too** (`web_scan` / `web_eval` / `web_screenshot`): scan a page's
+  structure, execute JS in it, and screenshot it for itself — the capabilities of external
+  browser-driving MCP servers, built into the app with zero external dependencies.
 
 <img src="docs/images/viewer.png" alt="PDF open in the built-in browser" width="820" />
 
@@ -264,7 +267,9 @@ pick from there. The rule looks at switches only, never at which folder a skill 
 add to any folder later fall under the same switches.
 
 **MCP** servers are launched over stdio; their tools appear to the agent as `mcp__<server>__<tool>`.
-External tools are treated as *writes*, so they always ask you first.
+External tools are treated as *writes*, so they always ask you first. The MCP panel can also import
+servers already configured for local CLI agents in `~/.agents/servers/` in one click (e.g. the
+agent-browser MCP that drives your real Chrome).
 
 <img src="docs/images/mcp.png" alt="Skills and MCP panels, each with global / per-topic switches" width="820" />
 

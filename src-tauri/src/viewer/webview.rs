@@ -17,12 +17,18 @@
 //! - 安全边界：子 WebView 的 label（`web-<tab_id>`）不在 capabilities 的 windows
 //!   列表里，拿不到任何 IPC 权限；`on_navigation` 再挡一层，只放行 http/https
 //!   （`http://ipc.localhost` 这类内部地址一并拒绝），弹窗一律拒绝并转交系统浏览器。
+//!
+//! 程序化通道（`eval_js` / `cdp_call`）：agent 的 webbrowser 工具借此「操作浏览器」
+//! ——执行 JS、走 Chrome DevTools Protocol 截图。两条通道都是「发起后等回调」：
+//! 回调在事件循环线程触发、只 send 不等待；等待段包在 `spawn_blocking` 里，
+//! 阻塞的只有专门的阻塞线程，不是事件循环，也不是 async worker。
 
 use crate::error::{AppError, AppResult};
-use crate::viewer::ViewerService;
+use crate::viewer::{ViewerKind, ViewerService, ViewerTab};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, Wry};
 use tauri_plugin_opener::OpenerExt;
@@ -291,6 +297,202 @@ impl WebviewManager {
     pub fn has(&self, tab_id: &str) -> bool {
         self.webviews.lock().contains_key(tab_id)
     }
+
+    /// 拿标签的子 WebView 句柄：clone 出来就放锁（模块规矩，绝不持锁调 dispatcher）。
+    ///
+    /// 查不到 ≠ 标签不存在（那个在前面的 `require_remote_web_tab` 已经挡了），
+    /// 而是「网页标签在，但原生视图没建出来」——内置浏览器面板收起时前端不会调
+    /// `viewer_webview_ensure`，agent 这时候想操作页面就无从下手。
+    fn handle_of(&self, tab_id: &str) -> AppResult<tauri::Webview<Wry>> {
+        self.webviews.lock().get(tab_id).cloned().ok_or_else(|| {
+            AppError::other(format!(
+                "该标签还没有原生网页视图（内置浏览器面板收起时创建会失败）。\
+                 请先展开内置浏览器面板让页面显示出来，再试一次。"
+            ))
+        })
+    }
+
+    /// 在某标签的子 WebView 里执行 JS，返回**完成值的 JSON 编码字符串**。
+    ///
+    /// （tauri 的 `eval_with_callback` 约定：完成值会被 JSON 序列化后交给回调，
+    /// 所以字符串结果带引号、`undefined` 是 `null`，调用方按 JSON 解。）
+    ///
+    /// 阻塞说明：结果靠 `recv_timeout` 等，那是阻塞调用——所以本方法做成 async，
+    /// 阻塞段包在 `spawn_blocking` 里，只把「句柄 + 参数」搬进阻塞线程
+    /// （`Webview` 是可 clone 的轻句柄），不搬 `self`，也不占 async worker。
+    pub async fn eval_js(
+        &self,
+        service: &ViewerService,
+        tab_id: &str,
+        js: &str,
+        timeout: Duration,
+    ) -> AppResult<String> {
+        let tab = require_remote_web_tab(service, tab_id).await?;
+        let wv = self.handle_of(&tab.id)?;
+        let js = js.to_string();
+        tauri::async_runtime::spawn_blocking(move || eval_blocking(wv, js, timeout))
+            .await
+            .map_err(|e| AppError::other(format!("等待 JS 执行结果失败：{e}")))?
+    }
+
+    /// 调一次 Chrome DevTools Protocol 方法，返回结果 JSON 字符串（仅 Windows；
+    /// 截图走 `Page.captureScreenshot`，这里不限定方法名，验收与扩展都方便）。
+    pub async fn cdp_call(
+        &self,
+        service: &ViewerService,
+        tab_id: &str,
+        method: &str,
+        params_json: &str,
+        timeout: Duration,
+    ) -> AppResult<String> {
+        let tab = require_remote_web_tab(service, tab_id).await?;
+        let wv = self.handle_of(&tab.id)?;
+        let method = method.to_string();
+        let params_json = params_json.to_string();
+        tauri::async_runtime::spawn_blocking(move || cdp_blocking(wv, method, params_json, timeout))
+            .await
+            .map_err(|e| AppError::other(format!("等待 DevTools 响应失败：{e}")))?
+    }
+}
+
+/// 校验「这是个可以程序化操作的远端网页标签」，返回标签快照。
+///
+/// 三种失败说三种人话：标签不存在 / 不是远端网页（本地 HTML 也算）/ 原生视图没建。
+/// 只对远端网页放行是有意的：本地 HTML、PDF、Markdown 自有读取方式（viewer_read /
+/// pdf_screenshot），把 JS 打进去只会得到第二个不受控的执行环境。
+async fn require_remote_web_tab(service: &ViewerService, tab_id: &str) -> AppResult<ViewerTab> {
+    let tab = service
+        .find(tab_id)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("标签页不存在：{tab_id}")))?;
+    if tab.kind != ViewerKind::Web {
+        return Err(AppError::invalid(format!(
+            "「{}」是{}标签，不是网页。这套网页操作只对内置浏览器里的远端网页生效；\
+             读本地内容请用 viewer_read，看 PDF 里的图请用 pdf_screenshot。",
+            tab.title,
+            kind_label(tab.kind)
+        )));
+    }
+    // 本地 HTML 文件也登记成 Web 类（靠 path 区分），但它没有远端网页那套语义
+    if tab.path.is_some() {
+        return Err(AppError::invalid(format!(
+            "「{}」是本地 HTML 文件，不是远端网页；网页操作工具对它不生效。",
+            tab.title
+        )));
+    }
+    Ok(tab)
+}
+
+fn kind_label(k: ViewerKind) -> &'static str {
+    match k {
+        ViewerKind::Pdf => "PDF",
+        ViewerKind::Markdown => "Markdown",
+        ViewerKind::Web => "网页",
+        ViewerKind::Image => "图片",
+        ViewerKind::Text => "文本",
+        ViewerKind::Blank => "空白",
+    }
+}
+
+/// eval 的阻塞实现：发起后用 channel 等回调送回结果。
+fn eval_blocking(wv: tauri::Webview<Wry>, js: String, timeout: Duration) -> AppResult<String> {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    wv.eval_with_callback(js, move |res| {
+        // 回调在事件循环线程触发：只 send，绝不等待
+        let _ = tx.send(res);
+    })
+    .map_err(|e| AppError::other(format!("无法在该页面执行 JS：{e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(res) => Ok(res),
+        Err(_) => Err(AppError::other(format!(
+            "执行 JS 超时（{:.0} 秒）。页面可能还没加载完，或脚本里有长时间循环；稍后再试。",
+            timeout.as_secs_f32()
+        ))),
+    }
+}
+
+/// CDP 调用的阻塞实现。
+///
+/// `CallDevToolsProtocolMethod` 是 WebView2 的 COM 调用，必须在 UI 线程发起、
+/// 结果由完成回调异步送回：先 `run_on_main_thread`，在主线程里 `with_webview`
+/// 拿到 controller（`PlatformWebview::controller()` 在 Windows 返回
+/// `ICoreWebView2Controller`），`CoreWebView2()` 拿到接口后发起调用；
+/// 完成回调同样只 `send` 不等待。参考 wry 0.57 `webview2/mod.rs` 的 execute_script。
+#[cfg(windows)]
+fn cdp_blocking(
+    wv: tauri::Webview<Wry>,
+    method: String,
+    params_json: String,
+    timeout: Duration,
+) -> AppResult<String> {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows_core::HSTRING;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let tx_dispatch = tx.clone();
+    // 原始发送端在这里 drop：万一回调永远不来，通道关闭会让 recv 立刻失败，
+    // 而不是陪页面干等满超时
+    drop(tx);
+    // with_webview 的闭包是 'static 的：句柄 clone 一份进去，本体留给 recv；
+    // 方法名留给下面的报错文案，闭包里用 clone
+    let wv_inner = wv.clone();
+    let method_for_closure = method.clone();
+    wv.run_on_main_thread(move || {
+        let _ = wv_inner.with_webview(move |platform| {
+            let method = method_for_closure;
+            let tx = tx_dispatch;
+            unsafe {
+                match platform.controller().CoreWebView2() {
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("{e}")));
+                    }
+                    Ok(core) => {
+                        let tx_cb = tx.clone();
+                        let call = core.CallDevToolsProtocolMethod(
+                            &HSTRING::from(&method),
+                            &HSTRING::from(&params_json),
+                            &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                                move |hr, result_json| {
+                                    // 回调在主线程触发：只 send，绝不等待
+                                    let _ = tx_cb.send(match hr {
+                                        Ok(()) => Ok(result_json),
+                                        Err(e) => Err(format!("{e}")),
+                                    });
+                                    Ok(())
+                                },
+                            )),
+                        );
+                        if let Err(e) = call {
+                            let _ = tx.send(Err(format!("{e}")));
+                        }
+                    }
+                }
+            }
+        });
+    })
+    .map_err(|e| AppError::other(format!("无法调度主线程任务：{e}")))?;
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(json)) => Ok(json),
+        Ok(Err(e)) => Err(AppError::other(format!(
+            "DevTools 调用失败（{method}）：{e}。若在截图，把内置浏览器面板展开、窗口别最小化，再试一次。"
+        ))),
+        Err(_) => Err(AppError::other(format!(
+            "等待 DevTools 响应超时（{:.0} 秒，{method}）。页面可能还没加载完；把内置浏览器面板展开、窗口别最小化，再试一次。",
+            timeout.as_secs_f32()
+        ))),
+    }
+}
+
+/// 非 Windows 没有实现（WebView2 是 Windows 专属）。
+#[cfg(not(windows))]
+fn cdp_blocking(
+    _wv: tauri::Webview<Wry>,
+    _method: String,
+    _params_json: String,
+    _timeout: Duration,
+) -> AppResult<String> {
+    Err(AppError::other("网页截图目前只在 Windows 上可用"))
 }
 
 fn label_of(tab_id: &str) -> String {

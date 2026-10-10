@@ -396,3 +396,70 @@ pub async fn viewer_webview_reload(state: State<'_, AppState>, tab_id: String) -
     let core = state.0.clone();
     core.webviews.reload(&tab_id)
 }
+
+// ---------------------------------------------------------------- 验收调试命令（仅 debug 构建）
+//
+// 给验收用 CDP 实测的直达通道：绕过工具层，直接调 WebviewManager。
+// `#[cfg(debug_assertions)]` 从命令到注册一处不漏——release 构建里这两个符号不存在。
+
+/// （仅 debug）在某个网页标签的原生视图里执行 JS，返回完成值的 JSON 字符串。
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub async fn debug_web_eval(
+    state: State<'_, AppState>,
+    tab_id: String,
+    code: String,
+) -> AppResult<String> {
+    let core = state.0.clone();
+    core.webviews
+        .eval_js(&core.viewer, &tab_id, &code, std::time::Duration::from_secs(12))
+        .await
+}
+
+/// （仅 debug）截图某个网页标签，返回 { path, width, height }（path 是工作区相对路径）。
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub async fn debug_web_screenshot(
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> AppResult<serde_json::Value> {
+    let core = state.0.clone();
+    let raw = core
+        .webviews
+        .cdp_call(
+            &core.viewer,
+            &tab_id,
+            "Page.captureScreenshot",
+            r#"{"format":"png"}"#,
+            std::time::Duration::from_secs(20),
+        )
+        .await?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| AppError::other(format!("截图结果解析失败：{e}")))?;
+    let data = value
+        .get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::other(format!("没有拿到图片数据：{}", truncate_for_log(&raw))))?;
+    let bytes = crate::agent::attachment::b64_decode(data)?;
+    let (width, height) =
+        crate::agent::tools::webbrowser::png_dimensions(&bytes).unwrap_or((0, 0));
+    let stored = crate::agent::attachment::Attachments::new(
+        core.config_read().workspace_root.clone(),
+    )
+    .save("调试网页截图", &bytes)?;
+    Ok(serde_json::json!({
+        "path": stored.rel,
+        "width": width,
+        "height": height,
+    }))
+}
+
+/// 日志/报错里只带前 200 字符，别把一张 base64 图整个塞进错误消息。
+#[cfg(debug_assertions)]
+fn truncate_for_log(s: &str) -> String {
+    if s.chars().count() <= 200 {
+        s.to_string()
+    } else {
+        s.chars().take(200).collect::<String>() + "…"
+    }
+}

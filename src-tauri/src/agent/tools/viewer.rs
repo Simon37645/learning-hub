@@ -94,7 +94,10 @@ async fn ensure_content(ctx: &ToolCtx, tab: &ViewerTab) -> AppResult<ViewerTab> 
 }
 
 /// 解析「用哪个标签」：显式 id > 当前激活的标签。
-async fn resolve_tab(ctx: &ToolCtx, tab_id: Option<String>) -> AppResult<ViewerTab> {
+///
+/// `pub(crate)`：webbrowser 工具（web_scan / web_eval / web_screenshot）的
+/// tab_id 也走同一个缺省规则，别复制一份两处漂移。
+pub(crate) async fn resolve_tab(ctx: &ToolCtx, tab_id: Option<String>) -> AppResult<ViewerTab> {
     match tab_id {
         Some(id) if !id.trim().is_empty() => ctx
             .core

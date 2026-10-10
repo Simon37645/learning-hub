@@ -163,6 +163,12 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   **不要按名字或目录写特例**——用户会自己往任意目录加技能，规则必须对以后新增的也成立。
   技能多了靠面板上的「全部关掉 / 全部打开」一键归零，那两个命令（`skills_set_all` /
   `mcp_set_all`）也是按「当前扫到什么就管什么」实现的。
+- **`~/.agents/servers/` 导入本机 MCP 配置**（面板「从本机导入」）：**工具前缀用文件里的 `id`，
+  不是 label**——label 可能带空格，`mcp__<名>__<工具>` 的函数调用名会废。导入即写 config 并
+  `mcp_reload`（已导入过的保留现有 enabled，别把用户手动关掉的打开）；只支持 stdio
+  （transport/http、带 url 的只标 `blocked_reason`，不算解析失败）；`agents_mcp_import` 的
+  **id 必须按文件名校验**（含 `/` `\` `..` 一律拒绝），否则拼 `{id}.json` 就是路径穿越。
+  导入对目录里所有文件一视同仁，别给任何具体名字写特例。
 - **InkNote 的样式表是全局的**（`src/inknote/editor.css` 在 `main.tsx` 里引入）：
   里面那些通用类名会直接盖住应用自己的同名样式，CSS 只看优先级和顺序。
   真踩过：右下角的操作提示（`.toast`）被它改成了 `fixed + left:50%` 的居中横幅，
@@ -268,12 +274,32 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   语义是「先收起来」。侧栏把它渲染在各主题展开后的「已归档」分组里。
   分叉点定在**最后一条 assistant 消息之后**（不是字面上的最后一条），
   否则末尾那句「用户刚提问、模型还没答」会让新对话一开头就欠一个回答。
+- **web_scan / web_eval / web_screenshot 只对「已建原生视图的远端网页标签」可用**
+  （`agent/tools/webbrowser.rs` + `viewer/webview.rs` 的 `eval_js` / `cdp_call`）：
+  本地 HTML（也是 `Web` kind，靠 `path` 是否为 Some 区分）、PDF、Markdown 一律在
+  `require_remote_web_tab` 报错，别放宽这个判断；内置浏览器面板收起时原生视图不存在，
+  报错文案要让模型引导用户先展开面板。三条通道的机械细节：
+  - **eval 的完成值是 JSON 字符串**（tauri `eval_with_callback` 的约定：字符串结果
+    外面还包着一层引号），Rust 侧要先解一层再 `serde_json` 解析；
+    Windows 上页面异常会被吞成 `null`，所以扫描脚本必须自己 try/catch。
+  - **CDP 调用必须 `run_on_main_thread` + `with_webview` 拿 controller**，
+    完成回调在主线程触发，**只往 channel send，绝不等待**；等待（`recv_timeout`）
+    是阻塞调用，包在 `spawn_blocking` 里，别让 async worker 陪着卡。
+  - **`data-lh-ref` 是页面上的临时属性**（web_scan 打的标记，编号挂在
+    `window.__lhRefSeq` 上递增、复用），刷新页面就没了——不是持久状态，别往数据库写。
+  - eval 结果 20k 字符封顶（`EVAL_RESULT_MAX`）才给模型；调试这两个通道有
+    `debug_web_eval` / `debug_web_screenshot` 两个命令，**只在 debug 构建存在**
+    （`generate_handler!` 参数加不了 `#[cfg]`，注册在 `lib.rs` 的
+    `main_invoke_handler` 里用两张表合并，release 构建没有这两个符号）。
+    依赖只有 `webview2-com 0.39` + `windows-core 0.62`——**必须跟 wry/tauri
+    依赖树里的版本一致**（0.62 不是 0.61，差一个 minor HSTRING 就是两个类型）。
 
 ## 当前状态（v1）
 
 已完成：主题/笔记/资料/卡片/计划/会话/测验 七个模块、内置浏览器（PDF 含文字层 / Markdown / 网页 / 图片 / 文本）、
 内置笔记编辑器（移植自 InkNote 的 CodeMirror 6 所见即所得）、讲解模式（讲解方案 + HTML 演示页 + 来源标注）、
-知识库（讲义入库 + 带出处的检索）、技能与 MCP（侧栏入口，支持全局/本主题两级开关，沿父子链继承）、
+知识库（讲义入库 + 带出处的检索）、技能与 MCP（侧栏入口，支持全局/本主题两级开关，沿父子链继承；
+MCP 面板可一键导入本机 `~/.agents/servers/` 里已配置的服务器并重连）、
 长期记忆（侧栏「记忆」面板；agent 用 `memory_write` 自己记，每轮注入系统提示词，
 全局/本主题两级 + 父主题继承）、
 对话管理（侧栏对话行悬停出「⋯」：重命名 / 置顶 / 分叉 / 归档 / 删除；元数据在侧车文件里）、
@@ -298,6 +324,9 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看——图、表、公式、扫描页；
   渲染在前端 pdf.js，图片落进 `.hub/attachments/` 并作为工具结果的图片回灌，
   工具卡片里能看到 agent 看了哪一页）、
+网页操作（`web_scan` / `web_eval` / `web_screenshot`：agent 能扫描内置浏览器里网页的结构、
+  在页面里执行 JS、把网页截图给自己看——对标外部浏览器操作 MCP 的能力，
+  纯 Rust 内置零依赖，走原生子 WebView 的 eval / CDP 通道，只对远端网页标签生效）、
 专注模式（F11：窗口全屏 + 收起标题栏/侧栏/内置浏览器，写笔记时整屏）。
 
 已知待办（按价值排序）：

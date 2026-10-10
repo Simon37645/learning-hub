@@ -92,7 +92,32 @@ pub fn run() {
             app.manage(AppState(core));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(main_invoke_handler())
+        // 关窗口前把长期记忆里攒着的「用了几次」落盘。
+        // 这些统计只影响面板上的显示，丢了也不致命，但既然能顺手写上就别攒着。
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                window
+                    .app_handle()
+                    .try_state::<AppState>()
+                    .map(|s| s.0.memory_flush());
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("学习中枢启动失败");
+}
+
+
+/// 主窗口的命令表。
+///
+/// generate_handler 的参数列表不能加 #[cfg] 属性，而验收调试命令
+/// （commands::viewer::debug_web_*）必须在 release 构建里不存在——
+/// 所以拆成两张表：generate_handler 生成的是 Fn 闭包（Invoke 是每次调用
+/// 新进来的参数，闭包不捕获可变状态），Arc 之后在一个分派闭包里合并，
+/// debug 命令名先走 debug 表，没接住再落到主表。
+fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    let base: std::sync::Arc<tauri::ipc::InvokeHandler<tauri::Wry>> =
+        std::sync::Arc::new(tauri::generate_handler![
             // --- 应用 ---
             commands::app::app_bootstrap,
             commands::app::config_get,
@@ -121,6 +146,8 @@ pub fn run() {
             commands::extend::mcp_delete,
             commands::extend::mcp_set_enabled,
             commands::extend::mcp_set_all,
+            commands::extend::agents_mcp_candidates,
+            commands::extend::agents_mcp_import,
             // --- 工坊（独立于学习：照着内置规范造技能与 MCP 服务器）---
             commands::studio::studio_info,
             commands::studio::studio_spec,
@@ -231,19 +258,26 @@ pub fn run() {
             commands::study::session_start,
             commands::study::session_finish,
             commands::study::daily_brief,
-        ])
-        // 关窗口前把长期记忆里攒着的「用了几次」落盘。
-        // 这些统计只影响面板上的显示，丢了也不致命，但既然能顺手写上就别攒着。
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                window
-                    .app_handle()
-                    .try_state::<AppState>()
-                    .map(|s| s.0.memory_flush());
+        ]);
+
+    #[cfg(debug_assertions)]
+    let debug: std::sync::Arc<tauri::ipc::InvokeHandler<tauri::Wry>> =
+        std::sync::Arc::new(tauri::generate_handler![
+            // --- 验收调试（仅 debug 构建）---
+            commands::viewer::debug_web_eval,
+            commands::viewer::debug_web_screenshot,
+        ]);
+
+    move |invoke| {
+        #[cfg(debug_assertions)]
+        {
+            let name = invoke.message.command();
+            if name == "debug_web_eval" || name == "debug_web_screenshot" {
+                return debug(invoke);
             }
-        })
-        .run(tauri::generate_context!())
-        .expect("学习中枢启动失败");
+        }
+        base(invoke)
+    }
 }
 
 /// 给测试用的常量：默认 HTTP 超时。

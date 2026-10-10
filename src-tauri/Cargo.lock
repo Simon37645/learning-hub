@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "learning-hub"
-version = "0.3.1"
+version = "0.3.2-beta.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2327,6 +2327,8 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+ "webview2-com",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

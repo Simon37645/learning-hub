@@ -126,6 +126,8 @@ PDF、Markdown、网页、图片、代码，带标签页，就在右侧面板里
 - **网页**用原生子 WebView 渲染（真 WebView2，Bing / GitHub / 知乎这类拒绝被 iframe 嵌入的站点照常打开），
   另有「阅读模式」手动查看 agent 实际提取到的正文。
 - **`viewer_*` 系列工具**让 agent 能打开文件、翻页、在文档里检索并滚到命中处，你全程看得见。
+- **网页它还能上手操作**（`web_scan` / `web_eval` / `web_screenshot`）：扫描网页结构、在页面里执行
+  JS、把网页截图给自己看——对标外部浏览器操作 MCP 的能力，纯 Rust 随应用内置，零外部依赖。
 
 <img src="docs/images/viewer.png" alt="内置浏览器打开 PDF" width="820" />
 
@@ -222,7 +224,8 @@ agent 回答前会先用 `kb_search` 查一遍，并标出处：
 新加的技能，都落在同一套开关里。
 
 **MCP** 服务器走 stdio 启动，它提供的工具会以 `mcp__服务器__工具` 出现。外部工具按「写入」级别处理，
-一定会先问你。MCP 同样是纯开关驱动，也有一键全开/全关。
+一定会先问你。MCP 同样是纯开关驱动，也有一键全开/全关。面板里还能一键导入本机
+`~/.agents/servers/` 里已配置的 MCP 服务器（如驱动真实 Chrome 的 agent-browser）。
 
 <img src="docs/images/mcp.png" alt="技能与 MCP 面板：都分全局 / 本主题两级" width="820" />
 

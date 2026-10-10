@@ -1,7 +1,7 @@
 //! 内置浏览器（查看器）：标签页状态机 + 供 agent 读取的内容快照。
 //!
 //! 架构要点：**渲染在前端，状态在 Rust**。
-//! - 前端负责真正画出来（Markdown 渲染、pdf.js 画布、iframe 网页）
+//! - 前端负责真正画出来（Markdown 渲染、pdf.js 画布、原生子 WebView / iframe 网页）
 //! - Rust 保存每个标签页的「元数据 + 文本快照」，于是 agent 可以像人一样
 //!   「看」当前页面、「翻页」、「跳转」，而前端只是执行者。
 //!
@@ -10,6 +10,7 @@
 //! Rust → 前端：`hub://viewer` 事件（打开、关闭、跳转、请求快照）。
 
 pub mod web_extract;
+pub mod webview;
 
 use crate::error::{AppError, AppResult};
 use crate::store;
@@ -411,6 +412,54 @@ impl ViewerService {
             t.loading = loading;
             t.error = error;
             t.updated_at = Utc::now();
+        }
+    }
+
+    /// 原生 WebView 的回调回写（见 `webview` 模块）：url / 标题 / 加载状态。
+    ///
+    /// 只作用于 **kind == Web** 的标签（其它类型不该有子 WebView，回错来了直接忽略）；
+    /// url 真的变了才清空正文快照并置 loading——fragment 跳转、重定向收尾这些
+    /// 重复上报不应该把 agent 已经拿到的正文冲掉。
+    /// 返回更新后的 TabView 供调用方发 `Updated` 事件；标签不存在或不合适时返回 None。
+    pub async fn apply_web_state(
+        &self,
+        id: &str,
+        url: Option<String>,
+        title: Option<String>,
+        loading: Option<bool>,
+    ) -> Option<TabView> {
+        let mut g = self.inner.write().await;
+        let t = g
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id && t.kind == ViewerKind::Web)?;
+        let mut changed = false;
+        if let Some(u) = url {
+            if t.url.as_deref() != Some(u.as_str()) {
+                t.url = Some(u);
+                t.content.clear();
+                t.loading = true;
+                changed = true;
+            }
+        }
+        if let Some(ti) = title {
+            let ti = ti.trim();
+            if !ti.is_empty() && ti != t.title {
+                t.title = ti.to_string();
+                changed = true;
+            }
+        }
+        if let Some(l) = loading {
+            if t.loading != l {
+                t.loading = l;
+                changed = true;
+            }
+        }
+        if changed {
+            t.updated_at = Utc::now();
+            Some(TabView::from(&*t))
+        } else {
+            None
         }
     }
 

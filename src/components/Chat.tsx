@@ -30,7 +30,7 @@ import {
   type ToolImage,
   type ToolOutcomeView,
 } from "../lib/types";
-import { Dropdown, Icon, MenuItem, MenuLabel, MenuSep, Modal, Spinner, AutoTextarea } from "./ui";
+import { Dropdown, Icon, MenuItem, MenuLabel, MenuSep, Modal, Spinner, AutoTextarea, useOverlay } from "./ui";
 import { TopicWelcome, Welcome } from "./Home";
 
 /** 一条消息最多带几张图（再多就该想想是不是该做成资料了）。 */
@@ -246,6 +246,8 @@ function MessageView({
 function ImageLightbox({ block, onClose }: { block: LightboxImage; onClose: () => void }) {
   const workspaceRoot = useApp((s) => s.config?.workspaceRoot ?? "");
   const [zoom, setZoom] = useState(1);
+  // 全屏浮层盖不住原生子 WebView（内置浏览器的网页），计数让它让路
+  useOverlay();
 
   return (
     <div className="img-lightbox" onClick={onClose}>

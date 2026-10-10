@@ -22,6 +22,8 @@ pub struct AppCore {
     pub http: reqwest::Client,
     pub agent: Arc<AgentService>,
     pub viewer: Arc<ViewerService>,
+    /// 网页标签的原生子 WebView（label = `web-<tab_id>`），见 `viewer::webview` 模块
+    pub webviews: crate::viewer::webview::WebviewManager,
     /// 当前进行中的学习会话（同一时间只允许一个）
     session: RwLock<Option<StudySession>>,
     /// 沙箱白名单：工作区之外被用户批准过的目录
@@ -90,6 +92,7 @@ impl AppCore {
             http,
             agent: Arc::new(AgentService::new()),
             viewer: Arc::new(ViewerService::new()),
+            webviews: crate::viewer::webview::WebviewManager::new(),
             session: RwLock::new(None),
             approved_roots: RwLock::new(approved),
             skills_cache: RwLock::new(Vec::new()),

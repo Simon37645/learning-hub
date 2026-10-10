@@ -144,6 +144,14 @@ interface AppStore {
   paletteOpen: boolean;
   toasts: Toast[];
   inspectorOpen: boolean;
+  /**
+   * 盖满窗口的浮层数量（Modal / 大图 / 命令面板 / 拖放提示 / 演示卡片全屏）。
+   * 原生子 WebView 浮在一切 DOM 之上，数量大于 0 时 WebTab 必须把它藏起来让路
+   * （计数由 useOverlay() 维护，StrictMode 下 mount→cleanup→mount 净值不变）。
+   */
+  overlayCount: number;
+  /** 原生网页视图当前是否盖在界面上：ToastHost 据此换到左下角，别被它压住 */
+  nativeWebviewUp: boolean;
 
   // --- 工坊 / 外观主题 ---
   /** 工坊的信息（练习目录、内置规范清单），面板打开时拉一次 */
@@ -255,6 +263,9 @@ interface AppStore {
   toast: (level: Toast["level"], message: string) => void;
   dismissToast: (id: number) => void;
   setInspectorOpen: (open: boolean) => void;
+  /** 浮层计数 +1 / -1（useOverlay 在 mount/unmount 时调；不会减成负数） */
+  bumpOverlay: (delta: 1 | -1) => void;
+  setNativeWebviewUp: (up: boolean) => void;
 }
 
 let toastSeq = 1;
@@ -312,6 +323,8 @@ export const useApp = create<AppStore>((set, get) => ({
   paletteOpen: false,
   toasts: [],
   inspectorOpen: false,
+  overlayCount: 0,
+  nativeWebviewUp: false,
 
   studio: null,
   themes: null,
@@ -1099,6 +1112,15 @@ export const useApp = create<AppStore>((set, get) => ({
 
   setInspectorOpen(open) {
     set({ inspectorOpen: open });
+  },
+
+  bumpOverlay(delta) {
+    set((s) => ({ overlayCount: Math.max(0, s.overlayCount + delta) }));
+  },
+
+  setNativeWebviewUp(up) {
+    // 值没变就不动 state，避免无谓的重渲染（ensure/bounds 成功会反复调）
+    set((s) => (s.nativeWebviewUp === up ? {} : { nativeWebviewUp: up }));
   },
 }));
 

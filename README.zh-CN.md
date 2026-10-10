@@ -123,7 +123,8 @@ PDF、Markdown、网页、图片、代码，带标签页，就在右侧面板里
 
 - **PDF** 用 pdf.js 逐页渲染，所以 agent 能翻到第 12 页并引用它。文字层是真的——可以选中、复制，
   检索命中会直接标在那一行文字上。
-- **网页**内嵌打开，另有「阅读模式」显示 agent 实际提取到的正文。
+- **网页**用原生子 WebView 渲染（真 WebView2，Bing / GitHub / 知乎这类拒绝被 iframe 嵌入的站点照常打开），
+  另有「阅读模式」手动查看 agent 实际提取到的正文。
 - **`viewer_*` 系列工具**让 agent 能打开文件、翻页、在文档里检索并滚到命中处，你全程看得见。
 
 <img src="docs/images/viewer.png" alt="内置浏览器打开 PDF" width="820" />

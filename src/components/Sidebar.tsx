@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import { STAGE_LABEL, THEME_LABEL, type AgentMode, type StudyStage, type TopicSummary } from "../lib/types";
 import { hotkey, relTime } from "../lib/format";
-import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal } from "./ui";
+import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, useOverlay } from "./ui";
 import { McpDialog, SkillsDialog } from "./Extend";
 import { MemoryPanel } from "./Memory";
 import { api } from "../lib/api";
@@ -1068,25 +1068,32 @@ function TopicRow({
 /** 搜索主题的命令面板 */
 export function SearchPalette() {
   const open = useApp((s) => s.paletteOpen);
+  if (!open) return null;
+  return <PaletteOpen />;
+}
+
+/** 打开着的本体。单独一层组件：useOverlay 只能挂在「真正盖着窗口」才计数
+ *  （外层在没有打开时也要渲染，不能挂）。原生子 WebView 会压住这个浮层，
+ *  计数让 WebTab 显式让路。 */
+function PaletteOpen() {
   const setOpen = useApp((s) => s.setPaletteOpen);
   const openTopic = useApp((s) => s.openTopic);
   const topics = useApp((s) => s.topics);
   const [q, setQ] = useState("");
   const [cursor, setCursor] = useState(0);
   const [matches, setMatches] = useState<{ slug: string; name: string; hits: string[] }[]>([]);
+  useOverlay();
 
   // Esc 在任何位置都能关（不只在输入框里）
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
+  }, [setOpen]);
 
   useMemo(() => {
-    if (!open) return;
     let alive = true;
     const run = async () => {
       try {
@@ -1109,9 +1116,7 @@ export function SearchPalette() {
     return () => {
       alive = false;
     };
-  }, [q, open]);
-
-  if (!open) return null;
+  }, [q]);
 
   // 子主题在搜索结果里带上父主题名，免得「第三章」这类名字看不出是哪门课的
   const byId = new Map(topics.map((t) => [t.meta.id, t]));

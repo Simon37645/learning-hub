@@ -24,6 +24,7 @@ import type {
   TopicSummary,
   TurnRequest,
   ViewerSnapshot,
+  WebviewRect,
   WorkspaceInfo,
   AgendaBucket,
   MaterialItem,
@@ -234,6 +235,19 @@ export const api = {
   viewerGetContent: (tabId: string) => invoke<string>("viewer_get_content", { tabId }),
   viewerReload: (tabId: string) => invoke<void>("viewer_reload", { tabId }),
   viewerOpenHome: () => invoke<TabView>("viewer_open_home"),
+
+  // ---------------- 原生子 WebView（远端网页的真 WebView 渲染）----------------
+  /** 确保标签的原生视图存在、停在 url 上、对齐到宿主矩形（CSS px 相对视口）。
+   *  失败时抛错，调用方退回 iframe 兜底路径。 */
+  viewerWebviewEnsure: (tabId: string, url: string, rect: WebviewRect) =>
+    invoke<void>("viewer_webview_ensure", { tabId, url, x: rect.x, y: rect.y, w: rect.w, h: rect.h }),
+  /** 宿主矩形变了（窗口缩放、拖侧栏）：只挪位置尺寸 */
+  viewerWebviewBounds: (tabId: string, rect: WebviewRect) =>
+    invoke<void>("viewer_webview_bounds", { tabId, x: rect.x, y: rect.y, w: rect.w, h: rect.h }),
+  /** 显示 / 隐藏（隐藏不销毁，页面状态保留） */
+  viewerWebviewSetVisible: (tabId: string, visible: boolean) =>
+    invoke<void>("viewer_webview_set_visible", { tabId, visible }),
+  viewerWebviewReload: (tabId: string) => invoke<void>("viewer_webview_reload", { tabId }),
 
   // ---------------- 学习资产 ----------------
   cardList: (slug: string, opts?: { dueOnly?: boolean; query?: string }) =>

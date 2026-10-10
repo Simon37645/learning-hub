@@ -35,6 +35,15 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
+  // 演示卡片（```html / ```svg）的全屏走 Fullscreen API：元素进了浏览器顶层画布，
+  // 但原生子 WebView 是另一个原生窗口，照样盖在它上面。把「有元素在全屏」算作一个
+  // 浮层（见 store 的 overlayCount），WebTab 会自动让路；退出时还原。
+  useEffect(() => {
+    const onFs = () => useApp.getState().bumpOverlay(document.fullscreenElement ? 1 : -1);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
   // 全局快捷键
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

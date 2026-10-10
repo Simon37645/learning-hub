@@ -196,6 +196,10 @@ pub fn run() {
             commands::viewer::viewer_get_content,
             commands::viewer::viewer_reload,
             commands::viewer::viewer_open_home,
+            commands::viewer::viewer_webview_ensure,
+            commands::viewer::viewer_webview_bounds,
+            commands::viewer::viewer_webview_set_visible,
+            commands::viewer::viewer_webview_reload,
             // --- 讲解方案 ---
             commands::lesson::lesson_list,
             commands::lesson::lesson_get,

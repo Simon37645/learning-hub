@@ -664,6 +664,14 @@ export interface OpenRequest {
   newTab?: boolean;
 }
 
+/** 原生子 WebView 的宿主矩形（CSS 像素，相对视口；Rust 侧按屏幕缩放换算成物理像素） */
+export interface WebviewRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export type ViewerEvent =
   | { kind: "sync"; snapshot: ViewerSnapshot }
   | { kind: "snapshot_request"; tab_id: string }

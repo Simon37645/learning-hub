@@ -2058,6 +2058,22 @@ body.dragging-chat {
   background: #fff;
 }
 
+/* 远端网页的原生子 WebView 的「影子」：页面画在 DOM 之上的原生层里，
+   这个 div 只负责占位（WebTab 靠它量 bounds）与打底（原生层没起来时不至于全白）。 */
+.viewer-webview {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  display: grid;
+  place-items: center;
+}
+
+.viewer-webview-hint {
+  color: var(--text-faint);
+  font-size: 12px;
+  user-select: none;
+}
+
 .pdf-stage {
   display: flex;
   flex-direction: column;
@@ -2763,6 +2779,13 @@ mark.hit {
   gap: 8px;
   z-index: 300;
   max-width: 380px;
+}
+
+/* 原生网页视图盖在右下角时 Toast 挪到左下——Toast 是 DOM，压不过原生层 */
+.toast-host.left {
+  left: 16px;
+  right: auto;
+  align-items: flex-start;
 }
 
 .toast {

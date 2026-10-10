@@ -98,6 +98,8 @@ pub async fn web_frame_check(state: State<'_, AppState>, url: String) -> AppResu
 pub async fn viewer_close(state: State<'_, AppState>, tab_id: String) -> AppResult<()> {
     let core = state.0.clone();
     core.viewer.close(&tab_id).await?;
+    // 标签没了，挂着它的原生子 WebView 也要一起销毁（句柄表同步清掉）
+    core.webviews.close(&tab_id);
     core.emit_viewer_sync().await;
     Ok(())
 }
@@ -326,4 +328,71 @@ pub async fn viewer_open_home(state: State<'_, AppState>) -> AppResult<TabView> 
         .await?;
     core.emit_viewer_sync().await;
     Ok(TabView::from(&tab))
+}
+
+// ---------------------------------------------------------------- 原生子 WebView
+//
+// 远端网页由挂在主窗口上的子 WebView 渲染（不受 X-Frame-Options 约束），见
+// `viewer::webview` 模块。这一层只做编排：校验参数 → 调 WebviewManager → 返回；
+// 创建失败（个别平台/环境问题）时把错误抛回前端，由它退回 iframe 兜底路径。
+
+/// 确保「这个标签的原生视图」存在并停在 url 上，对齐到宿主矩形（CSS 像素，相对视口）。
+#[tauri::command]
+pub async fn viewer_webview_ensure(
+    state: State<'_, AppState>,
+    tab_id: String,
+    url: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> AppResult<()> {
+    let core = state.0.clone();
+    let url = crate::net::normalize_url(&url)?;
+    let tab = core
+        .viewer
+        .find(&tab_id)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("标签页不存在：{tab_id}")))?;
+    if tab.kind != ViewerKind::Web {
+        return Err(AppError::invalid("只有网页标签才用原生视图，本地文件请用对应的渲染器"));
+    }
+    core.webviews.ensure(
+        &core.app,
+        &core.viewer,
+        &tab_id,
+        &url,
+        crate::viewer::webview::RectCss { x, y, w, h },
+        false,
+    )
+}
+
+/// 宿主矩形变了（窗口缩放、拖侧栏、面板收展）：只挪位置尺寸，不动页面。
+#[tauri::command]
+pub async fn viewer_webview_bounds(
+    state: State<'_, AppState>,
+    tab_id: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> AppResult<()> {
+    let core = state.0.clone();
+    core.webviews
+        .set_bounds_css(&core.app, &tab_id, crate::viewer::webview::RectCss { x, y, w, h })
+}
+
+/// 显示 / 隐藏原生视图（浮层弹出、切阅读模式、切标签、收起面板时都要让它让路；
+/// 隐藏不销毁，页面状态保留——收起再展开还在原地）。
+#[tauri::command]
+pub async fn viewer_webview_set_visible(state: State<'_, AppState>, tab_id: String, visible: bool) -> AppResult<()> {
+    let core = state.0.clone();
+    core.webviews.set_visible(&tab_id, visible)
+}
+
+/// 刷新原生视图里的页面。
+#[tauri::command]
+pub async fn viewer_webview_reload(state: State<'_, AppState>, tab_id: String) -> AppResult<()> {
+    let core = state.0.clone();
+    core.webviews.reload(&tab_id)
 }

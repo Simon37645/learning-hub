@@ -1,6 +1,6 @@
 [package]
 name = "learning-hub"
-version = "0.3.0-beta.2"
+version = "0.3.1"
 description = "学习中枢 — 个人 AI 学习助手"
 authors = ["Simon37645"]
 license = "GPL-2.0-only"
@@ -17,7 +17,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # --- Tauri 运行时 ---
-tauri = { version = "2", features = ["protocol-asset"] }
+# unstable：内置浏览器的远端网页用原生子 WebView 渲染（Window::add_child），
+# 这组 API 在 2.x 还挂在 unstable feature 下；开启后 child webview 没有
+# capabilities 授权（windows 列表只含 main），外部网页调不了应用 IPC。
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"

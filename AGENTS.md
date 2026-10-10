@@ -112,6 +112,24 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   解析路径时统一走 `paths::strip_locator_if_missing`（**原路径存在就不动**，不存在才去掉尾巴上的
   定位词），三个入口——内置浏览器命令、agent 的 `viewer_open`、paths 单测——都从这里走。
   别只在某一处加正则去尾巴：文件名真的叫「第一讲.pdf」时会被误伤。
+- **远端网页走原生子 WebView，不再吃 X-Frame-Options**：`WebTab` 默认用挂在主窗口上的
+  child webview（`viewer::webview` 的 `WebviewManager`，label = `web-<tab_id>`，需要 tauri 的
+  **unstable** feature）渲染网页——它是顶层浏览上下文，GitHub / 知乎 / Bing 那些发
+  `X-Frame-Options` / `CSP frame-ancestors` 的站点照常显示。iframe 只剩两个角色：
+  本地 HTML（`sandbox=""`）和**原生视图创建失败时的兜底**——只有兜底路径才跑
+  `web_frame_check` 自动切阅读模式，阅读模式本身是 TabBar 上的手动按钮，别把自动切换
+  加回原生路径。页面状态（标题 / url / loading）由 `on_navigation` / `on_document_title_changed` /
+  `on_page_load` 回调经 `ViewerEvent::Updated` 推回前端；url 变了会**清空正文快照**，
+  agent 下一次 `viewer_read` 自动重新提取。弹窗一律 `Deny` 并用 opener 交给系统浏览器。
+- **原生子 WebView 浮在一切 DOM 之上**：它是独立的原生窗口，Modal / 图片大图 / 命令面板 /
+  拖放提示 / 演示卡片全屏（Fullscreen API）都会被它盖住。所以这些全屏浮层都要挂
+  `useOverlay()`（`store` 里的 `overlayCount`），`WebTab` 计数非零 / 阅读模式 / zen 时调
+  `viewer_webview_set_visible(false)` 让路；右下角 Toast 压不过它，`nativeWebviewUp` 为真时
+  ToastHost 换到左下。bounds 同步是 **CSS px → 物理 px**：前端量 `getBoundingClientRect`
+  原样传（相对视口），Rust 按 `scale_factor` 换算取整（`to_physical_rect`，有单测）；
+  宿主尺寸/位置变了要 `viewer_webview_bounds`（前端用 rAF 合并）。w/h 不足 2 视为不可见，
+  只 `hide()` 不设 bounds。安全边界：`web-<tab_id>` 不在 capabilities 的 windows 列表里，
+  外部网页拿不到任何 IPC 权限；`on_navigation` 只放行 http/https（含挡 `http://ipc.localhost`）。
 - **内置浏览器的头部只有一行**：标签 + 页码 + 已读字数 + 重载/外部打开都在 40px 那一行里
   （完整路径放标签的 tooltip）。原来下面还有一条路径栏，白占一行还把正文挤掉一截，被用户点名拿掉，别再往回加。
 - **窗口是自绘标题栏**（`tauri.conf.json` 里 `decorations: false`，见 `components/TitleBar.tsx`）：
@@ -140,12 +158,6 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **对话可以在主题之间搬**（`chat_move` 动 `.hub/chats/<id>.jsonl` **和**同名的 `.meta.json`）：
   搬的是文件，聊天记录里已有的相对引用不会跟着重算——所以这是「整理」语义。
   正在看的那条被搬走后，前端会给源主题新开一条，免得接着聊又写回旧主题。
-- **网页「拒绝连接」不是网络问题**：很多站点（GitHub / 知乎 / Bing…）发
-  `X-Frame-Options: DENY|SAMEORIGIN` 或 `CSP frame-ancestors` 拒绝被 iframe 嵌入，
-  Chromium 就把内嵌窗口画成一张「拒绝了我们的连接请求」的错误页。
-  内置浏览器现在会先调 `web_frame_check` 读响应头，不能嵌就**自动切阅读模式**
-  （正文来自服务端提取，agent 读的也是它），并说明原因、给「用系统浏览器打开」的按钮。
-  别把这个错误当成断网去查代理。
 - **技能 / MCP 一律「只给开着的」**：判断只看开关（全局 + 本主题 + 父主题的禁用并集，
   `skills::effective` 是唯一的规则入口，面板与系统提示词都走它，别在别处再写一套过滤）。
   **不要按名字或目录写特例**——用户会自己往任意目录加技能，规则必须对以后新增的也成立。

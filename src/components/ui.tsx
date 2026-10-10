@@ -12,6 +12,23 @@ import {
 import { createPortal } from "react-dom";
 import { useApp } from "../store/app";
 
+// ---------------------------------------------------------------- 浮层计数
+
+/**
+ * 声明「我盖住了整个窗口」。原生子 WebView（内置浏览器的网页）是独立的原生窗口，
+ * 浮在一切 DOM 之上——Modal / 大图 / 命令面板这类全屏浮层必须让它显式让路，
+ * 否则网页会把弹窗压在下面（点也点不到）。
+ *
+ * 计数天然抗 StrictMode：effect 跑两遍是 mount → cleanup → mount，
+ * +1 → -1 → +1 净值不变（AGENTS.md 里那坑的前提是「清理函数没写」，这里写了）。
+ */
+export function useOverlay(): void {
+  useEffect(() => {
+    useApp.getState().bumpOverlay(1);
+    return () => useApp.getState().bumpOverlay(-1);
+  }, []);
+}
+
 // ---------------------------------------------------------------- 图标
 
 export type IconName =
@@ -336,6 +353,7 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  useOverlay();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -567,9 +585,11 @@ export function Spinner() {
 export function Toasts() {
   const toasts = useApp((s) => s.toasts);
   const dismiss = useApp((s) => s.dismissToast);
+  // 原生网页视图盖在右下角时 Toast 挪到左下——Toast 也是 DOM，压不过原生层
+  const webviewUp = useApp((s) => s.nativeWebviewUp);
   if (toasts.length === 0) return null;
   return (
-    <div className="toast-host">
+    <div className={"toast-host" + (webviewUp ? " left" : "")}>
       {toasts.map((t) => (
         <div key={t.id} className={"toast " + t.level} onClick={() => dismiss(t.id)}>
           <Icon

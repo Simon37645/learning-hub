@@ -153,7 +153,9 @@ PDF, Markdown, web pages, images and code — tabbed, in a side panel.
 
 - **PDF** is rendered page by page with pdf.js, so the agent can jump to page 12 and quote it. The text
   layer is real: you can select and copy, and search hits are highlighted on the text itself.
-- **Web** pages are embedded, plus a **reader mode** that shows exactly what the agent extracted.
+- **Web** pages render in a native child webview (a real WebView2, so sites like Bing / GitHub /
+  Zhihu that refuse iframes via X-Frame-Options open normally), plus an opt-in **reader mode** that
+  shows exactly what the agent extracted.
 - **`viewer_*` tools** let the agent open files, turn pages, search inside a document and scroll to a
   hit while you watch.
 

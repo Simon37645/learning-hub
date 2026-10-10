@@ -403,6 +403,16 @@ function ImageView({ tab }: { tab: TabView }) {
 
 // ---------------------------------------------------------------- 网页
 
+/**
+ * 网页标签的渲染。远端网页默认走**原生子 WebView**（后端 `viewer::webview` 模块，
+ * 挂在主窗口上的真 WebView2，不受 X-Frame-Options / CSP frame-ancestors 约束）；
+ * 这里的宿主 div 只负责占位与量矩形，页面画在 DOM 之上的原生层里。
+ *
+ * 所以这个组件要管三件事：
+ * 1. 什么时候显示 / 隐藏原生层——阅读模式、专注模式、有全屏浮层时都要让路；
+ * 2. 宿主矩形变了把 bounds 同步给后端（CSS px，Rust 按 scale_factor 换算）；
+ * 3. 原生视图创建失败时退回原来的 iframe 兜底路径（含 frame_block 自动切阅读模式）。
+ */
 function WebTab({
   tab,
   readerMode,
@@ -418,16 +428,123 @@ function WebTab({
     loading: false,
   });
   const [localHtml, setLocalHtml] = useState<string | null>(null);
-  /** 站点禁止内嵌时的原因；非空说明我们已经自动切到阅读模式了 */
+  /** iframe 兜底路径下站点拒绝内嵌的原因；非空说明已经自动切到阅读模式了 */
   const [frameBlock, setFrameBlock] = useState<string | null>(null);
+  /** 原生视图创建失败 → 退回 iframe 兜底（本标签内不再重试） */
+  const [nativeFailed, setNativeFailed] = useState(false);
   const isLocal = !!tab.path;
+  const zen = useApp((s) => s.zen);
+  const overlayCount = useApp((s) => s.overlayCount);
+  const setNativeWebviewUp = useApp((s) => s.setNativeWebviewUp);
   const reloadSeq = useApp((s) => s.reloadSeq[tab.id] ?? 0);
+  const hostRef = useRef<HTMLDivElement>(null);
 
-  // 打开网页前先看一眼响应头：站点用 X-Frame-Options / CSP frame-ancestors 拒绝被嵌时，
-  // Chromium 只会把内嵌窗口画成一张「拒绝了我们的连接请求」的错误页（看着像断网）。
-  // 与其让用户看那张图，不如直接切阅读模式——正文来自服务端提取，agent 读到的也是它。
+  const useNative = !isLocal && !nativeFailed;
+  const canShow = useNative && !readerMode && !zen && overlayCount === 0;
+  // ensure 是异步的：期间条件可能已经翻转（比如刚弹出浮层），完成时要按最新状态收场
+  const canShowRef = useRef(canShow);
+  canShowRef.current = canShow;
+
+  // 显示 / 隐藏的编排：条件不满足就让原生层让路（隐藏不销毁，页面状态保留）。
+  // 这是 zen / 阅读模式 / 全屏浮层三条让路路径的唯一入口——条件翻 false 时必须
+  // 显式 hide，原生子 WebView 是独立原生窗口，不会因为 DOM 被盖住就自己消失。
   useEffect(() => {
-    if (isLocal || !tab.url) return;
+    if (!useNative) return;
+    const hide = () => {
+      setNativeWebviewUp(false);
+      void api.viewerWebviewSetVisible(tab.id, false).catch(() => {});
+    };
+    if (!canShow || !tab.url) {
+      hide();
+      return;
+    }
+    const host = hostRef.current;
+    // 原生路径下宿主 div 一定已挂载；万一这一拍还没提交，等下一轮依赖变化再来
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) {
+      hide(); // 面板被收成一条缝：藏起来，别摆一个 1×1 的原生层出来
+      return;
+    }
+    api
+      .viewerWebviewEnsure(tab.id, tab.url, { x: rect.left, y: rect.top, w: rect.width, h: rect.height })
+      .then(() => {
+        if (canShowRef.current) setNativeWebviewUp(true);
+        else hide(); // ensure 在飞的这会儿浮层弹出来了：别把网页亮在浮层上面
+      })
+      .catch((e) => {
+        // 创建失败（平台不支持等）：退回 iframe 兜底，别让用户对着一片空白
+        console.warn("原生网页视图创建失败，退回内嵌渲染", e);
+        setNativeWebviewUp(false);
+        setNativeFailed(true);
+      });
+  }, [useNative, canShow, tab.id, tab.url, setNativeWebviewUp]);
+
+  // 宿主矩形变化（窗口缩放、拖侧栏、面板收展）→ 同步 bounds。
+  // rAF 合并高频回调，拖动时不刷爆 IPC；位置尺寸没变就不发。
+  useEffect(() => {
+    if (!useNative) return;
+    const host = hostRef.current;
+    if (!host) return;
+    let raf = 0;
+    let last = "";
+    const sync = () => {
+      raf = 0;
+      const rect = host.getBoundingClientRect();
+      const key = `${rect.left.toFixed(1)}|${rect.top.toFixed(1)}|${rect.width.toFixed(1)}|${rect.height.toFixed(1)}`;
+      if (key === last) return;
+      last = key;
+      // 太小交给上面那个 effect 走隐藏分支，这里不白传 bounds
+      if (rect.width < 2 || rect.height < 2) return;
+      void api
+        .viewerWebviewBounds(tab.id, { x: rect.left, y: rect.top, w: rect.width, h: rect.height })
+        .catch(() => {});
+      // 矩形从「没有」恢复（最小化回来、面板从一条缝重新展开）时，ensure effect
+      // 不会重跑（它的 deps 不含矩形），webview 可能还停在 hide 状态，用户会永远
+      // 看着占位提示——这里顺手亮回来。放进同一个 key 判重里：矩形没变就不发，
+      // 拖侧栏不会每帧都调；canShow 为 false 时绝不亮（浮层/阅读模式/zen 的让路
+      // 不受影响），webview 还没建时后端 set_visible 是无害 no-op。
+      if (canShowRef.current) {
+        void api.viewerWebviewSetVisible(tab.id, true).catch(() => {});
+      }
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(sync);
+    };
+    const ro = new ResizeObserver(schedule);
+    ro.observe(host);
+    window.addEventListener("resize", schedule);
+    schedule(); // 创建时传过去的 rect 可能已经旧了，挂载先对齐一次
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+    // readerMode 必须在 deps 里：阅读模式会卸载宿主 div，切回来时是**新建**的节点，
+    // RO 得跟着重挂，否则之后拖侧栏/缩窗就没人再同步 bounds 了
+  }, [useNative, tab.id, readerMode]);
+
+  // 卸载 / 切走时藏起来（不销毁：收起再展开页面还在原地）
+  useEffect(() => {
+    if (!useNative) return;
+    return () => {
+      setNativeWebviewUp(false);
+      void api.viewerWebviewSetVisible(tab.id, false).catch(() => {});
+    };
+  }, [useNative, tab.id, setNativeWebviewUp]);
+
+  // agent 让重载（viewer_reload → reloadSeq +1）：原生层里刷新页面。
+  // deps 不带 tab.url：网页里点链接也会经 on_navigation 更新 tab.url，
+  // 带上它就会在 reloadSeq≥1 之后每次导航把刚打开的页面整页闪刷一遍。
+  useEffect(() => {
+    if (!useNative || reloadSeq === 0) return;
+    void api.viewerWebviewReload(tab.id).catch(() => {});
+  }, [useNative, tab.id, reloadSeq]);
+
+  // iframe 兜底路径才探测响应头：原生视图是顶层浏览上下文，不受那些头约束。
+  // 站点拒绝被嵌时 Chromium 只会画一张「拒绝了我们的连接请求」，不如直接切阅读模式。
+  useEffect(() => {
+    if (!nativeFailed || isLocal || !tab.url) return;
     let cancelled = false;
     setFrameBlock(null);
     api
@@ -443,7 +560,7 @@ function WebTab({
     return () => {
       cancelled = true;
     };
-  }, [tab.url, tab.id, isLocal, reloadSeq, setReaderMode]);
+  }, [tab.url, tab.id, isLocal, nativeFailed, reloadSeq, setReaderMode]);
 
   // 本地 HTML：读出源码用 sandbox iframe 渲染
   useEffect(() => {
@@ -490,6 +607,7 @@ function WebTab({
     );
   }
 
+  // 阅读模式（手动按钮，或兜底路径下被 frame_block 自动切过来）：两条路径共用
   if (readerMode) {
     if (reader.loading)
       return (
@@ -517,6 +635,16 @@ function WebTab({
     );
   }
 
+  // 默认：原生子 WebView。页面画在 DOM 之上的原生层里，这个 div 只是它的「影子」
+  if (useNative) {
+    return (
+      <div className="viewer-webview" ref={hostRef}>
+        <span className="viewer-webview-hint">原生网页视图</span>
+      </div>
+    );
+  }
+
+  // iframe 兜底：原生视图创建失败才走到这里（老行为，包括 X-Frame-Options 的说明）
   return (
     <>
       <iframe
@@ -527,7 +655,7 @@ function WebTab({
         referrerPolicy="no-referrer"
       />
       <div className="viewer-note" style={{ position: "absolute", bottom: 8, left: 8, right: 8, margin: 0 }}>
-        如果这里显示「拒绝了我们的连接请求」，那是站点自己发的
+        原生视图不可用，已退回内嵌渲染。如果这里显示「拒绝了我们的连接请求」，那是站点自己发的
         <code className="mono">X-Frame-Options</code> / <code className="mono">CSP frame-ancestors</code>
         在拒绝被嵌入（GitHub、知乎、Google 都这样），不是网络问题。点工具栏的「阅读模式」看正文，
         或用系统浏览器打开原页面。

@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useApp } from "../store/app";
-import { Icon } from "./ui";
+import { Icon, useOverlay } from "./ui";
 
 export function useDragDropImport() {
   const [dragging, setDragging] = useState(false);
@@ -71,14 +71,21 @@ export function DropOverlay() {
   const { dragging, count } = useDragDropImport();
   const topic = useApp((s) => s.topic);
 
+  // 本组件是常驻挂载的：useOverlay 只能挂在「真的在显示」的那层，
+  // 不然没拖文件时也占着一个浮层计数，原生网页视图就永远显示不出来了
   if (!dragging) return null;
+  return <DropOverlayCard topic={topic?.meta.name ?? null} count={count} />;
+}
+
+function DropOverlayCard({ topic, count }: { topic: string | null; count: number }) {
+  useOverlay(); // 拖放提示也不能被原生子 WebView 盖住
 
   return (
     <div className="drop-overlay">
       <div className="drop-card">
         <Icon name="download" size={28} />
         <div className="drop-title">
-          {topic ? `松开即导入到「${topic.meta.name}」的 materials/` : "先打开一个主题，再拖文件进来"}
+          {topic ? `松开即导入到「${topic}」的 materials/` : "先打开一个主题，再拖文件进来"}
         </div>
         <div className="drop-sub">
           {count > 0 ? `${count} 个文件` : "文件"}会被复制进主题目录，agent 之后可以直接读它们

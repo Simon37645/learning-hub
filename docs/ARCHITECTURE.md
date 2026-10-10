@@ -97,6 +97,36 @@ agent viewer_* 工具 ───────────────────�
   用 pdf.js 逐页渲染 + 抽取文本后，agent 才能检索、引用页码、指哪打哪。
 - 网页的「阅读模式」显示的正是 agent 读到的那份正文——用户可以直接看到 agent 的视野。
 
+### 远端网页：原生子 WebView（`viewer/webview.rs`）
+
+网页曾用主 WebView 里的 iframe 渲染，结果 Bing / GitHub / 知乎这些发 `X-Frame-Options` /
+`CSP frame-ancestors` 的站点一律画成「拒绝了我们的连接请求」，只能退到服务端提取的阅读模式。
+现在远端网页默认挂在主窗口上的**child webview**（`Window::add_child`，tauri 的 unstable feature）：
+
+```
+前端 WebTab（宿主 div，量 rect、决定显示/隐藏）
+   │  viewer_webview_ensure / bounds / set_visible / reload
+   ▼
+WebviewManager（tab_id → Webview 句柄表）
+   │  add_child(label = web-<tab_id>)，回调里 spawn 状态更新
+   ▼
+on_navigation / on_document_title_changed / on_page_load
+   └─→ ViewerService::apply_web_state → ViewerEvent::Updated → 前端地址栏/标题自动刷新
+```
+
+- 回调在事件循环线程触发，只做同步判断；状态更新与发事件全部 `tauri::async_runtime::spawn`，
+  捕获的是 `AppHandle` + `Arc<ViewerService>`（捕获 `Arc<AppCore>` 会跟 WebviewManager 成环）。
+- **url 变化会清空正文快照**：agent 下一次 `viewer_read` / `viewer_get_content` 重新提取新页面。
+- **安全边界**：`web-<tab_id>` 不在 capabilities 的 windows 列表里，外部网页没有 IPC 权限；
+  `on_navigation` 只放行 http/https（`tauri://`、`ipc://`、`http://ipc.localhost` 一律拒绝）；
+  弹窗一律 `Deny` 并经 opener 插件转交系统浏览器。
+- **原生层浮在一切 DOM 之上**：全屏浮层（Modal / 大图 / 命令面板 / 拖放提示 / 演示卡片全屏）
+  通过 `useOverlay()` 计数，`WebTab` 在计数非零、阅读模式、专注模式时把原生层 `hide()`
+  （不销毁——收起再展开页面状态还在）；Toast 压不过它，`nativeWebviewUp` 时换到左下角。
+- bounds 是前端量的 **CSS px**，Rust 按 `scale_factor` 换算成物理像素（`to_physical_rect`，有单测）；
+  w/h 不足 2 视为不可见，只藏不摆。iframe 只剩两个角色：本地 HTML（`sandbox=""`）与
+  原生视图创建失败时的兜底（`web_frame_check` 自动切阅读模式的逻辑只保留在兜底路径里）。
+
 ## 5. 磁盘格式
 
 ```
@@ -288,6 +318,9 @@ impl Tool for MyTool {
 - **网页内容一律净化**：模型/网页产出的 Markdown 经 DOMPurify（html+svg+mathml 白名单）后才进 DOM；
   本地 HTML 用 `sandbox=""` 的 iframe 渲染，不允许脚本执行。
 - **CSP** 在 `tauri.conf.json` 里收敛：脚本只允许 `self`，iframe 允许 http(s)，字体只允许 `self`/`data:`。
+- **外部网页拿不到应用 IPC**：远端网页的原生 child webview（见第 4 节）label 是 `web-<tab_id>`，
+  不在 capabilities 的 windows 列表里——它能显示页面，但没有任何一条命令的调用权限；
+  `on_navigation` 再挡一层，应用内部协议（`tauri://` / `ipc://` / `http://ipc.localhost`）不让导航。
 - 没有任何遥测、账号、云同步；所有数据只在本机。
 
 ## 10. 已知取舍

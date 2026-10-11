@@ -428,7 +428,8 @@ pub fn arg_str_req(input: &Value, key: &str) -> AppResult<String> {
 
 pub fn arg_u32(input: &Value, key: &str) -> Option<u32> {
     input.get(key).and_then(|v| match v {
-        Value::Number(n) => n.as_u64().map(|x| x as u32),
+        // 超出 u32 的静默回绕会把「截第 99999999 页」变成「截第 1 页」——宁可不认
+        Value::Number(n) => n.as_u64().filter(|x| *x <= u32::MAX as u64).map(|x| x as u32),
         Value::String(s) => s.trim().parse::<u32>().ok(),
         _ => None,
     })

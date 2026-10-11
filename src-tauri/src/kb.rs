@@ -244,10 +244,13 @@ async fn extract(path: &Path, topic_dir: &Path) -> AppResult<Vec<(u32, String)>>
 ///
 /// `inherited` 是祖先主题的 (名字, 目录)：学一门课里的某一章时，讲义在父主题里，
 /// 索引要把它们一起收进来，否则 agent 检索不到老师划的重点。
-/// 继承文件的引用路径写成「父主题名/materials/xx.pdf」（相对工作区根），
+/// 继承文件的引用路径写成「课程名/materials/xx.pdf」（相对**工作区根**），
 /// 这样它在回复里是自带出处的，用户点了也能跳到父主题的那份文件。
+/// `ws_root` 是工作区根：章节主题（课程/第三章）的 parent 是课程目录而不是
+/// 工作区根，拿它当基准会把前缀丢掉、出处对不回来。
 pub async fn build(
     topic_dir: &Path,
+    ws_root: &Path,
     inherited: &[(String, PathBuf)],
     force: bool,
 ) -> AppResult<KbIndex> {
@@ -275,17 +278,15 @@ pub async fn build(
     }
 
     // 祖先主题的资料与讲义（笔记也算：预习要拿你以前学过的东西当框架）
-    if let Some(root) = topic_dir.parent() {
-        for (_name, dir) in inherited {
-            for sub in [
-                crate::domain::topic::DIR_MATERIALS,
-                crate::domain::topic::DIR_KB,
-                crate::domain::topic::DIR_NOTES,
-            ] {
-                for f in store::walk_files(&dir.join(sub), 5) {
-                    if is_indexable(&f) {
-                        targets.push((crate::paths::rel_in_root(root, &f), f));
-                    }
+    for (_name, dir) in inherited {
+        for sub in [
+            crate::domain::topic::DIR_MATERIALS,
+            crate::domain::topic::DIR_KB,
+            crate::domain::topic::DIR_NOTES,
+        ] {
+            for f in store::walk_files(&dir.join(sub), 5) {
+                if is_indexable(&f) {
+                    targets.push((crate::paths::rel_in_root(ws_root, &f), f));
                 }
             }
         }
@@ -302,12 +303,16 @@ pub async fn build(
         let size = meta.len();
         let modified = store::modified_at(&path);
 
-        // 命中缓存就复用，避免每次都抽 PDF
+        // 命中缓存就复用，避免每次都抽 PDF。带 error 的条目不能复用——
+        // 那是一次瞬时失败（杀毒/同步盘短暂锁文件）留下的，从此这份讲义
+        // 就永远检索不到了；失败的要重抽
         if !force {
             if let Some(cached) = index.files.iter().find(|f| f.path == rel && f.size == size && f.modified == modified) {
-                files.push(cached.clone());
-                chunks.extend(index.chunks.iter().filter(|c| c.path == rel).cloned());
-                continue;
+                if cached.error.is_none() {
+                    files.push(cached.clone());
+                    chunks.extend(index.chunks.iter().filter(|c| c.path == rel).cloned());
+                    continue;
+                }
             }
         }
 

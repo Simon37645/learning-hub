@@ -102,6 +102,14 @@ pub async fn theme_save(state: State<'_, AppState>, theme: Theme) -> AppResult<T
 pub async fn theme_delete(state: State<'_, AppState>, id: String) -> AppResult<ThemesOverview> {
     let core = state.0.clone();
     let cfg = core.config_read();
+    // id 直接拼路径，必须跟 theme::save 一样消毒：`..` / 分隔符 / 绝对路径
+    // 会把「删主题」变成删工作区之外的任意 .json
+    // sanitize 通过且**与原 id 完全一致**才放行：id 直接拼路径，
+    // `..` / 分隔符 / 绝对路径会把「删主题」变成删工作区外的任意 .json
+    match crate::studio::sanitize_id(&id) {
+        Ok(s) if s == id => {}
+        _ => return Err(AppError::invalid(format!("主题 id 不合法：{id}"))),
+    }
     let path = crate::theme::workspace_dir(&cfg.workspace_root).join(format!("{id}.json"));
     if !path.is_file() {
         return Err(AppError::NotFound(format!(

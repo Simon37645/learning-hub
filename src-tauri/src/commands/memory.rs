@@ -124,15 +124,17 @@ pub async fn memory_upsert(
     let id = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     match id {
         Some(id) => {
-            // 编辑表单里备注是可见字段，所以这里「给了就写」——包括清空成空串
+            // 编辑表单里备注是可见字段，所以这里「给了就写」——包括清空成空串。
+            // kind 没传就保持原样（拿缺省值顶上会把分好的类重置成「情况」）
             let note = input.note.clone();
+            let kind = input.kind.as_deref().and_then(MemoryKind::parse);
             core.memory_write(|store| {
                 store.load(&core.config_read().workspace_root.clone())?;
                 store.patch(
                     &scope,
                     dir.as_deref(),
                     id,
-                    Some(kind),
+                    kind,
                     Some(content),
                     input.pinned,
                     note,

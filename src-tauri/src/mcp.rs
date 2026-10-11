@@ -252,8 +252,9 @@ impl McpClient {
                     }
                     _ => {}
                 }
-                // 有些服务器把结构化结果放在 structuredContent
-                if let Some(sc) = b.get("structuredContent") {
+                // 有些服务器把结构化结果放在 result.structuredContent（MCP 规范里
+                // 它在结果对象上，不在 content 块里）
+                if let Some(sc) = result.get("structuredContent") {
                     if !sc.is_null() {
                         text.push_str(&format!("\n{}", serde_json::to_string_pretty(sc).unwrap_or_default()));
                     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextShares, summarizeCache } from "./usage";
+import { contextShares, lastRoundUsage, summarizeCache } from "./usage";
 import type { ChatMessage } from "./types";
 
 function msg(input: number | null, cached: number | null, output = 100): ChatMessage {
@@ -44,6 +44,26 @@ describe("summarizeCache", () => {
 
   it("没有输入量时不做除零", () => {
     expect(summarizeCache([msg(0, 0)]).rate).toBe(0);
+  });
+});
+
+describe("lastRoundUsage", () => {
+  it("从后往前找最后一条报过用量的消息", () => {
+    const last = lastRoundUsage([msg(1000, 900), msg(20000, 18000, 500)]);
+    expect(last).toEqual({ input: 20000, output: 500 });
+  });
+
+  it("重开对话后（usage 为 null）也能从落盘的 meta 恢复，绝不显示假 0", () => {
+    const last = lastRoundUsage([
+      { ...msg(null, null), meta: {} }, // 老消息没有用量
+      msg(142962, 100000, 3637),
+    ]);
+    expect(last).toEqual({ input: 142962, output: 3637 });
+  });
+
+  it("一轮用量都没有就返回 null（调用方自己决定显示什么）", () => {
+    expect(lastRoundUsage([])).toBeNull();
+    expect(lastRoundUsage([{ ...msg(null, null), meta: {} }])).toBeNull();
   });
 });
 

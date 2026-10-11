@@ -26,17 +26,38 @@ pub fn sanitize_dir_name(raw: &str) -> String {
     let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
     let out = if out.is_empty() { "未命名主题".to_string() } else { out };
 
-    // 保留名加后缀，避免 Windows 直接拒绝创建
+    // 保留名加后缀，避免 Windows 直接拒绝创建——「CON.txt」同样被拒，
+    // 所以要比第一个点之前的基名
     let upper = out.to_ascii_uppercase();
-    if RESERVED.iter().any(|r| upper == *r) {
+    let base = upper.split('.').next().unwrap_or(&upper);
+    if RESERVED.iter().any(|r| upper == *r || base == *r) {
         return format!("{out}_topic");
     }
-    // 目录名过长会被文件系统截断，这里主动收敛
+    // 目录名过长会被文件系统截断，这里主动收敛；
+    // 截断后不能再以点结尾（Windows 会把尾点剥掉，实际目录名就跟记录对不上了）
     if out.chars().count() > 64 {
-        out.chars().take(64).collect()
-    } else {
-        out
+        return out
+            .chars()
+            .take(64)
+            .collect::<String>()
+            .trim_end_matches('.')
+            .to_string();
     }
+    out
+}
+
+/// slug（主题目录名）是否安全：只允许「一层普通目录名」。
+///
+/// 所有 `root.join(slug)` 形态的拼接（`Workspace::load/resolve`、会话定位等）
+/// 都必须先过这里：`../`、路径分隔符、盘符前缀（`C:x` 是**盘符相对路径**，
+/// join 之后直接指向另一个盘的当前目录）都会把「主题」指到工作区之外。
+pub fn is_safe_slug(slug: &str) -> bool {
+    let mut comps = Path::new(slug).components();
+    match comps.next() {
+        Some(Component::Normal(_)) => {}
+        _ => return false,
+    }
+    comps.next().is_none()
 }
 
 /// 词法归一化：消掉 `.`、`..`，不触碰磁盘（路径可能还不存在）。

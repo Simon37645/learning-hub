@@ -32,15 +32,21 @@ fn parse_question(raw: &Value) -> AppResult<Question> {
             // 选项允许写成 "A. 文本" 的字符串，或 {key, text} 对象
             match o {
                 Value::String(s) => {
-                    let key = s
-                        .chars()
-                        .next()
-                        .filter(|c| c.is_ascii_alphabetic())
-                        .map(|c| c.to_ascii_uppercase().to_string())
-                        .unwrap_or_else(|| ((b'A' + i as u8) as char).to_string());
-                    let text = s
-                        .trim_start_matches(|c: char| c.is_ascii_alphabetic() || c == '.' || c == '、' || c == ' ')
-                        .to_string();
+                    // 只认「单个字母 + 分隔符」的前缀（"A. 文本" / "A、文本" / "(A) 文本"）。
+                    // 之前按「字母/点/顿号/空格」整串剥，选项以拉丁字母开头时
+                    // （ARDS、TCP 连接）正文被剥光、key 也取错——判分全错。
+                    let trimmed = s.trim();
+                    let mut key = ((b'A' + i as u8) as char).to_string();
+                    let mut text = trimmed.to_string();
+                    let chars: Vec<char> = trimmed.chars().collect();
+                    if chars.len() >= 2 && chars[0].is_ascii_alphabetic() {
+                        let sep1 = chars[1] == '.' || chars[1] == '、' || chars[1] == ')' || chars[1] == '）';
+                        let sep2 = chars[1] == ' ' && chars.len() > 2;
+                        if sep1 || sep2 {
+                            key = chars[0].to_ascii_uppercase().to_string();
+                            text = trimmed[chars[0].len_utf8() + chars[1].len_utf8()..].trim().to_string();
+                        }
+                    }
                     q.options.push(crate::domain::quiz::QuizOption { key, text });
                 }
                 Value::Object(_) => {
@@ -362,6 +368,12 @@ impl Tool for QuizGrade {
         let mut attempt = crate::domain::quiz::Attempt::new(&quiz.id);
         attempt.answers = answers;
         attempt.grade_objective(&quiz);
+        // 与界面判卷同一份记录：不落盘的话这次判分在历史/统计里查无此事，
+        // quiz_list 承诺的「最近得分」对这条路径永远是空的
+        store::append_jsonl(
+            &topic.quizzes_dir().join(format!("{}.attempts.jsonl", quiz.id)),
+            &attempt,
+        )?;
 
         let mut out = format!(
             "判分结果（{}）：{} / {} 分\n\n",

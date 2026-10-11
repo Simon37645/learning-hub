@@ -38,6 +38,23 @@ export function summarizeCache(messages: ChatMessage[]): CacheSummary {
   return { input, cached, turns, rate: input > 0 ? (cached / input) * 100 : 0 };
 }
 
+/**
+ * 最后一次报过用量的轮次（输入 / 输出）。
+ *
+ * 内存里的 `usage` 只跟本轮——切走对话、重开应用都会清空；但每条 assistant
+ * 消息的 meta 里落盘了真实用量，重开后从消息里往前找最后一条，浮层头部就不用
+ * 显示假的「输入 0 · 输出 0」（跟「宁可没有，也不给假 0」同一个原则）。
+ */
+export function lastRoundUsage(messages: ChatMessage[]): { input: number; output: number } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const meta = messages[i]?.meta;
+    if (meta?.inputTokens != null) {
+      return { input: meta.inputTokens, output: meta.outputTokens ?? 0 };
+    }
+  }
+  return null;
+}
+
 /** 上下文构成里各块占比（0–100）；总和不一定是 100（按字符估的，只用来画比例）。 */
 export function contextShares(parts: ContextPart[]): { label: string; tokens: number; share: number }[] {
   const total = parts.reduce((n, p) => n + p.tokens, 0);

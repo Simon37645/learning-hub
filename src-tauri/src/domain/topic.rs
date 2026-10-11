@@ -20,7 +20,7 @@ use crate::domain::card::Card;
 use crate::domain::stage::StudyStage;
 use crate::domain::task::{PlanTask, TaskStatus};
 use crate::error::{AppError, AppResult, IoContext};
-use crate::paths::{ensure_dir, rel_in_root, sanitize_dir_name, unique_child};
+use crate::paths::{ensure_dir, is_safe_slug, rel_in_root, sanitize_dir_name, unique_child};
 use crate::store;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -353,6 +353,11 @@ impl Workspace {
     }
 
     pub fn load(&self, slug: &str) -> AppResult<Topic> {
+        // slug 会变成 root.join(slug)，agent 传进来的引用也走这里——
+        // 不消毒的话 `../xxx` 能把「主题」指到工作区之外，沙箱从上一层被击穿。
+        if !is_safe_slug(slug) {
+            return Err(AppError::NotFound(format!("非法的主题引用：{slug}")));
+        }
         let dir = self.topic_dir(slug);
         if !dir.is_dir() {
             return Err(AppError::NotFound(format!("主题目录不存在：{slug}")));
@@ -501,6 +506,20 @@ impl Workspace {
             return self.load(&s.slug);
         }
         Err(AppError::NotFound(format!("找不到主题「{needle}」")))
+    }
+
+    /// 按 topic_id（稳定不变的 uuid）找主题。
+    ///
+    /// 会话这类长期数据引用的是 id 而不是目录名：目录名会随改名一起变，
+    /// 按旧 slug 找不到还算小事，掉进「显示名模糊匹配」会把会话写进一个
+    /// 只是名字相似的无辜主题里。只读 topic.json（catalog），不扫统计，开销小。
+    pub fn resolve_id(&self, id: &str) -> AppResult<Topic> {
+        for (slug, meta) in self.catalog()? {
+            if meta.id == id {
+                return self.load(&slug);
+            }
+        }
+        Err(AppError::NotFound(format!("找不到主题（id：{id}），可能已被删除")))
     }
 
     /// 新建主题：建目录骨架 + topic.json + README 模板。

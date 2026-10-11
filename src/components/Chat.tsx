@@ -8,7 +8,7 @@ import { api, errText } from "../lib/api";
 import { highlightWithin, linkifyCitations, renderDemoBlocksIn, renderMarkdown, renderMermaidIn } from "../lib/markdown";
 import { clampText, fmtClock, fmtTokens, hotkey } from "../lib/format";
 import { imageFilesFrom, prepareImage } from "../lib/images";
-import { contextShares, summarizeCache } from "../lib/usage";
+import { contextShares, lastRoundUsage, summarizeCache } from "../lib/usage";
 import { LessonSteps } from "./Lesson";
 import {
   EFFORT_HINT,
@@ -356,14 +356,19 @@ function summarizeInput(name: string, input: unknown): string {
 
 export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: React.ReactNode }) {
   const topic = useApp((s) => s.topic);
+  const chatId = useApp((s) => s.chatId);
   const messages = useApp((s) => s.messages);
-  const streaming = useApp((s) => s.streaming);
+  const streamingAll = useApp((s) => s.streaming);
   const activities = useApp((s) => s.activities);
   const iteration = useApp((s) => s.iteration);
   const error = useApp((s) => s.chatError);
   const approval = useApp((s) => s.approval);
   const setView = useApp((s) => s.setView);
   const [lightbox, setLightbox] = useState<LightboxImage | null>(null);
+  // 只渲染「属于当前对话」的那一轮：别的对话在后台跑时，这里不能出现
+  // 一个空的「思考中…」气泡（事件守卫在 store 里，气泡的显隐在这里）
+  const streaming = streamingAll && streamingAll.chatId === chatId ? streamingAll : null;
+  const liveActivities = streaming ? activities : [];
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -446,10 +451,9 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
             ))}
 
             {/* 本轮工具活动（尚未落进消息的） */}
-            {streaming &&
-              activities
-                .filter((a) => a.running)
-                .map((a) => (
+            {liveActivities
+              .filter((a) => a.running)
+              .map((a) => (
                   <div className="msg agent" key={"live-" + a.callId}>
                     <div className="msg-avatar agent">
                       <Icon name="sparkle" size={13} />
@@ -623,6 +627,11 @@ export function CacheBadge() {
 
   const sum = useMemo(() => summarizeCache(messages), [messages]);
   const parts = useMemo(() => contextShares(usage?.context ?? []), [usage]);
+  // 头部的「输入 / 输出」是上一轮的数字。内存里的 usage 切走对话就清空，
+  // 重开对话后从消息 meta 里恢复最后一条，别显示假的「输入 0 · 输出 0」。
+  const last = useMemo(() => lastRoundUsage(messages), [messages]);
+  const lastInput = usage?.input ?? last?.input ?? 0;
+  const lastOutput = usage?.output ?? last?.output ?? 0;
 
   if (sum.turns === 0) return null;
 
@@ -641,7 +650,7 @@ export function CacheBadge() {
           <div className="cp-head">
             <span>上下文构成</span>
             <span className="muted">
-              输入 {fmtTokens(usage?.input ?? 0)} · 输出 {fmtTokens(usage?.output ?? 0)}
+              输入 {fmtTokens(lastInput)} · 输出 {fmtTokens(lastOutput)}
             </span>
           </div>
           {parts.length > 0 && (
@@ -693,11 +702,15 @@ function partColor(i: number): string {
 function Composer({ mode = "study" }: { mode?: AgentMode }) {
   const send = useApp((s) => s.send);
   const stop = useApp((s) => s.stop);
-  const streaming = useApp((s) => s.streaming);
+  const streamingAll = useApp((s) => s.streaming);
+  const chatId = useApp((s) => s.chatId);
   const config = useApp((s) => s.config);
   const patchConfig = useApp((s) => s.patchConfig);
   const topic = useApp((s) => s.topic);
   const toast = useApp((s) => s.toast);
+  // 别的对话在后台跑时，这里不该显示「停止」也不能锁输入——
+  // store 的 send 会拦下并发轮次并提示
+  const streaming = streamingAll && streamingAll.chatId === chatId ? streamingAll : null;
 
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);

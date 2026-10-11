@@ -133,6 +133,8 @@ impl Tool for MindmapCreate {
             // 不覆盖用户可能已经改过的内容，另存一份
             let alt = crate::paths::unique_child(&notes_dir, &file_name);
             store::atomic_write(&alt, body.as_bytes())?;
+            // 侧栏的笔记数角标靠这个事件刷新，漏发就显示旧值
+            ctx.core.emit_topics_updated(&topic);
             return finish(ctx, &topic, &alt, mermaid, nodes, truncated, true, input.get("open")).await;
         }
         store::atomic_write(&path, body.as_bytes())?;

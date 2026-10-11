@@ -331,6 +331,9 @@ export function attachSourceEditing(wrap: HTMLElement, opts: SourceEditingOption
     if (!el) return;
     const view = viewOf();
     if (!view) return;
+    // 输入法组合中的按键（回车确认候选词等）不是结构操作，
+    // 不能当成「末尾空行退出」或移动光标的信号
+    if (event.isComposing) return;
     if (view.state.readOnly) {
       if (event.ctrlKey || event.metaKey) {
         const key = event.key.toLowerCase();

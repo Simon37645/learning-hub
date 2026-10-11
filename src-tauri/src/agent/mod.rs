@@ -219,7 +219,14 @@ impl AgentService {
             AgentMode::Studio => None,
             AgentMode::Study => resolve_topic_opt(&core, req.topic_slug.as_deref()),
         };
-        append_transcript(&core, topic.as_ref(), &req.chat_id, &user_msg)?;
+        // 插了句柄之后的两步落库都可能失败（磁盘满 / 权限）；任务还没 spawn，
+        // 收尾清理不在后台那段里——失败就得自己把句柄摘掉，否则 turns 表里
+        // 永远挂着一个取消不掉的幽灵回合。
+        let topic_ref = topic.as_ref();
+        if let Err(e) = append_transcript(&core, topic_ref, &req.chat_id, &user_msg) {
+            self.turns.lock().remove(&turn_id);
+            return Err(e);
+        }
 
         // 工坊的对话要在侧车文件里记下自己的身份，否则侧栏会把它当成首页的日常问答。
         // 这是唯一一个「必须写侧车」的情形（其它字段都是用户改过才写）。
@@ -228,7 +235,10 @@ impl AgentService {
             let mut meta = crate::agent::chats::load(&dir, &req.chat_id);
             if meta.mode != AgentMode::Studio {
                 meta.mode = AgentMode::Studio;
-                crate::agent::chats::save(&dir, &req.chat_id, &mut meta)?;
+                if let Err(e) = crate::agent::chats::save(&dir, &req.chat_id, &mut meta) {
+                    self.turns.lock().remove(&turn_id);
+                    return Err(e);
+                }
             }
         }
 
@@ -417,68 +427,126 @@ impl AgentService {
 
             trim_to_budget(&mut messages, cfg.agent.context_budget_chars);
 
-            let request = ChatRequest {
-                model: profile.model.clone(),
-                system: system.clone(),
-                messages: messages.clone(),
-                tools: specs.clone(),
-                temperature: profile.temperature,
-                max_tokens: profile.max_tokens,
-                reasoning: profile.reasoning,
-                timeout: Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
-                cancel: cancel.clone(),
-                attachments: attachments.clone(),
-                supports_vision: profile.supports_vision,
-            };
-            let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
-            let provider_task = {
-                let provider = provider.clone();
-                tokio::spawn(async move { provider.stream(request, tx).await })
-            };
-
             let message_id = uuid::Uuid::new_v4().to_string();
-            let mut acc = Accumulator::default();
-            while let Some(ev) = rx.recv().await {
-                match ev {
-                    StreamEvent::Usage(u) => acc.usage.merge(u),
-                    StreamEvent::Text(t) => {
-                        acc.text.push_str(&t);
-                        core.emit_agent(&AgentEvent::Delta {
-                            turn_id: turn_id.clone(),
-                            message_id: message_id.clone(),
-                            text: t,
-                            thinking: false,
-                        });
-                    }
-                    StreamEvent::Thinking(t) => {
-                        acc.thinking.push_str(&t);
-                        core.emit_agent(&AgentEvent::Delta {
-                            turn_id: turn_id.clone(),
-                            message_id: message_id.clone(),
-                            text: t,
-                            thinking: true,
-                        });
-                    }
-                    StreamEvent::ToolCall { index, id, name, args } => {
-                        acc.push_tool(index, id, name, args);
-                    }
-                    StreamEvent::Finish(r) => acc.finish = Some(r),
-                }
-            }
+            // 网络抖动自动重连：请求失败且属于「临时性错误」时原样再发，上限由设置
+            // 控制（0 = 关闭）。断线前已经吐到界面上的半截话要先擦掉（StreamReset），
+            // 否则重连后的增量会接在旧文本后面出现重复；这轮还没有任何东西落库，
+            // 所以整个重来是安全的。
+            let mut acc;
+            let mut attempt: u32 = 0;
+            loop {
+                attempt += 1;
+                let request = ChatRequest {
+                    model: profile.model.clone(),
+                    system: system.clone(),
+                    messages: messages.clone(),
+                    tools: specs.clone(),
+                    temperature: profile.temperature,
+                    max_tokens: profile.max_tokens,
+                    reasoning: profile.reasoning,
+                    timeout: Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
+                    cancel: cancel.clone(),
+                    attachments: attachments.clone(),
+                    supports_vision: profile.supports_vision,
+                };
+                let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
+                let provider_task = {
+                    let provider = provider.clone();
+                    tokio::spawn(async move { provider.stream(request, tx).await })
+                };
 
-            match provider_task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(AppError::Cancelled)) => return Err(AppError::Cancelled),
-                Ok(Err(e)) => return Err(e),
-                Err(join_err) => {
-                    return Err(AppError::other(format!("模型任务异常终止：{join_err}")));
+                let mut streamed = false;
+                acc = Accumulator::default();
+                // 消费事件的同时每 150ms 查一次「停止」：服务商首 token 迟迟不来
+                // 或流中途卡住时，纯被动等下一个事件会让「停止」按钮要等满整个
+                // 请求超时（默认 180s）才生效——这正是用户最想立刻停下来的场景。
+                let outcome = loop {
+                    tokio::select! {
+                        biased;
+                        ev = rx.recv() => match ev {
+                            Some(StreamEvent::Usage(u)) => acc.usage.merge(u),
+                            Some(StreamEvent::Text(t)) => {
+                                acc.text.push_str(&t);
+                                streamed = true;
+                                core.emit_agent(&AgentEvent::Delta {
+                                    turn_id: turn_id.clone(),
+                                    message_id: message_id.clone(),
+                                    text: t,
+                                    thinking: false,
+                                });
+                            }
+                            Some(StreamEvent::Thinking(t)) => {
+                                acc.thinking.push_str(&t);
+                                streamed = true;
+                                core.emit_agent(&AgentEvent::Delta {
+                                    turn_id: turn_id.clone(),
+                                    message_id: message_id.clone(),
+                                    text: t,
+                                    thinking: true,
+                                });
+                            }
+                            Some(StreamEvent::ToolCall { index, id, name, args }) => {
+                                acc.push_tool(index, id, name, args);
+                            }
+                            Some(StreamEvent::ThinkingSignature(sig)) => {
+                                acc.thinking_signature = Some(sig);
+                            }
+                            Some(StreamEvent::Finish(r)) => acc.finish = Some(r),
+                            // 通道关闭 = provider 任务结束
+                            None => break provider_task.await,
+                        },
+                        _ = tokio::time::sleep(Duration::from_millis(150)) => {
+                            if cancel.load(Ordering::SeqCst) {
+                                // 流停滞时任务自己醒不过来（要等下一个 chunk 才会看
+                                // cancel 标志），直接 abort 掉
+                                provider_task.abort();
+                                break Ok(Err(AppError::Cancelled));
+                            }
+                        }
+                    }
+                };
+                let retryable = match &outcome {
+                    Ok(Ok(())) | Ok(Err(AppError::Cancelled)) | Err(_) => false,
+                    Ok(Err(e)) => is_transient(e),
+                };
+                if retryable && attempt <= cfg.agent.reconnect_max_attempts {
+                    if streamed {
+                        core.emit_agent(&AgentEvent::StreamReset { turn_id: turn_id.clone() });
+                    }
+                    // 退避着等：0.5s 起步，封顶 5s；等的时候用户可能点了「停止」
+                    let wait = Duration::from_millis((500 * attempt as u64).min(5000));
+                    tokio::time::sleep(wait).await;
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(AppError::Cancelled);
+                    }
+                    core.toast(
+                        "info",
+                        format!(
+                            "模型连接中断，自动重连（第 {attempt}/{} 次）",
+                            cfg.agent.reconnect_max_attempts
+                        ),
+                    );
+                    continue;
                 }
+
+                match outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(AppError::Cancelled)) => return Err(AppError::Cancelled),
+                    Ok(Err(e)) => return Err(e),
+                    Err(join_err) => {
+                        return Err(AppError::other(format!("模型任务异常终止：{join_err}")));
+                    }
+                }
+                break;
             }
 
             let tool_calls = acc.tool_calls();
             let mut blocks: Vec<ContentBlock> = Vec::new();
             if !acc.thinking.trim().is_empty() {
-                blocks.push(ContentBlock::Thinking { text: acc.thinking.clone() });
+                blocks.push(ContentBlock::Thinking {
+                    text: acc.thinking.clone(),
+                    signature: acc.thinking_signature.clone(),
+                });
             }
             if !acc.text.is_empty() {
                 blocks.push(ContentBlock::Text { text: acc.text.clone() });
@@ -533,8 +601,21 @@ impl AgentService {
             reason = "tool_calls".into();
 
             // 顺序执行工具：学习场景下工具之间有依赖（先查再写），并行反而容易冲突
-            for tc in &tool_calls {
+            for (call_idx, tc) in tool_calls.iter().enumerate() {
                 if cancel.load(Ordering::SeqCst) {
+                    // 用户点了「停止」：给剩余的工具调用补上「已中止」的结果再退出。
+                    // tool_use 与 tool_result 必须成对落库——配对被切断的话，这条对话
+                    // 之后每一次请求都会被服务商 400（历史里有 tool_use 没有回应）。
+                    for rest in &tool_calls[call_idx..] {
+                        let tool_msg = ChatMessage::tool_result_with(
+                            rest.id.clone(),
+                            "已被用户中止".to_string(),
+                            true,
+                            Vec::new(),
+                        );
+                        messages.push(tool_msg.clone());
+                        append_transcript(&core, topic.as_ref(), &req.chat_id, &tool_msg)?;
+                    }
                     return Err(AppError::Cancelled);
                 }
                 let result = self.execute_tool(&core, &ctx, &turn_id, tc).await;
@@ -725,7 +806,7 @@ pub async fn complete_once(
     let cfg = core.config_read();
     let profile = cfg.active_profile()?.clone();
     let provider = provider::build(&profile, core.http.clone());
-    let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
+    let max_attempts = cfg.agent.reconnect_max_attempts;
 
     let request = ChatRequest {
         model: profile.model.clone(),
@@ -742,17 +823,57 @@ pub async fn complete_once(
         supports_vision: false,
     };
 
-    let task = tokio::spawn(async move { provider.stream(request, tx).await });
-    let mut out = String::new();
-    while let Some(ev) = rx.recv().await {
-        if let StreamEvent::Text(t) = ev {
-            out.push_str(&t);
+    // 与对话主循环同一套重连策略；这里不流式上屏，重试只需要把已收的文本丢掉重来
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
+        let task = {
+            let provider = provider.clone();
+            let request = request.clone();
+            tokio::spawn(async move { provider.stream(request, tx).await })
+        };
+        let mut out = String::new();
+        while let Some(ev) = rx.recv().await {
+            if let StreamEvent::Text(t) = ev {
+                out.push_str(&t);
+            }
         }
+        let outcome = task.await;
+        let retryable = match &outcome {
+            Ok(Ok(())) | Ok(Err(AppError::Cancelled)) | Err(_) => false,
+            Ok(Err(e)) => is_transient(e),
+        };
+        if retryable && attempt <= max_attempts {
+            let wait = std::time::Duration::from_millis((500 * attempt as u64).min(5000));
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+        return match outcome {
+            Ok(Ok(())) => Ok(out),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(AppError::other(format!("模型调用异常：{e}"))),
+        };
     }
-    match task.await {
-        Ok(Ok(())) => Ok(out),
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(AppError::other(format!("模型调用异常：{e}"))),
+}
+
+/// 这类错误值得自动重连：网络层抖动（连接被重置 / 超时 / TLS 失败 / 流中途断掉）
+/// 与服务端临时过载（429 限流、5xx、Anthropic 的 overloaded）。
+/// 鉴权失败、参数不对重试多少次结果都一样，不在重连之列。
+fn is_transient(e: &AppError) -> bool {
+    match e {
+        AppError::Http(_) => true,
+        AppError::Provider(msg) => {
+            if msg.contains(provider::STREAM_CUT) {
+                return true;
+            }
+            if let Some(rest) = msg.strip_prefix("HTTP ") {
+                let code: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                return code == "408" || code == "429" || code.starts_with('5');
+            }
+            msg.to_lowercase().contains("overloaded")
+        }
+        _ => false,
     }
 }
 
@@ -850,7 +971,7 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, budget_chars: usize) -> u
             .flat_map(|m| m.blocks.iter())
             .map(|b| match b {
                 ContentBlock::Text { text } => text.chars().count(),
-                ContentBlock::Thinking { text } => text.chars().count(),
+                ContentBlock::Thinking { text, .. } => text.chars().count(),
                 ContentBlock::ToolUse { input, name, .. } => name.chars().count() + input.to_string().chars().count(),
                 ContentBlock::ToolResult { content, images, .. } => {
                     content.chars().count()
@@ -899,6 +1020,8 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, budget_chars: usize) -> u
 struct Accumulator {
     text: String,
     thinking: String,
+    /// 思考块的签名（Anthropic）。回传时必须原样带上，缺了服务商会 400。
+    thinking_signature: Option<String>,
     tools: Vec<ToolCall>,
     finish: Option<String>,
     /// 服务商在这条流里报的真实用量（可能为空）
@@ -980,7 +1103,7 @@ fn context_breakdown(
                         .map(|i| crate::agent::attachment::estimate_image_tokens(i.width, i.height))
                         .sum::<u32>();
                 }
-                ContentBlock::Text { text } | ContentBlock::Thinking { text } => {
+                ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
                     msg_tokens += est(text)
                 }
                 ContentBlock::Image { width, height, .. } => {
@@ -1078,10 +1201,24 @@ pub fn transcript_path(core: &AppCore, topic: Option<&Topic>, chat_id: &str) -> 
 fn load_transcript(core: &AppCore, topic: Option<&Topic>, chat_id: &str) -> AppResult<Vec<ChatMessage>> {
     let path = transcript_path(core, topic, chat_id);
     let mut msgs = store::read_jsonl::<ChatMessage>(&path)?;
-    // 只取最近一段，防止历史无限增长
+    // 只取最近一段，防止历史无限增长。截断点必须落在 user 消息上——
+    // 按条数硬切会把历史切成「以 tool/assistant 开头」或拆散
+    // tool_use/tool_result 的配对，服务商对这两种形状都直接 400。
     const MAX_RESTORE: usize = 400;
     if msgs.len() > MAX_RESTORE {
-        msgs.drain(0..msgs.len() - MAX_RESTORE);
+        let cut = msgs.len() - MAX_RESTORE;
+        let first_user = msgs
+            .iter()
+            .skip(cut)
+            .position(|m| m.role == crate::agent::message::Role::User)
+            .map(|p| cut + p);
+        match first_user {
+            Some(p) => {
+                msgs.drain(0..p);
+            }
+            // 截断范围内连一条 user 都没有（不可能的正常对话）：保底全保留
+            None => {}
+        }
     }
     Ok(msgs)
 }

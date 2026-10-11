@@ -97,6 +97,11 @@ pub enum AgentEvent {
         turn_id: String,
         message: ChatMessage,
     },
+    /// 清空正在流式的缓冲区。自动重连时用：断线前已经吐到界面上的半截话
+    /// 必须擦掉重说，否则重连后的增量会接在旧文本后面出现重复。
+    StreamReset {
+        turn_id: String,
+    },
     Iteration {
         turn_id: String,
         index: u32,
@@ -164,6 +169,7 @@ impl AgentEvent {
         match self {
             AgentEvent::TurnStarted { turn_id, .. }
             | AgentEvent::Delta { turn_id, .. }
+            | AgentEvent::StreamReset { turn_id }
             | AgentEvent::Message { turn_id, .. }
             | AgentEvent::Iteration { turn_id, .. }
             | AgentEvent::ToolApproval { turn_id, .. }

@@ -168,9 +168,22 @@ export function escapeHtml(s: string): string {
 export function outlineOf(source: string): { level: number; text: string; line: number }[] {
   const out: { level: number; text: string; line: number }[] = [];
   let inCode = false;
+  let fence = "";
+  let fenceLen = 0;
   source.split("\n").forEach((line, i) => {
-    if (line.trim().startsWith("```")) {
-      inCode = !inCode;
+    // 围栏要按 CommonMark 的规则配对：闭合必须用**同一种字符**且长度不短于
+    // 开头（``` 包 ```` 的嵌套代码块不能靠「见到 ``` 就翻转」来数），
+    // 否则代码里演示的 Markdown 示例会被大纲误当成真标题
+    const fenceM = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceM) {
+      if (!inCode) {
+        inCode = true;
+        fence = fenceM[1][0];
+        fenceLen = fenceM[1].length;
+      } else if (fenceM[1][0] === fence && fenceM[1].length >= fenceLen && /^\s{0,3}(`{3,}|~{3,})\s*$/.test(line)) {
+        // 闭合围栏后面不能带信息串
+        inCode = false;
+      }
       return;
     }
     if (inCode) return;
@@ -252,12 +265,15 @@ export async function renderMermaidIn(root: HTMLElement | null): Promise<number>
 /**
  * 清掉 Mermaid 在渲染失败时可能注入到 DOM 里的错误节点。
  *
- * Mermaid 会在 `document.body`（或容器内）插入一个 id 形如 `dmermaid-<id>` 的元素，
+ * Mermaid 会在 `document.body`（或容器内）插入一个 id 形如 `d<渲染id>` 的元素
+ * （渲染 id 由共享模块分配，是 `hub-mmd-<N>`，所以错误节点是 `dhub-mmd-<N>`），
  * 里面是「Syntax error in text」的提示。它是全局副作用，不会随 React 卸载消失，
  * 所以这里主动收尾。已开启 `suppressErrorRendering`，这里是双保险。
  */
 function cleanupMermaidErrorNode(id: string): void {
-  for (const node of Array.from(document.querySelectorAll(`#d${CSS.escape(id)}, [id^="dmermaid"]`))) {
+  for (const node of Array.from(
+    document.querySelectorAll(`#d${CSS.escape(id)}, [id^="dhub-mmd"], [id^="dmermaid"]`),
+  )) {
     node.remove();
   }
 }

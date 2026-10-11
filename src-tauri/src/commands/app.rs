@@ -113,6 +113,7 @@ pub struct ConfigPatch {
     pub max_iterations: Option<u32>,
     pub system_prompt_extra: Option<String>,
     pub request_timeout_secs: Option<u64>,
+    pub reconnect_max_attempts: Option<u32>,
     pub context_budget_chars: Option<usize>,
     pub home_url: Option<String>,
     pub search_engine: Option<String>,
@@ -168,6 +169,9 @@ pub async fn config_patch(state: State<'_, AppState>, patch: ConfigPatch) -> App
         }
         if let Some(v) = patch.request_timeout_secs {
             c.agent.request_timeout_secs = v.clamp(30, 1800);
+        }
+        if let Some(v) = patch.reconnect_max_attempts {
+            c.agent.reconnect_max_attempts = v.clamp(0, 50);
         }
         if let Some(v) = patch.context_budget_chars {
             c.agent.context_budget_chars = v.clamp(2_000, 500_000);

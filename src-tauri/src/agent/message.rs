@@ -54,9 +54,13 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         height: Option<u32>,
     },
-    /// 模型的思考过程（DeepSeek-R1 的 reasoning_content / Claude 的 thinking）
+    /// 模型的思考过程（DeepSeek-R1 的 reasoning_content / Claude 的 thinking）。
+    /// `signature` 是 Anthropic 思考块的签名：开思考强度时服务商要求把思考块
+    /// **原样回传**（带签名），缺了会被 400 拒掉。老对话没有这个字段。
     Thinking {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     ToolUse {
         id: String,
@@ -250,7 +254,7 @@ impl ChatMessage {
         self.blocks
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Thinking { text } => Some(text.as_str()),
+                ContentBlock::Thinking { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -335,7 +339,7 @@ pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> u32 {
                 .iter()
                 .map(|b| match b {
                     ContentBlock::Text { text } => estimate_tokens(text),
-                    ContentBlock::Thinking { text } => estimate_tokens(text),
+                    ContentBlock::Thinking { text, .. } => estimate_tokens(text),
                     ContentBlock::Image { width, height, .. } => {
                         crate::agent::attachment::estimate_image_tokens(*width, *height)
                     }

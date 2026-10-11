@@ -41,7 +41,10 @@ pub struct FrontMatter {
 /// 够用且不会因为引入 yaml 依赖而让行为变得难以预测。
 pub fn parse_front_matter(text: &str) -> FrontMatter {
     let mut fm = FrontMatter::default();
-    let trimmed = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // body_offset 是给**原始 content** 切片用的（extract_title / excerpt 拿原文切），
+    // BOM 的 3 个字节必须算进偏移——先剥掉再算的话，带 BOM 的笔记正文会整体错位 3 字节
+    let bom = if text.starts_with('\u{feff}') { '\u{feff}'.len_utf8() } else { 0 };
+    let trimmed = &text[bom..];
     if !trimmed.starts_with("---") {
         return fm;
     }
@@ -75,7 +78,7 @@ pub fn parse_front_matter(text: &str) -> FrontMatter {
     while trimmed[offset..].starts_with('\n') || trimmed[offset..].starts_with("\r\n") {
         offset += if trimmed[offset..].starts_with("\r\n") { 2 } else { 1 };
     }
-    fm.body_offset = offset.min(trimmed.len());
+    fm.body_offset = bom + offset.min(trimmed.len());
     fm
 }
 

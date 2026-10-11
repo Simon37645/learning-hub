@@ -282,6 +282,10 @@ pub struct AgentConfig {
     /// 请求超时（秒）
     #[serde(default = "default_timeout")]
     pub request_timeout_secs: u64,
+    /// 模型连接中断后的自动重连上限。0 = 关闭，失败就直接报错。
+    /// 网络不稳时（尤其长流式输出）一断就丢整轮太浪费，重试成本只是再发一次请求。
+    #[serde(default = "default_reconnect_max")]
+    pub reconnect_max_attempts: u32,
     /// 每次启动/切换主题时注入的上下文预算（字符数），防止把主题读爆
     #[serde(default = "default_context_budget")]
     pub context_budget_chars: usize,
@@ -315,6 +319,9 @@ fn default_max_iterations() -> u32 {
 fn default_timeout() -> u64 {
     180
 }
+fn default_reconnect_max() -> u32 {
+    10
+}
 fn default_context_budget() -> usize {
     24_000
 }
@@ -327,6 +334,7 @@ impl Default for AgentConfig {
             system_prompt_extra: String::new(),
             allow_web: true,
             request_timeout_secs: default_timeout(),
+            reconnect_max_attempts: default_reconnect_max(),
             context_budget_chars: default_context_budget(),
             sandbox: true,
             approved_roots: Vec::new(),

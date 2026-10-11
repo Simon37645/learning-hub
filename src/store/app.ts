@@ -111,7 +111,9 @@ interface AppStore {
   /** 工坊的对话清单。工坊没有主题，所以单独一份，键不是 slug */
   studioChats: ChatOverviewItem[];
   messages: ChatMessage[];
-  streaming: { turnId: string; text: string; thinking: string } | null;
+  /** 正在流式的那一轮。chatId 用来区分「这轮是谁的」：切到别的对话时，
+   * 旧轮次的增量不能打进新对话的气泡里（后端每个事件都带 turn_id/chat_id） */
+  streaming: { turnId: string; chatId: string; text: string; thinking: string } | null;
   activities: ToolActivity[];
   iteration: { index: number; max: number } | null;
   /** 上一轮的用量与上下文构成；服务商不报真实用量时 cached/cacheWrite 为 0 */
@@ -279,6 +281,12 @@ let gotoSeq = 1;
  * ——症状是回复内容、工具卡片整齐地翻倍。
  */
 let initPromise: Promise<void> | null = null;
+/** send() 的同步互斥锁：从「点击发送」到 streaming 置位之间的空窗里挡住第二次发送 */
+let sendInFlight = false;
+/** 对话切换序号：先点的对话请求晚到时，不许覆盖已经切过去的新对话 */
+let chatSwitchSeq = 0;
+/** 主题打开序号：快速连点两个主题时，旧主题的响应不许糊回界面 */
+let topicOpenSeq = 0;
 
 export const useApp = create<AppStore>((set, get) => ({
   ready: false,
@@ -387,9 +395,12 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   async openTopic(slug) {
+    const seq = ++topicOpenSeq;
     set({ topicLoading: true });
     try {
       const detail = await api.topicOpen(slug);
+      // 期间用户又点了别的主题：这次响应作废，别把旧主题的数据糊上去
+      if (seq !== topicOpenSeq) return;
       const chats = detail.chats ?? [];
       set({
         topic: detail,
@@ -400,6 +411,7 @@ export const useApp = create<AppStore>((set, get) => ({
         tasks: [],
         activities: [],
         streaming: null,
+        usage: null,
       });
       // 优先续上最近一次对话，没有就新开
       if (chats.length > 0) await get().loadChat(chats[0]);
@@ -434,7 +446,7 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   leaveTopic() {
-    set({ view: "home", topic: null, messages: [], activities: [], streaming: null });
+    set({ view: "home", topic: null, messages: [], activities: [], streaming: null, usage: null });
     void api.viewerSetVisible(false);
     void get().loadChats(null);
   },
@@ -504,18 +516,26 @@ export const useApp = create<AppStore>((set, get) => ({
   // ============================================================ 对话
 
   async newChat() {
+    const seq = ++chatSwitchSeq;
     const chatId = await api.agentNewChat();
+    // 期间用户已经切到别的对话：这条空对话别抢回来
+    if (seq !== chatSwitchSeq) return;
     set({ chatId, messages: [], activities: [], streaming: null, chatError: null, usage: null });
     void get().loadChats();
   },
 
   async loadChat(chatId) {
+    const seq = ++chatSwitchSeq;
     const slug = get().topic?.slug ?? null;
     try {
       const messages = await api.agentTranscript(chatId, slug);
-      set({ chatId, messages, activities: [], chatError: null });
+      // 先点的对话响应晚到：不能覆盖已经切过去的新对话
+      //（否则会出现「标题是 B、正文是 A」的混搭，接着聊还会写错文件）
+      if (seq !== chatSwitchSeq) return;
+      set({ chatId, messages, activities: [], chatError: null, usage: null });
     } catch (e) {
-      set({ chatId, messages: [] });
+      if (seq !== chatSwitchSeq) return;
+      set({ chatId, messages: [], usage: null });
       console.warn("读取对话失败", e);
     }
   },
@@ -549,7 +569,7 @@ export const useApp = create<AppStore>((set, get) => ({
    * 并续上最近一条工坊对话——和 `openTopic` 的行为对齐。
    */
   async openStudio() {
-    set({ view: "studio", topic: null, cards: [], tasks: [], activities: [], streaming: null, chatError: null });
+    set({ view: "studio", topic: null, cards: [], tasks: [], activities: [], streaming: null, chatError: null, usage: null });
     void get().loadStudioChats();
     void get().loadStudio();
     try {
@@ -562,7 +582,9 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   async newStudioChat() {
+    const seq = ++chatSwitchSeq;
     const chatId = await api.agentNewChat();
+    if (seq !== chatSwitchSeq) return;
     set({ chatId, messages: [], activities: [], streaming: null, chatError: null, usage: null });
     void get().loadStudioChats();
   },
@@ -663,17 +685,27 @@ export const useApp = create<AppStore>((set, get) => ({
     const t = text.trim();
     const pics = images ?? [];
     // 只贴图不打字是合法的（「这张图里的第三行是什么」可以省略）
-    if ((!t && pics.length === 0) || get().streaming) return;
-    let chatId = get().chatId;
-    if (!chatId) {
-      chatId = await api.agentNewChat();
-      set({ chatId });
+    if (!t && pics.length === 0) return;
+    // 双发竞态：streaming 要等 turn_started 事件回来才置上，快速连按两次
+    // 回车会双双穿过守卫、在同一对话里并发跑两个轮次。sendInFlight 在
+    // invoke 返回前就同步置位，把窗口关死。
+    if (sendInFlight) return;
+    if (get().streaming) {
+      get().toast("info", "上一轮还在进行中，等它跑完再发");
+      return;
     }
-    // 在哪个视图里说话就发给哪个模式：工坊里没有主题，
-    // 传 topicSlug 会让后端把对话写进主题目录（那就跑到学习那边去了）
-    const studio = get().view === "studio";
-    const slug = studio ? null : (get().topic?.slug ?? null);
+    sendInFlight = true;
+    let chatId = get().chatId;
     try {
+      if (!chatId) {
+        chatId = await api.agentNewChat();
+        set({ chatId });
+      }
+      const cid: string = chatId;
+      // 在哪个视图里说话就发给哪个模式：工坊里没有主题，
+      // 传 topicSlug 会让后端把对话写进主题目录（那就跑到学习那边去了）
+      const studio = get().view === "studio";
+      const slug = studio ? null : (get().topic?.slug ?? null);
       const res = await api.agentSend({
         chatId,
         text: t,
@@ -687,10 +719,15 @@ export const useApp = create<AppStore>((set, get) => ({
         messages: [...s.messages, res.message],
         chatError: null,
         activities: [],
+        // 乐观占位：不等 turn_started 事件，输入框立刻进入「停止」态，
+        // 也让后续事件的 turn_id 守卫有东西可比
+        streaming: { turnId: res.turnId, chatId: cid, text: "", thinking: "" },
       }));
     } catch (e) {
       set({ chatError: errText(e) });
       get().toast("error", errText(e));
+    } finally {
+      sendInFlight = false;
     }
   },
 
@@ -1332,6 +1369,15 @@ async function applyZenWindow(on: boolean): Promise<void> {
 
 // ============================================================ 事件处理
 
+/** 这轮事件是不是「当前正在看的这一轮」。
+ *
+ * 后端每个事件都带 turn_id，但光比 turn_id 还不够：轮次进行中切到同主题的
+ * 另一条对话（loadChat 不清 streaming，轮次还在后台跑），turn_id 依然相等，
+ * 旧对话的消息就会打进新对话的消息列表。所以还要比 chatId。 */
+function isCurrentTurn(s: AppStore, turnId: string): boolean {
+  return s.streaming?.turnId === turnId && s.streaming.chatId === s.chatId;
+}
+
 function handleAgentEvent(
   ev: AgentEvent,
   set: (p: Partial<AppStore> | ((s: AppStore) => Partial<AppStore>)) => void,
@@ -1339,29 +1385,39 @@ function handleAgentEvent(
 ): void {
   switch (ev.kind) {
     case "turn_started":
-      set({ streaming: { turnId: ev.turn_id, text: "", thinking: "" }, activities: [], iteration: null, chatError: null });
+      set({ streaming: { turnId: ev.turn_id, chatId: ev.chat_id, text: "", thinking: "" }, activities: [], iteration: null, chatError: null });
       break;
     case "delta":
       set((s) => {
-        if (!s.streaming) return {};
+        if (!isCurrentTurn(s, ev.turn_id)) return {};
         return {
           streaming: ev.thinking
-            ? { ...s.streaming, thinking: s.streaming.thinking + ev.text }
-            : { ...s.streaming, text: s.streaming.text + ev.text },
+            ? { ...s.streaming!, thinking: s.streaming!.thinking + ev.text }
+            : { ...s.streaming!, text: s.streaming!.text + ev.text },
         };
       });
       break;
     case "message":
-      set((s) => ({
-        messages: [...s.messages, ev.message],
-        // 一轮里模型可能回复多次（工具调用之间），每次都从空缓冲重新开始
-        streaming: s.streaming ? { ...s.streaming, text: "", thinking: "" } : null,
-      }));
+      set((s) => {
+        // 别的对话（或上一轮）的消息不追加进来；它们落在本对话的 jsonl 里，
+        // 切回去时 loadChat 会从盘上读
+        if (!isCurrentTurn(s, ev.turn_id)) return {};
+        return {
+          messages: [...s.messages, ev.message],
+          // 一轮里模型可能回复多次（工具调用之间），每次都从空缓冲重新开始
+          streaming: s.streaming ? { ...s.streaming, text: "", thinking: "" } : null,
+        };
+      });
+      break;
+    case "stream_reset":
+      // 自动重连：断线前吐的半截话擦掉重来，重连后的增量才能接上正确的前文
+      set((s) => (isCurrentTurn(s, ev.turn_id) ? { streaming: { ...s.streaming!, text: "", thinking: "" } } : {}));
       break;
     case "iteration":
-      set({ iteration: { index: ev.index, max: ev.max } });
+      set((s) => (isCurrentTurn(s, ev.turn_id) ? { iteration: { index: ev.index, max: ev.max } } : {}));
       break;
     case "tool_approval":
+      // 审批是全局浮层：哪怕用户切到了别的对话，后台那轮也得等这个决定
       set({ approval: { kind: "tool", call: ev.call } });
       break;
     case "sandbox_request":
@@ -1380,26 +1436,30 @@ function handleAgentEvent(
       });
       break;
     case "tool_started":
-      set((s) => ({
-        activities: [
-          ...s.activities,
-          {
-            callId: ev.call_id,
-            name: ev.name,
-            summary: ev.summary,
-            risk: ev.risk,
-            ok: true,
-            preview: "",
-            durationMs: 0,
-            denied: false,
-            startedAt: Date.now(),
-            running: true,
-          },
-        ],
-      }));
+      set((s) => {
+        if (!isCurrentTurn(s, ev.turn_id)) return {};
+        return {
+          activities: [
+            ...s.activities,
+            {
+              callId: ev.call_id,
+              name: ev.name,
+              summary: ev.summary,
+              risk: ev.risk,
+              ok: true,
+              preview: "",
+              durationMs: 0,
+              denied: false,
+              startedAt: Date.now(),
+              running: true,
+            },
+          ],
+        };
+      });
       break;
     case "tool_finished":
       set((s) => {
+        if (!isCurrentTurn(s, ev.turn_id)) return {};
         const exists = s.activities.some((a) => a.callId === ev.outcome.callId);
         const next = exists
           ? s.activities.map((a) =>
@@ -1413,25 +1473,39 @@ function handleAgentEvent(
       });
       break;
     case "usage":
-      set({
-        usage: {
-          input: ev.input_tokens,
-          output: ev.output_tokens,
-          cached: ev.cached_tokens ?? 0,
-          cacheWrite: ev.cache_write_tokens ?? 0,
-          context: ev.context ?? [],
-        },
-      });
+      set((s) =>
+        isCurrentTurn(s, ev.turn_id)
+          ? {
+              usage: {
+                input: ev.input_tokens,
+                output: ev.output_tokens,
+                cached: ev.cached_tokens ?? 0,
+                cacheWrite: ev.cache_write_tokens ?? 0,
+                context: ev.context ?? [],
+              },
+            }
+          : {},
+      );
       break;
     case "finished":
-      set((s) => ({ streaming: null, iteration: null, approval: null, lessonTick: s.lessonTick + 1 }));
+      set((s) => {
+        // 迟到的旧轮次收尾不许把新一轮的 streaming 清掉
+        if (s.streaming && s.streaming.turnId !== ev.turn_id) {
+          return { lessonTick: s.lessonTick + 1 };
+        }
+        return { streaming: null, iteration: null, approval: null, lessonTick: s.lessonTick + 1 };
+      });
       void get().refreshTopics();
       void get().refreshBrief();
       // 侧栏的对话清单：标题取自第一句话，所以第一轮结束后要刷一次才会出现
       void get().loadChats();
       break;
     case "failed":
-      set({ streaming: null, iteration: null, approval: null, chatError: ev.message });
+      set((s) => {
+        // 迟到的旧轮次失败不许清掉新一轮的 streaming，错误也只属于它的对话
+        if (s.streaming && s.streaming.turnId !== ev.turn_id) return {};
+        return { streaming: null, iteration: null, approval: null, chatError: ev.message };
+      });
       get().toast("error", ev.message);
       break;
   }

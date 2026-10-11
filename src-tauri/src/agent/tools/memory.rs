@@ -116,14 +116,16 @@ impl Tool for MemoryWrite {
             if id.is_empty() {
                 store.upsert(&scope, dir.as_deref(), item)
             } else {
-                // 改：只动分类/内容/钉住/备注，其余字段（创建时间、使用次数）保持原样
+                // 改：模型**给了什么才动什么**。kind/pinned 没传就传 None——
+                // 拿缺省值顶上（Fact / false）会把「钉住的记忆」悄悄取消钉住、
+                // 把认真分过的类重置成「情况」，用户在面板里看到的就是莫名其妙的改动。
                 let updated = store.patch(
                     &scope,
                     dir.as_deref(),
                     &id,
-                    Some(item.kind),
+                    arg_str(&input, "kind").and_then(|s| MemoryKind::parse(&s)),
                     Some(item.content),
-                    Some(item.pinned),
+                    arg_bool(&input, "pinned"),
                     // 只有明确给了备注才覆盖，免得「改个分类」把原来的备注清掉
                     arg_str(&input, "note"),
                 )?;

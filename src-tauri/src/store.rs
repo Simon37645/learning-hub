@@ -13,9 +13,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ctx(parent.display())?;
     }
+    // 临时名带上唯一后缀：固定名的话，两个线程同时写同一文件会互相踩——
+    // 后 create 的把先写了一半的临时文件截断，rename 出去的正式文件就成了
+    // 两个写入者的混合体，而且必有一方 rename 时找不到自己的临时文件。
     let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
+        "{}.{}.tmp",
+        path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
+        uuid::Uuid::new_v4().simple()
     ));
     {
         let mut f = std::fs::File::create(&tmp).ctx(tmp.display())?;
@@ -25,6 +29,17 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> AppResult<()> {
     // Windows 上 rename 覆盖已存在文件是允许的（std 内部用 MoveFileEx）
     std::fs::rename(&tmp, path).ctx(path.display())?;
     Ok(())
+}
+
+/// 「读全文→改→全量重写」这类多步文件操作的全局串行锁。
+///
+/// JSONL 的修改都是整文件重写：agent 后台回合与用户界面同时写同一个
+/// cards.jsonl 时，后写者会把先写者的改动静默覆盖（丢评分、丢卡片）。
+/// 文件不多、写入很轻，进程级全局串行足够，也不会引入锁序问题——
+/// 用法：读写开始前取 `let _op = file_op_lock();`，guard 掉了就释放。
+pub fn file_op_lock() -> parking_lot::MutexGuard<'static, ()> {
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    LOCK.lock()
 }
 
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
@@ -62,6 +77,7 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> AppResult<Vec<T>> {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
+    let mut bad: Vec<String> = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
@@ -69,11 +85,33 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> AppResult<Vec<T>> {
         }
         match serde_json::from_str::<T>(line) {
             Ok(v) => out.push(v),
-            // 单行损坏不应该毁掉整个文件，跳过并继续
-            Err(e) => eprintln!("[store] 跳过损坏行 {}:{} — {e}", path.display(), i + 1),
+            // 单行损坏不应该毁掉整个文件，跳过并继续。但必须留底：调用方普遍是
+            // 「读全文→改→全量重写」，坏行不留底的话，下一次重写就把它无声抹掉了
+            // （磁盘是唯一真相，抹掉就是丢数据）。
+            Err(e) => {
+                eprintln!("[store] 跳过损坏行 {}:{} — {e}", path.display(), i + 1);
+                bad.push(line.to_string());
+            }
+        }
+    }
+    if !bad.is_empty() {
+        let mut keep = read_text_opt(&bad_sidecar(path))?.unwrap_or_default();
+        for l in bad {
+            keep.push_str(&l);
+            keep.push('\n');
+        }
+        if let Err(e) = atomic_write(&bad_sidecar(path), keep.as_bytes()) {
+            eprintln!("[store] 坏行留底失败：{e}");
         }
     }
     Ok(out)
+}
+
+/// 损坏行的留底文件（原路径 + `.bad`）。用户手改坏了一行，修好后可以从这里找回。
+fn bad_sidecar(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    name.push_str(".bad");
+    path.with_file_name(name)
 }
 
 pub fn write_jsonl<T: Serialize>(path: &Path, items: &[T]) -> AppResult<()> {
@@ -148,14 +186,20 @@ pub fn now() -> chrono::DateTime<chrono::Utc> {
 pub fn read_text_capped(path: &Path, max_bytes: u64) -> AppResult<String> {
     let meta = std::fs::metadata(path).ctx(path.display())?;
     if meta.len() > max_bytes {
-        let text = std::fs::read_to_string(path).ctx(path.display())?;
-        let mut cut = String::new();
-        for ch in text.chars() {
-            if cut.len() + ch.len_utf8() > max_bytes as usize {
-                break;
-            }
-            cut.push(ch);
+        // 真正按字节限流：护栏只护返回值的话，超大文件照样整份读进内存
+        use std::io::Read;
+        let f = std::fs::File::open(path).ctx(path.display())?;
+        let mut buf = Vec::with_capacity(max_bytes as usize);
+        f.take(max_bytes).read_to_end(&mut buf).ctx(path.display())?;
+        // 别把一个多字节字符切在半截
+        let mut end = buf.len();
+        while end > 0 && (buf[end - 1] & 0xC0) == 0x80 {
+            end -= 1;
         }
+        if end > 0 && buf[end - 1] & 0xC0 == 0xC0 {
+            end -= 1; // 剩下的是多字节序列的首字节，也丢掉
+        }
+        let mut cut = String::from_utf8_lossy(&buf[..end]).to_string();
         cut.push_str("\n\n…（文件过长已截断）");
         return Ok(cut);
     }

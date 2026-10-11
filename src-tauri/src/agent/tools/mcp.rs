@@ -30,6 +30,10 @@ pub struct McpTool {
     origin: String,
     description: String,
     schema: Value,
+    /// Box::leak 过的 'static 名字/描述缓存。Tool::name 要求 'static，但它是
+    /// 每轮对话都会调的 trait 方法——不放缓存的话泄漏量跟回合数成正比
+    name_cache: std::sync::OnceLock<&'static str>,
+    desc_cache: std::sync::OnceLock<&'static str>,
 }
 
 impl McpTool {
@@ -49,6 +53,8 @@ impl McpTool {
                 }
             ),
             schema: info.input_schema,
+            name_cache: std::sync::OnceLock::new(),
+            desc_cache: std::sync::OnceLock::new(),
         }
     }
 }
@@ -56,14 +62,13 @@ impl McpTool {
 #[async_trait]
 impl Tool for McpTool {
     fn name(&self) -> &'static str {
-        // Tool::name 要求 'static，这里用 Box::leak 换一次性地分配。
-        // 工具数量有限（几十个），泄漏几十字节字符串是可以接受的取舍。
-        Box::leak(self.exposed.clone().into_boxed_str())
+        // Tool::name 要求 'static：Box::leak 换 'static，但只 leak 一次
+        //（它每轮对话都会被调，泄漏量不能跟调用次数走）
+        *self.name_cache.get_or_init(|| Box::leak(self.exposed.clone().into_boxed_str()))
     }
 
     fn description(&self) -> &'static str {
-        // 同上：外部工具在启动/重连时重建，数量可控
-        Box::leak(self.description.clone().into_boxed_str())
+        *self.desc_cache.get_or_init(|| Box::leak(self.description.clone().into_boxed_str()))
     }
 
     fn schema(&self) -> Value {

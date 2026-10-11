@@ -69,11 +69,18 @@ impl ProviderUsage {
     }
 }
 
+/// 流被网关「规范地」掐断（没等到 [DONE] / finish_reason / message_stop 就耗尽）
+/// 时的错误文案。`is_transient` 靠这句话识别它为值得自动重连的错误。
+pub(crate) const STREAM_CUT: &str = "模型流被提前截断";
+
 /// 服务商返回的流式增量（尚未累积成完整消息）。
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     Text(String),
     Thinking(String),
+    /// 思考块的签名（Anthropic 的 signature_delta）。回传思考块时必须原样带上，
+    /// 缺了服务商会 400。
+    ThinkingSignature(String),
     /// 工具调用的增量片段，按 `index` 归并
     ToolCall {
         index: usize,
@@ -107,29 +114,36 @@ pub fn build(profile: &ProviderProfile, http: reqwest::Client) -> Arc<dyn LlmPro
 /// 统一的 SSE 读取器：把字节流切成 (event, json) 交给回调。
 ///
 /// `handle` 返回 `Ok(false)` 表示「够了，停止读取」（例如收到了 [DONE]）。
+/// 返回值表示流是不是**明确地**读完了：true = 收到了完成哨兵（handle 返回
+/// false），false = 字节流自然耗尽（可能只是被网关规范地掐断了，模型没说完）。
 pub(crate) async fn pump_sse(
     resp: reqwest::Response,
     cancel: &Arc<AtomicBool>,
     mut handle: impl FnMut(&str, Value) -> AppResult<bool>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     use futures_util::StreamExt;
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    // 必须在**字节层**缓冲：SSE 以行组织，行边界 \n 是单个 ASCII 字节，绝不可
+    // 能落进 UTF-8 多字节序列内部，所以「先按字节切行、整行再转字符串」永远安全。
+    // 反过来先 `to_string_lossy` 再切行，会把正好跨网络分块的中文拆成 U+FFFD
+    // 且不可恢复——长参数的工具调用 JSON 就此报废，整行被当成解析失败丢掉。
+    let mut buf: Vec<u8> = Vec::new();
     let mut current_event = String::new();
 
     while let Some(chunk) = stream.next().await {
         if cancel.load(Ordering::Relaxed) {
             return Err(AppError::Cancelled);
         }
-        let chunk = chunk?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
+        buf.extend_from_slice(&chunk?);
 
-        // SSE 以行组织；只用 \n 切，\r 单独去掉
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim_end_matches('\r').to_string();
-            buf.drain(..=pos);
-
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let mut line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            line_bytes.pop(); // 换行本身
+            if line_bytes.last() == Some(&b'\r') {
+                line_bytes.pop(); // CRLF
+            }
+            let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim_end();
             if line.is_empty() {
                 // 空行 = 一个事件结束
@@ -143,12 +157,12 @@ pub(crate) async fn pump_sse(
             let Some(payload) = line.strip_prefix("data:") else { continue };
             let payload = payload.trim();
             if payload == "[DONE]" {
-                return Ok(());
+                return Ok(true);
             }
             match serde_json::from_str::<Value>(payload) {
                 Ok(v) => {
                     if !handle(&current_event, v)? {
-                        return Ok(());
+                        return Ok(true);
                     }
                 }
                 Err(e) => {
@@ -158,7 +172,7 @@ pub(crate) async fn pump_sse(
             }
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 pub(crate) fn truncate(s: &str, n: usize) -> String {

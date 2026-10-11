@@ -115,7 +115,9 @@ impl Tool for FsList {
         let rel = arg_str(&input, "path").unwrap_or_default();
         let depth = arg_u32(&input, "depth").unwrap_or(2).clamp(1, 5) as usize;
 
-        let dir = if rel.trim().is_empty() {
+        // 「.」就是根目录：文档与缺省示例都这么写，别拿文件语义的报错回它
+        let rel_trim = rel.trim();
+        let dir = if rel_trim.is_empty() || rel_trim == "." {
             ctx.root_for(topic_arg.as_deref())?
         } else {
             ctx.resolve_path(&rel, topic_arg.as_deref(), Access::Read, "列目录")
@@ -551,7 +553,7 @@ impl Tool for FsSearch {
         let topic_arg = arg_str(&input, "topic");
 
         let root = match arg_str(&input, "path") {
-            Some(p) if !p.trim().is_empty() => {
+            Some(p) if !p.trim().is_empty() && p.trim() != "." => {
                 ctx.resolve_path(&p, topic_arg.as_deref(), Access::Read, "检索目录")
                     .await?
             }
@@ -719,7 +721,17 @@ impl Tool for MaterialImport {
                 .unwrap_or_else(|| "imported".into());
             let dest = crate::paths::unique_child(&target_dir, &name);
             let result = if move_file {
-                std::fs::rename(&from, &dest).or_else(|_| std::fs::copy(&from, &dest).map(|_| ()))
+                match std::fs::rename(&from, &dest) {
+                    Ok(()) => Ok(()),
+                    // 跨盘（D: → E:）rename 必失败：退化为复制 + 删源。
+                    // 删不动要如实报错——不能复制完就说「已移动」，
+                    // 用户以为剪切走了，源目录里其实还在
+                    Err(_) => std::fs::copy(&from, &dest).and_then(|_| {
+                        std::fs::remove_file(&from).map_err(|e| {
+                            std::io::Error::new(e.kind(), format!("已复制但删除源文件失败：{e}"))
+                        })
+                    }),
+                }
             } else {
                 std::fs::copy(&from, &dest).map(|_| ())
             };

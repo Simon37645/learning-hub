@@ -658,6 +658,9 @@ export function AutoTextarea({
       onChange={(e) => onChange(e.target.value)}
       onPaste={onPaste}
       onKeyDown={(e) => {
+        // 输入法组合中的回车是「确认候选词」，不是发送：这时候发出去的是
+        // 上一帧的旧文案，刚打的字会被清空（keyCode 229 = IME 处理中）
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && onSend) {
           e.preventDefault();
           onSend();

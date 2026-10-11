@@ -55,7 +55,7 @@ export type ContentBlock =
       width?: number | null;
       height?: number | null;
     }
-  | { type: "thinking"; text: string }
+  | { type: "thinking"; text: string; /** Anthropic 思考块签名（回传时要原样带）；老消息没有 */ signature?: string | null }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | {
       type: "tool_result";
@@ -353,6 +353,8 @@ export interface AgentConfig {
   systemPromptExtra: string;
   allowWeb: boolean;
   requestTimeoutSecs: number;
+  /** 模型连接中断后的自动重连上限（0 = 不重连） */
+  reconnectMaxAttempts: number;
   contextBudgetChars: number;
   /** 沙箱：agent 默认只能碰工作区里的文件 */
   sandbox: boolean;
@@ -471,6 +473,7 @@ export interface ConfigPatch {
   maxIterations?: number;
   systemPromptExtra?: string;
   requestTimeoutSecs?: number;
+  reconnectMaxAttempts?: number;
   contextBudgetChars?: number;
   homeUrl?: string;
   searchEngine?: string;
@@ -565,6 +568,7 @@ export type AgentEvent =
   | { kind: "turn_started"; turn_id: string; chat_id: string; topic_slug: string | null; message_id: string; mode: PermissionMode }
   | { kind: "delta"; turn_id: string; message_id: string; text: string; thinking: boolean }
   | { kind: "message"; turn_id: string; message: ChatMessage }
+  | { kind: "stream_reset"; turn_id: string }
   | { kind: "iteration"; turn_id: string; index: number; max: number }
   | { kind: "tool_approval"; turn_id: string; call: PendingCall }
   | {

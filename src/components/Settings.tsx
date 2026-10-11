@@ -18,6 +18,50 @@ import {
 import { useApp } from "../store/app";
 import { Field, Icon, Modal, Segmented, Spinner, Switch } from "./ui";
 
+/** 本地草稿输入框：失焦 / 回车才提交。
+ *
+ * 直接把 config 当受控值、每个按键 patch 一次的话，打字快了会被
+ * 往返中的旧值吞字，几个并发 patch 还可能乱序落盘把最后几个字弄丢。 */
+function DraftInput({
+  value,
+  onCommit,
+  ...rest
+}: { value: string; onCommit: (v: string) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <input
+      {...rest}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => draft !== value && onCommit(draft)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.nativeEvent.isComposing && draft !== value) {
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
+/** 同 DraftInput 的 textarea 版（额外系统指令这类要写长句的字段） */
+function DraftTextarea({
+  value,
+  onCommit,
+  ...rest
+}: { value: string; onCommit: (v: string) => void } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange">) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <textarea
+      {...rest}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => draft !== value && onCommit(draft)}
+    />
+  );
+}
+
 
 export function Settings() {
   const config = useApp((s) => s.config);
@@ -66,7 +110,7 @@ export function Settings() {
                 onChange={(e) => setName(e.target.value)}
                 onBlur={() => name.trim() && name !== config.userName && void patchConfig({ userName: name.trim() })}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && name.trim()) void patchConfig({ userName: name.trim() });
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) void patchConfig({ userName: name.trim() });
                 }}
               />
               <button
@@ -90,7 +134,11 @@ export function Settings() {
           </h2>
           <div className="card-box">
             <div className="row">
-              <input className="input mono" value={config.workspaceRoot} onChange={(e) => void patchConfig({ workspaceRoot: e.target.value })} />
+              <DraftInput
+                className="input mono"
+                value={config.workspaceRoot}
+                onCommit={(v) => v.trim() && void patchConfig({ workspaceRoot: v.trim() })}
+              />
               <button
                 className="btn"
                 onClick={async () => {
@@ -143,36 +191,62 @@ export function Settings() {
 
             <div className="grid-2">
               <Field label="单轮最多工具往返次数" hint="防止 agent 反复调用工具停不下来">
-                <input
+                <DraftInput
                   className="input"
                   type="number"
                   min={1}
                   max={100}
-                  value={agent.maxIterations}
-                  onChange={(e) => void patchConfig({ maxIterations: Number(e.target.value) })}
+                  value={String(agent.maxIterations)}
+                  onCommit={(v) => {
+                    const n = Number(v);
+                    if (Number.isFinite(n) && n >= 1) void patchConfig({ maxIterations: n });
+                  }}
                 />
               </Field>
               <Field label="单次请求超时（秒）">
-                <input
+                <DraftInput
                   className="input"
                   type="number"
                   min={30}
                   max={1800}
-                  value={agent.requestTimeoutSecs}
-                  onChange={(e) => void patchConfig({ requestTimeoutSecs: Number(e.target.value) })}
+                  value={String(agent.requestTimeoutSecs)}
+                  onCommit={(v) => {
+                    const n = Number(v);
+                    if (Number.isFinite(n) && n >= 30) void patchConfig({ requestTimeoutSecs: n });
+                  }}
                 />
               </Field>
             </div>
 
+            <Field
+              label="断线自动重连次数"
+              hint="模型连接中断（超时 / 限流 / 服务端过载）后自动重试的上限，0 = 不重连"
+            >
+              <DraftInput
+                className="input"
+                type="number"
+                min={0}
+                max={50}
+                value={String(agent.reconnectMaxAttempts)}
+                onCommit={(v) => {
+                  const n = Number(v);
+                  if (Number.isFinite(n) && n >= 0) void patchConfig({ reconnectMaxAttempts: n });
+                }}
+              />
+            </Field>
+
             <Field label="上下文预算（字符）" hint="发给模型的对话历史上限，超出会从最早的完整轮次开始丢弃">
-              <input
+              <DraftInput
                 className="input"
                 type="number"
                 min={2000}
                 max={500000}
                 step={1000}
-                value={agent.contextBudgetChars}
-                onChange={(e) => void patchConfig({ contextBudgetChars: Number(e.target.value) })}
+                value={String(agent.contextBudgetChars)}
+                onCommit={(v) => {
+                  const n = Number(v);
+                  if (Number.isFinite(n) && n >= 2000) void patchConfig({ contextBudgetChars: n });
+                }}
               />
             </Field>
 
@@ -182,13 +256,13 @@ export function Settings() {
               label="允许 agent 联网（web_fetch / web_search）"
             />
 
-            <Field label="额外系统指令" hint="追加到系统提示词末尾，优先级最高。例如「多举数学例子」「解释时先用中文再给英文术语」">
-              <textarea
+            <Field label="额外系统指令" hint="追加到系统提示词末尾，优先级最高（失焦后保存）。例如「多举数学例子」「解释时先用中文再给英文术语」">
+              <DraftTextarea
                 className="textarea"
                 rows={4}
                 value={agent.systemPromptExtra}
                 placeholder="想让 agent 怎么带你？写在这里。"
-                onChange={(e) => void patchConfig({ systemPromptExtra: e.target.value })}
+                onCommit={(v) => void patchConfig({ systemPromptExtra: v })}
               />
             </Field>
           </div>
@@ -202,10 +276,10 @@ export function Settings() {
           <div className="card-box">
             <div className="grid-2">
               <Field label="主页">
-                <input
+                <DraftInput
                   className="input"
                   value={config.viewer.homeUrl}
-                  onChange={(e) => void patchConfig({ homeUrl: e.target.value })}
+                  onCommit={(v) => void patchConfig({ homeUrl: v })}
                 />
               </Field>
               <Field label="联网搜索默认引擎">

@@ -173,6 +173,16 @@ impl Tool for WebScan {
              el.dispatchEvent(new Event('input',{bubbles:true}))，\
              下拉框同理把 'input' 换成 'change'。",
         );
+        // 与 web_eval 同一个威胁：一个 querySelectorAll 展开就能吐几十万字符
+        //（40 条带追踪参数的链接就够呛），一次吃掉大半上下文预算
+        if body.len() > EVAL_RESULT_MAX {
+            let mut cut = EVAL_RESULT_MAX;
+            while !body.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            body.truncate(cut);
+            body.push_str("\n…（扫描结果过长已截断；先缩小范围，比如 eval 里自己 querySelector）");
+        }
         Ok(ToolOutput::ok(body))
     }
 }

@@ -54,6 +54,7 @@ pub async fn card_list(
     query: Option<String>,
 ) -> AppResult<Vec<CardView>> {
     let topic = state.0.workspace().resolve(&slug)?;
+    let _op = store::file_op_lock();
     let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
     let now = Utc::now();
     if due_only.unwrap_or(false) {
@@ -131,6 +132,7 @@ pub async fn card_create(
     card.source = input.source;
     card.validate().map_err(AppError::invalid)?;
 
+    let _op = store::file_op_lock();
     let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
     let fp = card.fingerprint();
     if cards.iter().any(|c| c.fingerprint() == fp) {
@@ -151,6 +153,7 @@ pub async fn card_update(
 ) -> AppResult<Card> {
     let core = state.0.clone();
     let topic = core.workspace().resolve(&slug)?;
+    let _op = store::file_op_lock();
     let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
     let kind = parse_kind(input.kind.as_deref());
     let card = cards
@@ -177,6 +180,7 @@ pub async fn card_delete(
 ) -> AppResult<usize> {
     let core = state.0.clone();
     let topic = core.workspace().resolve(&slug)?;
+    let _op = store::file_op_lock();
     let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
     let before = cards.len();
     cards.retain(|c| !ids.contains(&c.id));
@@ -198,6 +202,7 @@ pub async fn card_review(
     let topic = core.workspace().resolve(&slug)?;
     let parsed = Grade::parse(&grade)
         .ok_or_else(|| AppError::invalid(format!("未知评分：{grade}（用 again/hard/good/easy）")))?;
+    let _op = store::file_op_lock();
     let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
     let card = cards
         .iter_mut()
@@ -306,6 +311,7 @@ pub async fn task_create(
     task.module = input.module;
     task.stage = input.stage.as_deref().and_then(StudyStage::parse);
     task.due = input.due.as_deref().and_then(crate::agent::tools::study::parse_due);
+    let _op = store::file_op_lock();
     store::append_jsonl(&topic.tasks_path(), &task)?;
     core.emit_topics_updated(&topic);
     Ok(task)
@@ -331,6 +337,7 @@ pub async fn task_update(
 ) -> AppResult<PlanTask> {
     let core = state.0.clone();
     let topic = core.workspace().resolve(&slug)?;
+    let _op = store::file_op_lock();
     let mut tasks = PlanTask::load_all(&topic.tasks_path());
     let task = tasks
         .iter_mut()
@@ -372,6 +379,7 @@ pub async fn task_update(
 pub async fn task_delete(state: State<'_, AppState>, slug: String, id: String) -> AppResult<bool> {
     let core = state.0.clone();
     let topic = core.workspace().resolve(&slug)?;
+    let _op = store::file_op_lock();
     let mut tasks = PlanTask::load_all(&topic.tasks_path());
     let before = tasks.len();
     tasks.retain(|t| t.id != id);
@@ -492,6 +500,9 @@ pub async fn session_start(
         core.emit_topics_updated(&topic);
     }
     store::ensure_dir(&topic.sessions_dir())?;
+    // 先收尾旧会话再落盘新的：反过来的话，写盘后、收尾前崩溃就多一条缺
+    // ended_at 的孤儿会话
+    core.close_active_session("（未总结：被新的学习会话接替）");
     store::write_json(&topic.sessions_dir().join(format!("{}.json", session.id)), &session)?;
     core.set_current_session(Some(session.clone()));
     Ok(session)
@@ -512,7 +523,10 @@ pub async fn session_finish(
     session.highlights = highlights.unwrap_or_default();
     session.open_questions = open_questions.unwrap_or_default();
     session.ended_at = Some(Utc::now());
-    let topic = core.workspace().resolve(&session.topic_slug)?;
+    // 按 topic_id 定位：会话进行中主题可能改名了（slug 已失效），
+    // 按旧 slug 找会掉进显示名模糊匹配，把会话写进一个只是名字像的主题里
+    let topic = core.workspace().resolve_id(&session.topic_id)?;
+    session.topic_slug = topic.slug();
     store::write_json(&topic.sessions_dir().join(format!("{}.json", session.id)), &session)?;
     core.set_current_session(None);
     core.emit_topics_updated(&topic);

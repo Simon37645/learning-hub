@@ -412,7 +412,7 @@ function NotesPane() {
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               onKeyDown={async (e) => {
-                if (e.key === "Enter" && newTitle.trim()) {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && newTitle.trim()) {
                   const note = await useApp.getState().createNote(newTitle.trim());
                   setCreating(false);
                   setNewTitle("");
@@ -580,6 +580,8 @@ function CardsPane() {
   const [adding, setAdding] = useState(false);
   /// 复习队列：进入复习时固定下来，评完一张就前进一张
   const [queue, setQueue] = useState<Card[]>([]);
+  /// 打分请求在途：挡住双击 / 连按造成的重复评分
+  const [grading, setGrading] = useState(false);
 
   useEffect(() => {
     void loadCards({ dueOnly });
@@ -596,10 +598,17 @@ function CardsPane() {
   }
 
   async function grade(g: Grade) {
-    if (!current) return;
-    await reviewCard(current.id, g);
-    setShowBack(false);
-    setQueue((q) => q.slice(1));
+    // 重入保护：连按两次「3」会在 await 期间双双进来，current 还是同一张——
+    // 后端把同一张卡连算两次 SM-2，队列 slice 两次还会跳过下一张
+    if (!current || grading) return;
+    setGrading(true);
+    try {
+      await reviewCard(current.id, g);
+      setShowBack(false);
+      setQueue((q) => q.slice(1));
+    } finally {
+      setGrading(false);
+    }
   }
 
   async function exitReview() {
@@ -882,7 +891,7 @@ function PlanPane() {
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={async (e) => {
-            if (e.key === "Enter" && title.trim()) {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && title.trim()) {
               await useApp.getState().createTask({ title: title.trim(), due: due.trim() || null });
               setTitle("");
             }

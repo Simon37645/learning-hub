@@ -67,15 +67,24 @@ export function PdfView({ tab, highlight }: { tab: TabView; highlight: string | 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, reloadSeq]);
 
-  /** 逐页抽文本交给 Rust（agent 读到的是这份） */
+  /** 逐页抽文本交给 Rust（agent 读到的是这份）。
+   *  cancelled 检查必不可少：重载/关标签后旧循环还在跑的话，会把刚被
+   *  卸载 effect 删掉的快照提供器重新注册回去，还会拿旧文档的全文去
+   *  跟新文档的快照赛跑（慢的一方胜出，agent 就读到旧版本）。 */
+  const extractSeq = useRef(0);
   async function extractAllText(pdf: pdfjs.PDFDocumentProxy) {
+    const seq = ++extractSeq.current;
+    const stale = () => seq !== extractSeq.current;
     const total = Math.min(pdf.numPages, MAX_TEXT_PAGES);
     setTextProgress({ done: 0, total });
     const pages: PageText[] = [];
     for (let i = 1; i <= total; i++) {
+      if (stale()) return;
       try {
         const page = await pdf.getPage(i);
+        if (stale()) return;
         const content = await page.getTextContent();
+        if (stale()) return;
         // 按 y 坐标断行，否则整页文字会连成一行
         let lastY: number | null = null;
         let buf = "";
@@ -95,6 +104,7 @@ export function PdfView({ tab, highlight }: { tab: TabView; highlight: string | 
         registerSnapshotProvider(tab.id, () => ({ pages, totalPages: pdf.numPages }));
       }
     }
+    if (stale()) return;
     pagesRef.current = pages;
     registerSnapshotProvider(tab.id, () => ({ pages, totalPages: pdf.numPages }));
     setTextProgress(null);

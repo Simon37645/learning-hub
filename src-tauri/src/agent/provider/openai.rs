@@ -73,7 +73,11 @@ impl LlmProvider for OpenAiProvider {
         };
 
         let cancel = req.cancel.clone();
-        pump_sse(resp, &cancel, move |_event, v| {
+        // 结束哨兵：[DONE]（pump_sse 的返回值）或 finish_reason 至少要见到一个，
+        // 否则就是流被网关规范地掐断了——半截话不能当完整回复落库，按可重试错误上报。
+        let mut finished = false;
+        // 不加 move：finished 要在闭包外读，tx 用 & 就够（send 是 &self）
+        let clean = pump_sse(resp, &cancel, |_event, v| {
             if let Some(err) = v.get("error") {
                 if !err.is_null() {
                     let msg = err
@@ -133,11 +137,16 @@ impl LlmProvider for OpenAiProvider {
             }
 
             if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                finished = true;
                 let _ = tx.send(StreamEvent::Finish(reason.to_string()));
             }
             Ok(true)
         })
-        .await
+        .await?;
+        if !clean && !finished {
+            return Err(crate::error::AppError::Provider(super::STREAM_CUT.to_string()));
+        }
+        Ok(())
     }
 }
 

@@ -58,7 +58,12 @@ impl LlmProvider for AnthropicProvider {
         }
         body.insert("stream".into(), json!(true));
         if !req.system.trim().is_empty() {
-            body.insert("system".into(), json!(req.system));
+            // 系统提示词打断点开启 prompt caching：同一份长提示词每轮都全价计费
+            // 太浪费（官方的缓存是显式打断点才生效，OpenAI 那边是端点自动的）。
+            body.insert(
+                "system".into(),
+                json!([{ "type": "text", "text": req.system, "cache_control": { "type": "ephemeral" } }]),
+            );
         }
         body.insert(
             "messages".into(),
@@ -95,8 +100,12 @@ impl LlmProvider for AnthropicProvider {
         // 记录 content_block_index → 是否工具块，用于把增量归到正确的工具序号上
         let mut block_is_tool: Vec<bool> = Vec::new();
         let mut tool_seq: Vec<usize> = Vec::new();
+        // 结束哨兵：message_stop（pump_sse 的返回值）或 stop_reason 至少见到一个，
+        // 否则流是被掐断的——半截话不能当完整回复，按可重试错误上报。
+        let mut finished = false;
 
-        pump_sse(resp, &cancel, move |event, v| {
+        // 不加 move：finished 要在闭包外读
+        let clean = pump_sse(resp, &cancel, |event, v| {
             let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or(event);
             match kind {
                 "error" => {
@@ -150,6 +159,14 @@ impl LlmProvider for AnthropicProvider {
                                 }
                             }
                         }
+                        // 思考块的签名：回传给服务商时必须原样带回，缺了会被 400 拒掉
+                        "signature_delta" => {
+                            if let Some(sig) = delta.and_then(|d| d.get("signature")).and_then(|t| t.as_str()) {
+                                if !sig.is_empty() && tx.send(StreamEvent::ThinkingSignature(sig.to_string())).is_err() {
+                                    return Ok(false);
+                                }
+                            }
+                        }
                         "input_json_delta" => {
                             let seq = tool_seq.get(block_index).copied().unwrap_or(usize::MAX);
                             if seq != usize::MAX {
@@ -182,6 +199,7 @@ impl LlmProvider for AnthropicProvider {
                 }
                 "message_delta" => {
                     if let Some(reason) = v.pointer("/delta/stop_reason").and_then(|r| r.as_str()) {
+                        finished = true;
                         let mapped = match reason {
                             "tool_use" => "tool_calls",
                             "end_turn" | "stop_sequence" => "stop",
@@ -200,7 +218,11 @@ impl LlmProvider for AnthropicProvider {
             }
             Ok(true)
         })
-        .await
+        .await?;
+        if !clean && !finished {
+            return Err(AppError::Provider(crate::agent::provider::STREAM_CUT.to_string()));
+        }
+        Ok(())
     }
 }
 
@@ -308,6 +330,23 @@ pub fn to_anthropic_messages(
             }
             Role::Assistant => {
                 let mut blocks: Vec<Value> = Vec::new();
+                // 开了 thinking 的对话，服务商要求 assistant 消息（尤其带 tool_use 的
+                // 那条）以思考块开头，且必须原样带回签名——丢了从第二轮起全是 400。
+                // 没有签名的（老对话或别家模型的思考块）只能跳过，那是有损的兜底。
+                for b in &m.blocks {
+                    if let ContentBlock::Thinking { text, signature } = b {
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        if let Some(sig) = signature {
+                            blocks.push(json!({
+                                "type": "thinking",
+                                "thinking": text,
+                                "signature": sig,
+                            }));
+                        }
+                    }
+                }
                 let text = m.text();
                 if !text.trim().is_empty() {
                     blocks.push(json!({ "type": "text", "text": text }));

@@ -473,7 +473,9 @@ export function Sidebar() {
               value={name}
               placeholder={newParent ? "这一章叫什么？" : "想学什么？"}
               onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitNew()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) submitNew();
+              }}
             />
           </Field>
           <Field label="一句话说明" hint="写清「学它做什么」，agent 每次都会看到这句">
@@ -482,7 +484,9 @@ export function Sidebar() {
               value={desc}
               placeholder="例如：为了看懂论文里的矩阵分解"
               onChange={(e) => setDesc(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitNew()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) submitNew();
+              }}
             />
           </Field>
         </Modal>
@@ -552,7 +556,10 @@ function ChatRow({
     ghost: HTMLDivElement | null;
     target: string | null;
   } | null>(null);
-  const suppressClick = useRef(false);
+  // 拖拽结束后的短时间内不把 pointerup 当「打开」。用时间窗而不是一次性布尔：
+  // pointerup 落在窗口外 / pointercancel 时 click 事件根本不来，布尔会卡住
+  // 一次，吞掉用户下一次正常点击
+  const suppressClickUntil = useRef(0);
 
   const clearTarget = (row: HTMLElement | null) => row?.classList.remove("drop-target");
   const findRow = (slug: string) =>
@@ -622,7 +629,7 @@ function ChatRow({
     d.ghost?.remove();
     document.body.classList.remove("dragging-chat");
     clearTarget(d.target ? findRow(d.target) : null);
-    if (d.moved) suppressClick.current = true; // 这一次不当作「打开」
+    if (d.moved) suppressClickUntil.current = Date.now() + 350; // 短窗内不算「打开」
     if (d.moved && d.target && d.target !== topicSlug && chatId) {
       void moveChat(chatId, topicSlug, d.target);
     }
@@ -660,10 +667,7 @@ function ChatRow({
         }
         onClick={() => {
           if (editing) return;
-          if (suppressClick.current) {
-            suppressClick.current = false;
-            return;
-          }
+          if (Date.now() < suppressClickUntil.current) return;
           onClick();
         }}
         onPointerDown={onPointerDown}
@@ -682,7 +686,7 @@ function ChatRow({
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
-              if (e.key === "Enter") commitRename();
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) commitRename();
               if (e.key === "Escape") setEditing(false);
             }}
             onBlur={commitRename}
@@ -1093,7 +1097,8 @@ function PaletteOpen() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setOpen]);
 
-  useMemo(() => {
+  useEffect(() => {
+    // cancelled 标志防乱序：短查询（扫得多）往往更慢，晚到不能覆盖新结果
     let alive = true;
     const run = async () => {
       try {
@@ -1162,6 +1167,8 @@ function PaletteOpen() {
               e.preventDefault();
               setCursor((c) => Math.max(c - 1, 0));
             } else if (e.key === "Enter") {
+              // 输入法组合中的回车是确认候选词，不是选中
+              if (e.nativeEvent.isComposing) return;
               e.preventDefault();
               choose(cursor);
             } else if (e.key === "Escape") {

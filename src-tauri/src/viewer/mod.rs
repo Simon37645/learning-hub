@@ -546,21 +546,34 @@ pub fn search_in_text(content: &str, query: &str, limit: usize) -> Vec<SearchHit
     if q.is_empty() {
         return hits;
     }
-    let lower = content.to_lowercase();
-    let ql = q.to_lowercase();
-    let mut from = 0usize;
-    // 记录每个「【第 N 页】」标记的位置，用来判断命中落在哪一页
+    // 逐字符折叠大小写（而不是整串 to_lowercase）：to_lowercase 会改变字节长度
+    // （İ 之类特殊字符），lower 的下标就对不回 content 了。逐字符折叠保证 1:1。
+    let fold: Vec<char> = content.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+    let qf: Vec<char> = q.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+    // 每个折叠字符在 content 里的字节起点，折叠下标 ↔ 原文下标靠它换算
+    let offsets: Vec<usize> = {
+        let mut v = Vec::with_capacity(fold.len() + 1);
+        let mut acc = 0usize;
+        for c in &fold {
+            v.push(acc);
+            acc += c.len_utf8();
+        }
+        v.push(acc);
+        v
+    };
+    // 记录每个「【第 N 页】」标记的位置，用来判断命中落在哪一页。
+    // 「【第 」是 7 个字节：【(3) + 第(3) + 空格(1)——少跳一个字节数字就永远解析不到
     let page_marks: Vec<(usize, u32)> = {
         let mut v = Vec::new();
         let mut idx = 0;
         while let Some(p) = content[idx..].find("【第 ") {
             let abs = idx + p;
-            let rest = &content[abs + 6..];
+            let rest = &content[abs + 7..];
             let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num.parse::<u32>() {
                 v.push((abs, n));
             }
-            idx = abs + 6;
+            idx = abs + 7;
             if idx >= content.len() {
                 break;
             }
@@ -568,30 +581,34 @@ pub fn search_in_text(content: &str, query: &str, limit: usize) -> Vec<SearchHit
         v
     };
 
-    while let Some(pos) = lower[from..].find(&ql) {
-        let abs = from + pos;
-        let mut start = abs.saturating_sub(80);
-        while start > 0 && !content.is_char_boundary(start) {
-            start -= 1;
-        }
-        let mut end = (abs + q.len() + 120).min(content.len());
-        while end < content.len() && !content.is_char_boundary(end) {
-            end += 1;
-        }
-        let page = page_marks
-            .iter()
-            .rev()
-            .find(|(p, _)| *p <= abs)
-            .map(|(_, n)| *n)
-            .unwrap_or(0);
-        hits.push(SearchHit {
-            page,
-            context: content[start..end].replace('\n', " ").trim().to_string(),
-            index: abs,
-        });
-        from = abs + q.len().max(1);
-        if hits.len() >= limit {
-            break;
+    // 在折叠串里找匹配，再把下标换算回原文
+    let mut i = 0usize;
+    while i + qf.len() <= fold.len() && hits.len() < limit {
+        if fold[i..i + qf.len()] == qf[..] {
+            let abs = offsets[i];
+            let q_bytes = offsets[i + qf.len()] - offsets[i];
+            let mut start = abs.saturating_sub(80);
+            while start > 0 && !content.is_char_boundary(start) {
+                start -= 1;
+            }
+            let mut end = (abs + q_bytes + 120).min(content.len());
+            while end < content.len() && !content.is_char_boundary(end) {
+                end += 1;
+            }
+            let page = page_marks
+                .iter()
+                .rev()
+                .find(|(p, _)| *p <= abs)
+                .map(|(_, n)| *n)
+                .unwrap_or(0);
+            hits.push(SearchHit {
+                page,
+                context: content[start..end].replace('\n', " ").trim().to_string(),
+                index: abs,
+            });
+            i += qf.len().max(1);
+        } else {
+            i += 1;
         }
     }
     hits

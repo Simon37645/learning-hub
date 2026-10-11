@@ -9,37 +9,49 @@ import { useApp } from "../store/app";
 export function SidebarResizer() {
   const width = useApp((s) => s.sidebarWidth);
   const setWidth = useApp((s) => s.setSidebarWidth);
-  const dragging = useRef(false);
+  const handle = useRef<HTMLDivElement>(null);
 
   // 宽度落到 CSS 变量上，.sidebar 用的是 var(--sidebar-w)
   useEffect(() => {
     document.documentElement.style.setProperty("--sidebar-w", `${width}px`);
   }, [width]);
 
+  // 用 pointer 事件 + setPointerCapture：只听 window 的 mouseup 会在
+  // 「松开时指针在原生子 WebView / 窗口外」时丢事件——之后鼠标不按键也会
+  // 改宽度，直到再点一次才解锁。capture 把后续指针事件都锁到手柄上。
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (dragging.current) setWidth(e.clientX);
+    const el = handle.current;
+    if (!el) return;
+    const onMove = (e: PointerEvent) => {
+      if (el.hasPointerCapture(e.pointerId)) setWidth(e.clientX);
     };
-    const onUp = () => {
-      if (!dragging.current) return;
-      dragging.current = false;
+    const end = (e: PointerEvent) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      el.releasePointerCapture(e.pointerId);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", end);
+      el.removeEventListener("pointercancel", end);
     };
   }, [setWidth]);
 
   return (
     <div
+      ref={handle}
       className="sidebar-resizer"
       title="拖动调整侧栏宽度"
-      onMouseDown={() => {
-        dragging.current = true;
+      onPointerDown={(e) => {
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          /* 合成事件下会抛，抓不住就退化为普通拖动 */
+        }
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
       }}

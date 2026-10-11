@@ -20,23 +20,29 @@ export function ViewerPanel() {
   const closeTab = useApp((s) => s.closeTab);
   const goto = useApp((s) => s.goto);
 
-  const dragging = useRef(false);
+  const handle = useRef<HTMLDivElement>(null);
+  // pointer capture 而不是只听 window 的 mouseup：松开时指针在原生子 WebView
+  // 上（它是独立原生窗口）或窗口外时 mouseup 会丢，之后不按键也改宽度
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      const w = window.innerWidth - e.clientX;
-      setWidth(w);
+    const el = handle.current;
+    if (!el) return;
+    const onMove = (e: PointerEvent) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      setWidth(window.innerWidth - e.clientX);
     };
-    const onUp = () => {
-      dragging.current = false;
+    const end = (e: PointerEvent) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      el.releasePointerCapture(e.pointerId);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", end);
+      el.removeEventListener("pointercancel", end);
     };
   }, [setWidth]);
 
@@ -52,11 +58,16 @@ export function ViewerPanel() {
           现在整条贴在面板左侧、压在第二栏上（right 由面板宽度给出），
           原生层从面板内容区才开始画，盖不到它。 */}
       <div
+        ref={handle}
         className="viewer-resizer"
         style={{ right: width }}
         title="拖动调整内置浏览器宽度"
-        onMouseDown={() => {
-          dragging.current = true;
+        onPointerDown={(e) => {
+          try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+          } catch {
+            /* 合成事件下会抛 */
+          }
           document.body.style.cursor = "col-resize";
           document.body.style.userSelect = "none";
         }}
@@ -241,7 +252,7 @@ function TabBar({
             placeholder="输入网址后回车"
             onChange={(e) => setAddr(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && addr.trim()) {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && addr.trim()) {
                 void useApp.getState().openTab({ url: addr.trim() });
               }
             }}
@@ -386,14 +397,21 @@ function ImageView({ tab }: { tab: TabView }) {
 
   useEffect(() => {
     let objectUrl: string | null = null;
+    let cancelled = false;
     api
       .viewerLoadBytes(tab.id)
       .then((buf) => {
+        if (cancelled) return;
         objectUrl = URL.createObjectURL(new Blob([buf]));
         setUrl(objectUrl);
       })
-      .catch((e) => setErr(errText(e)));
+      .catch((e) => {
+        if (!cancelled) setErr(errText(e));
+      });
     return () => {
+      // 卸载在 promise 之前发生时，URL 是在 cleanup 之后才创建的——
+      // 没有 cancelled 标志它就永远不会被 revoke（图片字节常驻内存）
+      cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [tab.id]);
@@ -693,7 +711,7 @@ function NewTabPage() {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && url.trim()) void useApp.getState().openTab({ url: url.trim() });
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && url.trim()) void useApp.getState().openTab({ url: url.trim() });
           }}
         />
         <button

@@ -753,6 +753,9 @@ impl Tool for ViewerClose {
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
         let id = arg_str_req(&input, "tab_id")?;
         ctx.core.viewer.close(&id).await?;
+        // 原生子 WebView 必须跟着销毁：WebTab 卸载时只 hide 不销毁（复用-instance
+        // 的设计），漏掉这一句的话网页的 JS / 音视频会一直活着，内存被慢慢吃光
+        ctx.core.webviews.close(&id);
         ctx.core.emit_viewer_sync().await;
         Ok(ToolOutput::ok("标签页已关闭。"))
     }

@@ -372,6 +372,11 @@ pub async fn mcp_upsert(
     if server.name.is_empty() || server.command.trim().is_empty() {
         return Err(AppError::invalid("服务器名与启动命令都不能为空"));
     }
+    // 名字要进工具前缀 `mcp__<name>__<tool>`：带 `__` 的名字会让按服务器的
+    // 开关解析错位（解出错误的服务器名，开关静默失效）
+    if server.name.contains("__") {
+        return Err(AppError::invalid("服务器名里不能有连续下划线 `__`（它用来分隔工具前缀）"));
+    }
 
     match scope {
         Scope::Global => {

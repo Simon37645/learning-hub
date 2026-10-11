@@ -466,8 +466,9 @@ impl Tool for CardCreate {
 
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
         let topic = ctx.topic()?;
+        let _op = store::file_op_lock();
         let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
-        let existing: std::collections::HashSet<String> =
+        let mut existing: std::collections::HashSet<String> =
             cards.iter().map(|c| c.fingerprint()).collect();
 
         // 支持批量：cards 数组每一项当作一次独立的录入
@@ -513,6 +514,8 @@ impl Tool for CardCreate {
                 dup += 1;
                 continue;
             }
+            // 新卡的指纹也记进去：批量出卡时同一张出现两次，全都要拦住
+            existing.insert(card.fingerprint());
             added.push(card);
         }
 
@@ -605,6 +608,7 @@ impl Tool for CardList {
 
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
         let topic = ctx.topic()?;
+        let _op = store::file_op_lock();
         let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
         let now = Utc::now();
         if arg_bool(&input, "due_only").unwrap_or(false) {
@@ -686,6 +690,7 @@ impl Tool for CardReview {
         let grade = Grade::parse(&grade_raw)
             .ok_or_else(|| AppError::invalid(format!("未知评分：{grade_raw}")))?;
 
+        let _op = store::file_op_lock();
         let mut cards = store::read_jsonl::<Card>(&topic.cards_path())?;
         let Some(card) = cards.iter_mut().find(|c| c.id == id) else {
             return Err(AppError::NotFound(format!("找不到卡片 {id}")));
@@ -751,6 +756,7 @@ impl Tool for TaskCreate {
         task.stage = arg_str(&input, "stage").as_deref().and_then(StudyStage::parse);
         task.due = arg_str(&input, "due").as_deref().and_then(parse_due);
 
+        let _op = store::file_op_lock();
         store::append_jsonl(&topic.tasks_path(), &task)?;
         ctx.core.emit_topics_updated(&topic);
         Ok(ToolOutput::ok(format!(
@@ -946,6 +952,7 @@ impl Tool for TaskUpdate {
     async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
         let topic = ctx.topic()?;
         let id = arg_str_req(&input, "id")?;
+        let _op = store::file_op_lock();
         let mut tasks = PlanTask::load_all(&topic.tasks_path());
         let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
             return Err(AppError::NotFound(format!("找不到任务 {id}")));
@@ -1036,6 +1043,8 @@ impl Tool for SessionStart {
 
         let dir = topic.sessions_dir();
         ensure_dir(&dir)?;
+        // 先收尾旧会话再落盘新的：反过来的话，写盘后、收尾前崩溃就多一条孤儿
+        ctx.core.close_active_session("（未总结：被新的学习会话接替）");
         let path: PathBuf = dir.join(format!("{}.json", session.id));
         store::write_json(&path, &session)?;
         ctx.core.set_current_session(Some(session.clone()));
@@ -1096,7 +1105,10 @@ impl Tool for SessionFinish {
         session.open_questions = arg_str_array(&input, "open_questions");
         session.ended_at = Some(Utc::now());
 
-        let topic = ctx.core.workspace().resolve(&session.topic_slug)?;
+        // 按 topic_id 定位：会话进行中主题可能改名了（旧 slug 已失效），
+        // 模糊匹配会把会话写进一个只是名字像的主题里
+        let topic = ctx.core.workspace().resolve_id(&session.topic_id)?;
+        session.topic_slug = topic.slug();
         let path = topic.sessions_dir().join(format!("{}.json", session.id));
         store::write_json(&path, &session)?;
         ctx.core.set_current_session(None);

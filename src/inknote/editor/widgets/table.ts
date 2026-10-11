@@ -1363,6 +1363,8 @@ function attachCellEvents(wrap: HTMLElement) {
     }
 
     if (event.key === "Enter") {
+      // 输入法组合中的回车是确认候选词，不是「跳下一格 / 加一行」
+      if (composing || event.isComposing) return;
       event.preventDefault();
       const info = getFocusedCellInfo(wrap);
       if (!info) return;

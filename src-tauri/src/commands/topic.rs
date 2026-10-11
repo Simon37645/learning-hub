@@ -159,10 +159,18 @@ pub async fn topic_update(
                 .parent()
                 .map(|p| p.to_path_buf())
                 .ok_or_else(|| AppError::other("主题目录没有父目录"))?;
-            let target = crate::paths::unique_child(&parent, &crate::paths::sanitize_dir_name(&new_name));
-            std::fs::rename(&topic.dir, &target)?;
-            topic.dir = target;
-            topic.meta.name = new_name;
+            let wanted = crate::paths::sanitize_dir_name(&new_name);
+            // Windows 的 exists() 大小写无关：只想改大小写（abc → ABC）时，
+            // unique_child 会「发现目录已存在」而给出 ABC-2，目录名从此对不上。
+            // 目标 sanitize 后跟当前目录名同名的，直接原位 rename。
+            if topic.dir.file_name().map(|n| n.eq_ignore_ascii_case(&wanted)).unwrap_or(false) {
+                topic.meta.name = new_name;
+            } else {
+                let target = crate::paths::unique_child(&parent, &wanted);
+                std::fs::rename(&topic.dir, &target)?;
+                topic.dir = target;
+                topic.meta.name = new_name;
+            }
         }
     }
 
@@ -436,7 +444,8 @@ pub async fn kb_rebuild(state: State<'_, AppState>, slug: String) -> AppResult<K
     let ws = core.workspace();
     let topic = ws.resolve(&slug)?;
     let inherited = ws.inherited_dirs(&topic);
-    let index = crate::kb::build(&topic.dir, &inherited, true).await?;
+    let ws_root = core.config_read().workspace_root;
+    let index = crate::kb::build(&topic.dir, &ws_root, &inherited, true).await?;
     core.emit_topics_updated(&topic);
     Ok(KbRebuildResult {
         files: index.files.len(),

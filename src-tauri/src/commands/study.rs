@@ -516,19 +516,22 @@ pub async fn session_finish(
     open_questions: Option<Vec<String>>,
 ) -> AppResult<StudySession> {
     let core = state.0.clone();
-    let mut session = core
+    let session = core
         .current_session()
         .ok_or_else(|| AppError::invalid("当前没有进行中的学习会话"))?;
-    session.summary = summary;
-    session.highlights = highlights.unwrap_or_default();
-    session.open_questions = open_questions.unwrap_or_default();
-    session.ended_at = Some(Utc::now());
-    // 按 topic_id 定位：会话进行中主题可能改名了（slug 已失效），
-    // 按旧 slug 找会掉进显示名模糊匹配，把会话写进一个只是名字像的主题里
+    // 先解析主题（按 topic_id：会话进行中主题可能改名了，slug 已失效；
+    // 按旧 slug 找会掉进显示名模糊匹配，把会话写进一个只是名字像的主题里）
     let topic = core.workspace().resolve_id(&session.topic_id)?;
-    session.topic_slug = topic.slug();
-    store::write_json(&topic.sessions_dir().join(format!("{}.json", session.id)), &session)?;
-    core.set_current_session(None);
+    // 落盘 + 摘指针在 AppCore 里同一把顺序锁内完成，别在这里手写
+    let session = core
+        .finish_current_session(|s| {
+            s.summary = summary;
+            s.highlights = highlights.unwrap_or_default();
+            s.open_questions = open_questions.unwrap_or_default();
+            s.ended_at = Some(Utc::now());
+            s.topic_slug = topic.slug();
+        })
+        .ok_or_else(|| AppError::invalid("当前没有进行中的学习会话"))?;
     core.emit_topics_updated(&topic);
     Ok(session)
 }

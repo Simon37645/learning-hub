@@ -39,10 +39,17 @@ fn quizzes_dir(state: &AppState, slug: &str) -> AppResult<std::path::PathBuf> {
 }
 
 fn quiz_path(state: &AppState, slug: &str, id: &str) -> AppResult<std::path::PathBuf> {
+    // id 直接拼文件名，与其它路径入口同一道防线（正常 id 是 uuid）
+    if !crate::paths::is_safe_slug(id) {
+        return Err(AppError::invalid(format!("试卷 id 不合法：{id}")));
+    }
     Ok(quizzes_dir(state, slug)?.join(format!("{id}.json")))
 }
 
 fn attempts_path(state: &AppState, slug: &str, id: &str) -> AppResult<std::path::PathBuf> {
+    if !crate::paths::is_safe_slug(id) {
+        return Err(AppError::invalid(format!("试卷 id 不合法：{id}")));
+    }
     Ok(quizzes_dir(state, slug)?.join(format!("{id}.attempts.jsonl")))
 }
 
@@ -175,6 +182,8 @@ pub async fn quiz_submit(
     attempt.answers = answers;
     attempt.grade_objective(&quiz);
     let path = attempts_path(&state, &slug, &id)?;
+    // 与判分路径（grade 锁内重读再写）互斥：append 落进它的重写窗口会被整文件覆盖掉
+    let _op = store::file_op_lock();
     store::append_jsonl(&path, &attempt)?;
     Ok(attempt)
 }
@@ -219,7 +228,7 @@ pub async fn quiz_grade_subjective(
     let core = state.0.clone();
     let quiz = quiz_get(state.clone(), slug.clone(), quiz_id.clone()).await?;
     let path = attempts_path(&state, &slug, &quiz_id)?;
-    let mut attempts = store::read_jsonl::<Attempt>(&path)?;
+    let attempts = store::read_jsonl::<Attempt>(&path)?;
     let idx = attempts
         .iter()
         .position(|a| a.id == attempt_id)
@@ -270,6 +279,15 @@ pub async fn quiz_grade_subjective(
 
     let reply = complete_once(&core, GRADER_SYSTEM, &user, 4096).await?;
     let items: Vec<GradeItem> = crate::agent::extract_json(&reply)?;
+    // 判分是分钟级的网络调用，期间用户可能交了新卷（append 进同一份文件）。
+    // 落盘前必须按**最新**文件重读再改：拿旧快照整文件覆盖会把并发追加的
+    // 作答连同成绩一起静默抹掉
+    let _op = store::file_op_lock();
+    let mut attempts = store::read_jsonl::<Attempt>(&path)?;
+    let idx = attempts
+        .iter()
+        .position(|a| a.id == attempt_id)
+        .ok_or_else(|| AppError::NotFound("找不到这次作答".into()))?;
     for item in items {
         let max = quiz
             .questions

@@ -5,7 +5,7 @@ use crate::agent::AgentService;
 use crate::config::AppConfig;
 use crate::domain::memory::{MemoryStore, Scope as MemoryScope};
 use crate::domain::session::StudySession;
-use crate::domain::topic::{Topic, Workspace};
+use crate::domain::topic::{Topic, TopicMeta, Workspace};
 use crate::error::{AppError, AppResult};
 use crate::store;
 use crate::viewer::{ViewerService, ViewerSnapshot};
@@ -636,18 +636,35 @@ impl AppCore {
     /// 不收尾的话旧文件永远缺 ended_at，session_list 里会一直挂着一条
     /// 「进行中」的僵尸会话（重复 session_start 就会攒出一堆）。
     pub fn close_active_session(&self, note: &str) -> Option<StudySession> {
+        let _order = self.session_persist.lock();
         let mut s = self.session.write().take()?;
         s.ended_at = Some(chrono::Utc::now());
         if s.summary.is_empty() {
             s.summary = note.to_string();
         }
-        self.persist_session(&s);
+        self.write_session_file(&s);
+        Some(s)
+    }
+
+    /// 结束当前会话：`f` 里补总结 / ended_at 等字段，然后落盘、摘指针。
+    ///
+    /// 三步必须在**同一把顺序锁里**完成：中途放开的话，一次并发 bump 会拿着
+    /// 还没 ended_at 的旧快照把刚写好的「已结束」文件盖回「进行中」，
+    /// 下次启动就把总结完的会话当进行中的复活了。
+    pub fn finish_current_session(
+        &self,
+        f: impl FnOnce(&mut StudySession),
+    ) -> Option<StudySession> {
+        let _order = self.session_persist.lock();
+        let mut s = self.session.write().take()?;
+        f(&mut s);
+        self.write_session_file(&s);
         Some(s)
     }
 
     pub fn bump_session_counters(&self, notes: u32, cards: u32) {
-        // 持久化整体串行（含「读快照」这一步）：两次并发 bump 若只在落盘时排队，
-        // 后落盘的可能是**先取的**旧快照，把先落盘的新计数盖回去，notes/cards 就少计了
+        // 快照必须**在顺序锁里**取：两次并发 bump 若只在落盘时排队，
+        // 后落盘的可能是先取的旧快照，把先落盘的新计数盖回去
         let _order = self.session_persist.lock();
         let updated = {
             let mut guard = self.session.write();
@@ -658,7 +675,7 @@ impl AppCore {
             })
         };
         if let Some(s) = updated {
-            self.persist_session(&s);
+            self.write_session_file(&s);
         }
     }
 
@@ -666,7 +683,10 @@ impl AppCore {
     ///
     /// 按 **topic_id** 定位主题而不是会话里记的 topic_slug：目录名会随主题改名
     /// 一起变，按旧 slug 找不到是小事，掉进名字模糊匹配会把会话写进别的主题。
-    fn persist_session(&self, s: &StudySession) {
+    ///
+    /// **不带锁**——调用方必须已持有 `session_persist`（见各调用点）；
+    /// 公开入口是 [`Self::persist_session`]。
+    fn write_session_file(&self, s: &StudySession) {
         let ws = self.workspace();
         let topic = match ws.resolve_id(&s.topic_id) {
             Ok(t) => t,
@@ -682,6 +702,13 @@ impl AppCore {
             eprintln!("[session] 保存失败：{e}");
         }
     }
+
+    /// 会话落盘的唯一公开入口：所有对同一份 `sessions/<id>.json` 的写入
+    /// 都从这把顺序锁过，保证「谁最后写，谁的快照就是最新的」。
+    pub fn persist_session(&self, s: &StudySession) {
+        let _order = self.session_persist.lock();
+        self.write_session_file(s);
+    }
 }
 
 /// 启动时找回「进行中」的学习会话。
@@ -691,12 +718,21 @@ impl AppCore {
 /// 不恢复的话 session_finish 会说「没有进行中的会话」，用户当场看到模型只好
 /// 把总结写成笔记、会话记录从此缺一个收尾。取 started_at 最新的那条。
 fn recover_active_session(config: &AppConfig) -> Option<StudySession> {
-    let ws = Workspace::new(config.workspace_root.clone());
-    let topics = ws.list().ok()?;
+    let root = &config.workspace_root;
+    // 只读 topic.json 拿 slug（list() 会为每个主题扫统计，还是启动路径；
+    // 「认领」野目录的副作用也不该在启动时发生）——缺 topic.json 的目录直接跳过
     let mut best: Option<StudySession> = None;
-    for t in topics {
-        let Ok(topic) = ws.load(&t.slug) else { continue };
-        let Ok(rd) = std::fs::read_dir(topic.sessions_dir()) else { continue };
+    let Ok(topics) = std::fs::read_dir(root) else { return None };
+    for entry in topics.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(Some(_meta)) = store::read_json_opt::<TopicMeta>(&dir.join(crate::domain::topic::TOPIC_FILE))
+        else {
+            continue;
+        };
+        let Ok(rd) = std::fs::read_dir(dir.join(crate::domain::topic::DIR_SESSIONS)) else { continue };
         for e in rd.flatten() {
             let p = e.path();
             if !p.extension().is_some_and(|x| x == "json") {

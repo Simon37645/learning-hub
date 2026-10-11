@@ -550,11 +550,13 @@ pub fn search_in_text(content: &str, query: &str, limit: usize) -> Vec<SearchHit
     // （İ 之类特殊字符），lower 的下标就对不回 content 了。逐字符折叠保证 1:1。
     let fold: Vec<char> = content.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
     let qf: Vec<char> = q.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
-    // 每个折叠字符在 content 里的字节起点，折叠下标 ↔ 原文下标靠它换算
+    // 折叠下标 → 原文字节偏移的换算表。必须按**原文字符**的 len_utf8 累加：
+    // 折叠是按字符 1:1 的，但个别字符（İ 之类）折叠后字节长度会变，
+    // 拿折叠串建表的话后面所有命中的下标都会错位
     let offsets: Vec<usize> = {
         let mut v = Vec::with_capacity(fold.len() + 1);
         let mut acc = 0usize;
-        for c in &fold {
+        for c in content.chars() {
             v.push(acc);
             acc += c.len_utf8();
         }

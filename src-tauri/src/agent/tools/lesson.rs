@@ -173,6 +173,10 @@ impl Tool for LessonStepTool {
             _ => StepStatus::Doing,
         };
 
+        // id 来自模型参数，直接拼文件名前先消毒（正常 id 是 uuid）
+        if !crate::paths::is_safe_slug(&id) {
+            return Err(crate::error::AppError::invalid(format!("方案 id 不合法：{id}")));
+        }
         let path = topic.lessons_dir().join(format!("{id}.json"));
         let mut plan = store::read_json_opt::<LessonPlan>(&path)?
             .ok_or_else(|| AppError::NotFound(format!("找不到讲解方案 {id}")))?;
@@ -187,13 +191,13 @@ impl Tool for LessonStepTool {
             }
         }
         plan.updated_at = chrono::Utc::now();
-        if plan
+        // finished 要**双向**重算：只置 true 的话，回头重讲某一步（比如
+        // 「第 2 步我没懂再讲一遍」）后方案还挂着 finished，进度会从系统
+        // 提示词和界面的「进行中」清单里静默消失
+        plan.finished = plan
             .steps
             .iter()
-            .all(|s| matches!(s.status, StepStatus::Done | StepStatus::Skipped))
-        {
-            plan.finished = true;
-        }
+            .all(|s| matches!(s.status, StepStatus::Done | StepStatus::Skipped));
         store::write_json(&path, &plan)?;
 
         let (done, total) = plan.progress();

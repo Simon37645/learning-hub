@@ -109,7 +109,11 @@ impl LlmProvider for OpenAiProvider {
                     .or_else(|| delta.get("reasoning"))
                     .and_then(|c| c.as_str());
                 if let Some(text) = reasoning {
-                    if !text.is_empty() && tx.send(StreamEvent::Thinking(text.to_string())).is_err() {
+                    if !text.is_empty()
+                        && tx
+                            .send(StreamEvent::Thinking { index: 0, text: text.to_string() })
+                            .is_err()
+                    {
                         return Ok(false);
                     }
                 }

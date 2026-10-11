@@ -39,62 +39,84 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn stream(&self, req: ChatRequest, tx: UnboundedSender<StreamEvent>) -> AppResult<()> {
-        let mut body = Map::new();
-        body.insert("model".into(), json!(req.model));
-        body.insert("max_tokens".into(), json!(req.max_tokens));
         // Anthropic 开了 extended thinking 就不接受自定义 temperature（必须为默认值 1）
         let thinking = reasoning_for_anthropic(&req.reasoning);
-        if thinking.is_none() {
-            body.insert("temperature".into(), json!(req.temperature));
-        }
-        if let Some(budget) = thinking {
-            // 官方要求 budget_tokens < max_tokens，这里夹一下避免请求被拒
-            let budget = budget.min(req.max_tokens.saturating_sub(1).max(1024));
+        // 系统提示词打断点开启 prompt caching：同一份长提示词每轮都全价计费
+        // 太浪费（官方的缓存是显式打断点才生效，OpenAI 那边是端点自动的）。
+        // 第三方兼容端点不一定认这个形状——被 400 拒了就退回普通字符串再试一次。
+        // 先发带断点的形状（省缓存钱），初值必须是 false
+        let mut system_plain = false;
+        let build_body = |system_plain: bool| {
+            let mut body = Map::new();
+            body.insert("model".into(), json!(req.model));
+            body.insert("max_tokens".into(), json!(req.max_tokens));
+            if thinking.is_none() {
+                body.insert("temperature".into(), json!(req.temperature));
+            }
+            if let Some(budget) = thinking {
+                // 官方要求 budget_tokens < max_tokens，这里夹一下避免请求被拒
+                let budget = budget.min(req.max_tokens.saturating_sub(1).max(1024));
+                body.insert(
+                    "thinking".into(),
+                    json!({ "type": "enabled", "budget_tokens": budget }),
+                );
+                body.insert("max_tokens".into(), json!(req.max_tokens.max(budget + 1)));
+            }
+            body.insert("stream".into(), json!(true));
+            if !req.system.trim().is_empty() {
+                if system_plain {
+                    body.insert("system".into(), json!(req.system));
+                } else {
+                    body.insert(
+                        "system".into(),
+                        json!([{ "type": "text", "text": req.system, "cache_control": { "type": "ephemeral" } }]),
+                    );
+                }
+            }
             body.insert(
-                "thinking".into(),
-                json!({ "type": "enabled", "budget_tokens": budget }),
+                "messages".into(),
+                json!(to_anthropic_messages(
+                    &req.messages,
+                    &req.attachments,
+                    req.supports_vision
+                )),
             );
-            body.insert("max_tokens".into(), json!(req.max_tokens.max(budget + 1)));
-        }
-        body.insert("stream".into(), json!(true));
-        if !req.system.trim().is_empty() {
-            // 系统提示词打断点开启 prompt caching：同一份长提示词每轮都全价计费
-            // 太浪费（官方的缓存是显式打断点才生效，OpenAI 那边是端点自动的）。
-            body.insert(
-                "system".into(),
-                json!([{ "type": "text", "text": req.system, "cache_control": { "type": "ephemeral" } }]),
-            );
-        }
-        body.insert(
-            "messages".into(),
-            json!(to_anthropic_messages(
-                &req.messages,
-                &req.attachments,
-                req.supports_vision
-            )),
-        );
-        if !req.tools.is_empty() {
-            body.insert("tools".into(), json!(to_anthropic_tools(&req.tools)));
-        }
+            if !req.tools.is_empty() {
+                body.insert("tools".into(), json!(to_anthropic_tools(&req.tools)));
+            }
+            body
+        };
 
-        let mut rb = self
-            .http
-            .post(self.profile.chat_url())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .timeout(req.timeout)
-            .json(&Value::Object(body));
-        let key = self.profile.api_key.trim();
-        if !key.is_empty() {
-            rb = rb.header("x-api-key", key);
-        }
-        for (k, v) in &self.profile.headers {
-            rb = rb.header(k.as_str(), v.as_str());
-        }
+        let resp = loop {
+            let body = build_body(system_plain);
+            let mut rb = self
+                .http
+                .post(self.profile.chat_url())
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .timeout(req.timeout)
+                .json(&Value::Object(body));
+            let key = self.profile.api_key.trim();
+            if !key.is_empty() {
+                rb = rb.header("x-api-key", key);
+            }
+            for (k, v) in &self.profile.headers {
+                rb = rb.header(k.as_str(), v.as_str());
+            }
 
-        let resp = rb.send().await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response(resp).await);
-        }
+            let resp = rb.send().await?;
+            if resp.status().is_success() {
+                break resp;
+            }
+            let err = error_from_response(resp).await;
+            let AppError::Provider(msg) = &err else { return Err(err) };
+            // 只有「形状不被认」的 400 才值得降级重试；鉴权/限流等照旧往上抛
+            let shape_rejected =
+                msg.contains("400") && (msg.contains("cache_control") || msg.contains("system"));
+            if system_plain || !shape_rejected {
+                return Err(err);
+            }
+            system_plain = true;
+        };
 
         let cancel = req.cancel.clone();
         // 记录 content_block_index → 是否工具块，用于把增量归到正确的工具序号上
@@ -154,7 +176,11 @@ impl LlmProvider for AnthropicProvider {
                         }
                         "thinking_delta" => {
                             if let Some(text) = delta.and_then(|d| d.get("thinking")).and_then(|t| t.as_str()) {
-                                if !text.is_empty() && tx.send(StreamEvent::Thinking(text.to_string())).is_err() {
+                                if !text.is_empty()
+                                    && tx
+                                        .send(StreamEvent::Thinking { index: block_index, text: text.to_string() })
+                                        .is_err()
+                                {
                                     return Ok(false);
                                 }
                             }
@@ -162,7 +188,11 @@ impl LlmProvider for AnthropicProvider {
                         // 思考块的签名：回传给服务商时必须原样带回，缺了会被 400 拒掉
                         "signature_delta" => {
                             if let Some(sig) = delta.and_then(|d| d.get("signature")).and_then(|t| t.as_str()) {
-                                if !sig.is_empty() && tx.send(StreamEvent::ThinkingSignature(sig.to_string())).is_err() {
+                                if !sig.is_empty()
+                                    && tx
+                                        .send(StreamEvent::ThinkingSignature { index: block_index, sig: sig.to_string() })
+                                        .is_err()
+                                {
                                     return Ok(false);
                                 }
                             }

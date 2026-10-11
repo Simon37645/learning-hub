@@ -1092,7 +1092,7 @@ impl Tool for SessionFinish {
         // 没有进行中的会话是**正常情况**（用户没点过「开始学习会话」，或者刚结束过）。
         // 以前这里报「参数不合法：当前没有进行中的学习会话」，模型只能干瞪眼，
         // 用户看到一张红色失败卡片——其实什么都没坏。现在返回一句可执行的说明。
-        let Some(mut session) = ctx.core.current_session() else {
+        let Some(session) = ctx.core.current_session() else {
             return Ok(ToolOutput::ok(
                 "当前没有进行中的学习会话，没有会话记录要保存。\
                  如果这一轮已经讲完，直接用 note_create 把总结写成笔记；\
@@ -1100,18 +1100,27 @@ impl Tool for SessionFinish {
                     .to_string(),
             ));
         };
-        session.summary = arg_str(&input, "summary").unwrap_or_default();
-        session.highlights = arg_str_array(&input, "highlights");
-        session.open_questions = arg_str_array(&input, "open_questions");
-        session.ended_at = Some(Utc::now());
 
         // 按 topic_id 定位：会话进行中主题可能改名了（旧 slug 已失效），
         // 模糊匹配会把会话写进一个只是名字像的主题里
         let topic = ctx.core.workspace().resolve_id(&session.topic_id)?;
-        session.topic_slug = topic.slug();
-        let path = topic.sessions_dir().join(format!("{}.json", session.id));
-        store::write_json(&path, &session)?;
-        ctx.core.set_current_session(None);
+        // 落盘 + 摘指针在 AppCore 里同一把顺序锁内完成，别在这里手写
+        //（中途放开的话，一次并发 bump 会拿旧快照把「已结束」盖回「进行中」）
+        let summary = arg_str(&input, "summary").unwrap_or_default();
+        let highlights = arg_str_array(&input, "highlights");
+        let open_questions = arg_str_array(&input, "open_questions");
+        let session = ctx
+            .core
+            .finish_current_session(|s| {
+                s.summary = summary;
+                s.highlights = highlights;
+                s.open_questions = open_questions;
+                s.ended_at = Some(Utc::now());
+                s.topic_slug = topic.slug();
+            })
+            .ok_or_else(|| {
+                crate::error::AppError::invalid("当前没有进行中的学习会话")
+            })?;
 
         Ok(ToolOutput::ok(format!(
             "会话已保存（用时 {} 分钟，产出 {} 张卡片、{} 篇笔记）。\n建议接着用 note_create 把这份总结写成 notes/ 下的笔记，方便以后检索。",

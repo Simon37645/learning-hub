@@ -20,3 +20,4 @@ workspace/
 
 # 打包产物（ASCII 名，用于发布）
 release/
+config.json.e2e-backup/

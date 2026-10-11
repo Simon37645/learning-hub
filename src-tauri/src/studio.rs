@@ -240,8 +240,14 @@ pub fn rewrite_paths_after_move(value: &str, from: &Path, to: &Path) -> String {
     let from_s = from.to_string_lossy().replace('\\', "/");
     let to_s = to.to_string_lossy().replace('\\', "/");
     let v = value.replace('\\', "/");
-    if v.starts_with(&from_s) {
-        return format!("{}{}", to_s, &v[from_s.len()..]);
+    // Windows 路径比较不分大小写：模型写小写盘符（d:/ws/…）很常见，
+    // 按原样比前缀会漏改，发布出去的服务器就指向被搬空的草稿目录。
+    // 用**字节**比较：字符串切片可能落在多字节字符中间（release 是
+    // panic=abort，会整个崩掉），字节比较则不可能越界；匹配成功时
+    // 前缀逐字节一致，from_s 的最后一个字符边界也是 v 的边界。
+    let (vb, fb) = (v.as_bytes(), from_s.as_bytes());
+    if vb.len() >= fb.len() && vb[..fb.len()].eq_ignore_ascii_case(fb) {
+        return format!("{}{}", to_s, &v[fb.len()..]);
     }
     v
 }

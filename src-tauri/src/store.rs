@@ -95,13 +95,24 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> AppResult<Vec<T>> {
         }
     }
     if !bad.is_empty() {
-        let mut keep = read_text_opt(&bad_sidecar(path))?.unwrap_or_default();
-        for l in bad {
-            keep.push_str(&l);
-            keep.push('\n');
-        }
-        if let Err(e) = atomic_write(&bad_sidecar(path), keep.as_bytes()) {
-            eprintln!("[store] 坏行留底失败：{e}");
+        // 留底要**去重**：坏行留在主文件里一天，每次读取都会再撞见它一次，
+        // 无脑追加的话 .bad 会跟着读取次数无限膨胀
+        let sidecar = bad_sidecar(path);
+        let existing = read_text_opt(&sidecar)?.unwrap_or_default();
+        let have: std::collections::HashSet<&str> = existing.lines().collect();
+        let fresh: Vec<&String> = bad.iter().filter(|l| !have.contains(l.as_str())).collect();
+        if !fresh.is_empty() {
+            let mut keep = existing;
+            if !keep.is_empty() && !keep.ends_with('\n') {
+                keep.push('\n');
+            }
+            for l in fresh {
+                keep.push_str(l);
+                keep.push('\n');
+            }
+            if let Err(e) = atomic_write(&sidecar, keep.as_bytes()) {
+                eprintln!("[store] 坏行留底失败：{e}");
+            }
         }
     }
     Ok(out)
@@ -191,15 +202,12 @@ pub fn read_text_capped(path: &Path, max_bytes: u64) -> AppResult<String> {
         let f = std::fs::File::open(path).ctx(path.display())?;
         let mut buf = Vec::with_capacity(max_bytes as usize);
         f.take(max_bytes).read_to_end(&mut buf).ctx(path.display())?;
-        // 别把一个多字节字符切在半截
-        let mut end = buf.len();
-        while end > 0 && (buf[end - 1] & 0xC0) == 0x80 {
-            end -= 1;
+        // lossy 解码只会把**末尾那半个**被切断的多字节序列变成 U+FFFD
+        //（前面的字节都来自合法文件前缀），去掉它就落在完整字符边界上
+        let mut cut = String::from_utf8_lossy(&buf).to_string();
+        if cut.ends_with('\u{FFFD}') {
+            cut.pop();
         }
-        if end > 0 && buf[end - 1] & 0xC0 == 0xC0 {
-            end -= 1; // 剩下的是多字节序列的首字节，也丢掉
-        }
-        let mut cut = String::from_utf8_lossy(&buf[..end]).to_string();
         cut.push_str("\n\n…（文件过长已截断）");
         return Ok(cut);
     }

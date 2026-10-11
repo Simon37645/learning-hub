@@ -122,6 +122,14 @@ impl LessonPlan {
     }
 }
 
+/// 讲解方案文件的路径。id 直接拼文件名，先过 slug 消毒（正常 id 是 uuid）
+fn lesson_path(state: &AppState, slug: &str, id: &str) -> AppResult<std::path::PathBuf> {
+    if !crate::paths::is_safe_slug(id) {
+        return Err(AppError::invalid(format!("方案 id 不合法：{id}")));
+    }
+    Ok(lessons_dir(state, slug)?.join(format!("{id}.json")))
+}
+
 fn lessons_dir(state: &AppState, slug: &str) -> AppResult<std::path::PathBuf> {
     let topic = state.0.workspace().resolve(slug)?;
     let dir = topic.dir.join(crate::domain::topic::DIR_LESSONS);
@@ -166,7 +174,7 @@ pub async fn lesson_list(state: State<'_, AppState>, slug: String) -> AppResult<
 
 #[tauri::command]
 pub async fn lesson_get(state: State<'_, AppState>, slug: String, id: String) -> AppResult<LessonPlan> {
-    let path = lessons_dir(&state, &slug)?.join(format!("{id}.json"));
+    let path = lesson_path(&state, &slug, &id)?;
     store::read_json_opt::<LessonPlan>(&path)?
         .ok_or_else(|| AppError::NotFound(format!("找不到讲解方案 {id}")))
 }
@@ -253,8 +261,7 @@ pub async fn lesson_set_step(
     index: u32,
     status: StepStatus,
 ) -> AppResult<LessonPlan> {
-    let dir = lessons_dir(&state, &slug)?;
-    let path = dir.join(format!("{id}.json"));
+    let path = lesson_path(&state, &slug, &id)?;
     let mut plan = store::read_json_opt::<LessonPlan>(&path)?
         .ok_or_else(|| AppError::NotFound(format!("找不到讲解方案 {id}")))?;
 
@@ -267,16 +274,18 @@ pub async fn lesson_set_step(
         }
     }
     plan.updated_at = Utc::now();
-    if plan.steps.iter().all(|s| matches!(s.status, StepStatus::Done | StepStatus::Skipped)) {
-        plan.finished = true;
-    }
+    // 与工具侧同理：finished 双向重算，回头重讲某一步要把它翻回「进行中」
+    plan.finished = plan
+        .steps
+        .iter()
+        .all(|s| matches!(s.status, StepStatus::Done | StepStatus::Skipped));
     store::write_json(&path, &plan)?;
     Ok(plan)
 }
 
 #[tauri::command]
 pub async fn lesson_delete(state: State<'_, AppState>, slug: String, id: String) -> AppResult<()> {
-    let path = lessons_dir(&state, &slug)?.join(format!("{id}.json"));
+    let path = lesson_path(&state, &slug, &id)?;
     if path.exists() {
         let trash = state
             .0

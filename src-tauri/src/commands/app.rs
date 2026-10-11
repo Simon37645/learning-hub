@@ -388,7 +388,7 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
     while let Some(ev) = rx.recv().await {
         match ev {
             StreamEvent::Text(t) => text.push_str(&t),
-            StreamEvent::Thinking(t) => thinking.push_str(&t),
+            StreamEvent::Thinking { text: t, .. } => thinking.push_str(&t),
             StreamEvent::Finish(f) => finish = Some(f),
             _ => {}
         }

@@ -80,6 +80,11 @@ impl Default for ChatMeta {
 
 /// 元数据文件路径：`chats/<id>.meta.json`（对话本身是 `chats/<id>.jsonl`）。
 pub fn meta_path(chats_dir: &Path, chat_id: &str) -> PathBuf {
+    // 与 transcript_path 同一道防：id 直接拼文件名，非法 id 一律退到固定名
+    //（正常 id 都是 uuid，触发不了）
+    if !crate::paths::is_safe_slug(chat_id) {
+        return chats_dir.join("illegal-chat-id.meta.json");
+    }
     chats_dir.join(format!("{chat_id}.meta.json"))
 }
 

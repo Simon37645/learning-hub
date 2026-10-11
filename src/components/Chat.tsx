@@ -724,7 +724,14 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
   const studio = mode === "studio";
 
   async function submit() {
-    if ((!text.trim() && images.length === 0) || streaming) return;
+    if (!text.trim() && images.length === 0) return;
+    // 用**全局** streaming 预检（别看过滤后的）：别的对话还在跑时这里放行的话，
+    // store 的 send 会拒绝并发轮次，而输入框已经被清空——用户打的字就丢了
+    if (useApp.getState().streaming) {
+      toast("info", "上一轮还在进行中，等它跑完再发");
+      return;
+    }
+    if (streaming) return;
     const t = text;
     const pics = images.map((i) => i.upload);
     setText("");

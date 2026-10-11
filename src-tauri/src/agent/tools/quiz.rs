@@ -13,6 +13,26 @@ use crate::store;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+/// 选项 key 去重：模型给重复的（"A. xx" + "a. yy"、两条 {key:"A"}）时，
+/// 按序号字母兜底，再撞就循环加后缀直到空位——key 不唯一的话判分按 key
+/// 找会定位错行。i ≥ 26 时别玩 `b'A' + i` 的花活（debug 溢出 panic）。
+fn unique_key(used: &mut std::collections::HashSet<String>, mut key: String, i: usize) -> String {
+    if used.contains(&key) {
+        key = if i < 26 {
+            ((b'A' + i as u8) as char).to_string()
+        } else {
+            format!("O{}", i + 1)
+        };
+        let mut n = i + 1;
+        while used.contains(&key) {
+            key = format!("{key}{n}");
+            n += 1;
+        }
+    }
+    used.insert(key.clone());
+    key
+}
+
 fn parse_question(raw: &Value) -> AppResult<Question> {
     let kind_raw = arg_str(raw, "type")
         .or_else(|| arg_str(raw, "kind"))
@@ -28,31 +48,48 @@ fn parse_question(raw: &Value) -> AppResult<Question> {
     q.score = arg_u32(raw, "score").unwrap_or(if kind.is_subjective() { 5 } else { 1 });
 
     if let Some(opts) = raw.get("options").and_then(|o| o.as_array()) {
+        let mut used_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (i, o) in opts.iter().enumerate() {
-            // 选项允许写成 "A. 文本" 的字符串，或 {key, text} 对象
+            // 选项允许写成 "A. 文本" / "(A) 文本" 的字符串，或 {key, text} 对象
             match o {
                 Value::String(s) => {
-                    // 只认「单个字母 + 分隔符」的前缀（"A. 文本" / "A、文本" / "(A) 文本"）。
-                    // 之前按「字母/点/顿号/空格」整串剥，选项以拉丁字母开头时
+                    // 只认「单个字母（可带括号）+ 分隔符」的前缀。之前按
+                    // 「字母/点/顿号/空格」整串剥，选项以拉丁字母开头时
                     // （ARDS、TCP 连接）正文被剥光、key 也取错——判分全错。
                     let trimmed = s.trim();
                     let mut key = ((b'A' + i as u8) as char).to_string();
                     let mut text = trimmed.to_string();
                     let chars: Vec<char> = trimmed.chars().collect();
-                    if chars.len() >= 2 && chars[0].is_ascii_alphabetic() {
-                        let sep1 = chars[1] == '.' || chars[1] == '、' || chars[1] == ')' || chars[1] == '）';
-                        let sep2 = chars[1] == ' ' && chars.len() > 2;
-                        if sep1 || sep2 {
+                    // (A) 文本 / （A）文本
+                    let paren = chars.len() >= 4
+                        && (chars[0] == '(' || chars[0] == '（')
+                        && chars[1].is_ascii_alphabetic()
+                        && (chars[2] == ')' || chars[2] == '）');
+                    if paren {
+                        key = chars[1].to_ascii_uppercase().to_string();
+                        text = trimmed[chars[0].len_utf8() + chars[1].len_utf8() + chars[2].len_utf8()..]
+                            .trim()
+                            .to_string();
+                    } else if chars.len() >= 2 && chars[0].is_ascii_alphabetic() {
+                        let sep = chars[1] == '.'
+                            || chars[1] == '、'
+                            || chars[1] == ')'
+                            || chars[1] == '）'
+                            || (chars[1] == ' ' && chars.len() > 2);
+                        if sep {
                             key = chars[0].to_ascii_uppercase().to_string();
                             text = trimmed[chars[0].len_utf8() + chars[1].len_utf8()..].trim().to_string();
                         }
                     }
+                    let key = unique_key(&mut used_keys, key, i);
                     q.options.push(crate::domain::quiz::QuizOption { key, text });
                 }
                 Value::Object(_) => {
+                    // 对象形式的 key 同样要参与去重（模型给两条 {key:"A"} 是常事）
                     let key = arg_str(o, "key")
                         .or_else(|| arg_str(o, "label"))
                         .unwrap_or_else(|| ((b'A' + i as u8) as char).to_string());
+                    let key = unique_key(&mut used_keys, key, i);
                     q.options
                         .push(crate::domain::quiz::QuizOption { key, text: arg_str(o, "text").unwrap_or_default() });
                 }
@@ -370,6 +407,7 @@ impl Tool for QuizGrade {
         attempt.grade_objective(&quiz);
         // 与界面判卷同一份记录：不落盘的话这次判分在历史/统计里查无此事，
         // quiz_list 承诺的「最近得分」对这条路径永远是空的
+        let _op = store::file_op_lock();
         store::append_jsonl(
             &topic.quizzes_dir().join(format!("{}.attempts.jsonl", quiz.id)),
             &attempt,

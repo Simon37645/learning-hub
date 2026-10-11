@@ -738,12 +738,25 @@ function McpGroup({
               )}
               {!s.enabledHere && <span className="tag" style={{ color: "var(--warn)" }}>本主题已关</span>}
               <div className="grow" />
-              <ScopeSwitch
-                scope="global"
-                checked={s.enabled}
-                onChange={(v) => onToggle(s, v, "global")}
-              />
-              {showGlobalToggle && (
+              {/* 主题级服务器的开关是「本主题停用」（写 disabled_mcp）；
+                  全局配置里根本没有它，发 global scope 后端只会静默 no-op */}
+              {s.scope === "global" ? (
+                <>
+                  <ScopeSwitch
+                    scope="global"
+                    checked={s.enabled}
+                    onChange={(v) => onToggle(s, v, "global")}
+                  />
+                  {showGlobalToggle && (
+                    <ScopeSwitch
+                      scope="topic"
+                      checked={s.enabledHere}
+                      disabled={!topicOpen}
+                      onChange={(v) => onToggle(s, v, "topic")}
+                    />
+                  )}
+                </>
+              ) : (
                 <ScopeSwitch
                   scope="topic"
                   checked={s.enabledHere}

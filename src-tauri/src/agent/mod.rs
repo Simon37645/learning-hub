@@ -475,21 +475,21 @@ impl AgentService {
                                     thinking: false,
                                 });
                             }
-                            Some(StreamEvent::Thinking(t)) => {
-                                acc.thinking.push_str(&t);
+                            Some(StreamEvent::Thinking { index, text }) => {
+                                acc.thinking_part(index).text.push_str(&text);
                                 streamed = true;
                                 core.emit_agent(&AgentEvent::Delta {
                                     turn_id: turn_id.clone(),
                                     message_id: message_id.clone(),
-                                    text: t,
+                                    text,
                                     thinking: true,
                                 });
                             }
                             Some(StreamEvent::ToolCall { index, id, name, args }) => {
                                 acc.push_tool(index, id, name, args);
                             }
-                            Some(StreamEvent::ThinkingSignature(sig)) => {
-                                acc.thinking_signature = Some(sig);
+                            Some(StreamEvent::ThinkingSignature { index, sig }) => {
+                                acc.thinking_part(index).signature = Some(sig);
                             }
                             Some(StreamEvent::Finish(r)) => acc.finish = Some(r),
                             // 通道关闭 = provider 任务结束
@@ -542,10 +542,15 @@ impl AgentService {
 
             let tool_calls = acc.tool_calls();
             let mut blocks: Vec<ContentBlock> = Vec::new();
-            if !acc.thinking.trim().is_empty() {
+            // 思考块按原顺序逐块落库，各带各的签名（没有签名的跳过：带不上
+            // 有效签名的思考块回放只会被服务商拒收）
+            for (_, part) in &acc.thinking {
+                if part.text.trim().is_empty() {
+                    continue;
+                }
                 blocks.push(ContentBlock::Thinking {
-                    text: acc.thinking.clone(),
-                    signature: acc.thinking_signature.clone(),
+                    text: part.text.clone(),
+                    signature: part.signature.clone(),
                 });
             }
             if !acc.text.is_empty() {
@@ -567,7 +572,11 @@ impl AgentService {
             // 服务商报了真实用量就用真实的（里面含缓存命中），没报才退回本地估算
             let est_in = estimate_messages_tokens(&messages);
             let est_out = crate::agent::message::estimate_tokens(&acc.text)
-                + crate::agent::message::estimate_tokens(&acc.thinking);
+                + acc
+                    .thinking
+                    .iter()
+                    .map(|(_, p)| crate::agent::message::estimate_tokens(&p.text))
+                    .sum::<u32>();
             let real = acc.usage;
             let (in_tokens, out_tokens) = if real.is_empty() {
                 (est_in, est_out)
@@ -1016,16 +1025,32 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, budget_chars: usize) -> u
 
 // ============================================================ 流式累积
 
+/// 一段思考块：Anthropic 开交错思考时一条流里有多个块，每块有**自己的**
+/// 签名——混成一段再配最后一个签名，回放时签名校验必失败。
+#[derive(Default)]
+struct ThinkingPart {
+    text: String,
+    signature: Option<String>,
+}
+
 #[derive(Default)]
 struct Accumulator {
     text: String,
-    thinking: String,
-    /// 思考块的签名（Anthropic）。回传时必须原样带上，缺了服务商会 400。
-    thinking_signature: Option<String>,
+    /// 思考块按内容块序号分开攒（顺序 = 首次出现的顺序）
+    thinking: Vec<(usize, ThinkingPart)>,
     tools: Vec<ToolCall>,
     finish: Option<String>,
     /// 服务商在这条流里报的真实用量（可能为空）
     usage: provider::ProviderUsage,
+}
+
+impl Accumulator {
+    fn thinking_part(&mut self, index: usize) -> &mut ThinkingPart {
+        if !self.thinking.iter().any(|(i, _)| *i == index) {
+            self.thinking.push((index, ThinkingPart::default()));
+        }
+        &mut self.thinking.iter_mut().find(|(i, _)| *i == index).expect("刚插入过").1
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1187,14 +1212,25 @@ pub fn resolve_topic_opt(core: &AppCore, slug: Option<&str>) -> Option<Topic> {
 
 /// 对话记录的落盘路径：有主题就放主题内，没有就放工作区的 `_hub/`。
 pub fn transcript_path(core: &AppCore, topic: Option<&Topic>, chat_id: &str) -> PathBuf {
+    // chat_id 由前端传进来、直接拼进文件名：带分隔符或 `..` 就能在工作区外
+    // 造文件。正常 id 都是 uuid；非法的一律退到 chats 目录里的固定兜底名
+    //（写得进但撞不出工作区，且多个非法 id 只会混在这一个文件里）。
+    let safe = crate::paths::is_safe_slug(chat_id);
     match topic {
-        Some(t) => t.chat_path(chat_id),
-        None => core
+        Some(t) if safe => t.chat_path(chat_id),
+        Some(t) => t.dir.join(".hub").join("chats").join("illegal-chat-id.jsonl"),
+        None if safe => core
             .workspace()
             .root
             .join(crate::domain::topic::DIR_INTERNAL)
             .join("chats")
             .join(format!("{chat_id}.jsonl")),
+        None => core
+            .workspace()
+            .root
+            .join(crate::domain::topic::DIR_INTERNAL)
+            .join("chats")
+            .join("illegal-chat-id.jsonl"),
     }
 }
 

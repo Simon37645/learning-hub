@@ -77,10 +77,12 @@ pub(crate) const STREAM_CUT: &str = "模型流被提前截断";
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     Text(String),
-    Thinking(String),
+    /// 思考增量，`index` 是内容块序号：Anthropic 开交错思考时会来**多个**
+    /// 思考块，各块有各块的签名，必须分开攒（OpenAI 恒为 0）。
+    Thinking { index: usize, text: String },
     /// 思考块的签名（Anthropic 的 signature_delta）。回传思考块时必须原样带上，
     /// 缺了服务商会 400。
-    ThinkingSignature(String),
+    ThinkingSignature { index: usize, sig: String },
     /// 工具调用的增量片段，按 `index` 归并
     ToolCall {
         index: usize,

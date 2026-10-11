@@ -887,7 +887,12 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   setViewerWidth(w) {
-    set({ viewerWidth: Math.max(320, Math.min(1200, w)) });
+    // 拖分界线时给第二栏（对话/工作台）留出最小可用宽度：面板宁可先停住，
+    // 也不能把中间挤成一条竖排字（用户报的「拉过来第二栏排版错乱」）。
+    // 第二栏的左沿就是侧栏宽度（.app 里侧栏之后是净宽为 0 的 resizer）。
+    const MIN_CENTER = 400;
+    const max = Math.max(320, window.innerWidth - get().sidebarWidth - MIN_CENTER);
+    set({ viewerWidth: Math.max(320, Math.min(1200, max, w)) });
   },
 
   setSidebarWidth(w) {

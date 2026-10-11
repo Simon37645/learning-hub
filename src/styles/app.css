@@ -255,6 +255,8 @@ a:hover {
   min-height: 0;
   min-width: 0;
   display: flex;
+  /* 内置浏览器的分界线手柄（.viewer-resizer）以它为定位基准 */
+  position: relative;
 }
 
 .main-center {
@@ -273,6 +275,7 @@ a:hover {
 .app-shell.zen .sidebar,
 .app-shell.zen .sidebar-resizer,
 .app-shell.zen .viewer,
+.app-shell.zen .viewer-resizer,
 .app-shell.zen .chat-head,
 /* 工作台的功能区（面包屑 + 统计 + 页签）与笔记自己的头部一起收起，只留正文 */
 .app-shell.zen .wb-head,
@@ -1348,6 +1351,8 @@ body.dragging-chat {
   align-items: center;
   gap: 6px;
   padding: 6px 8px 8px 10px;
+  /* 第二栏被拖窄（或窗口本来就小）时折成两行，别把按钮挤烂 */
+  flex-wrap: wrap;
 }
 
 .composer-bar .spacer {
@@ -1947,18 +1952,23 @@ body.dragging-chat {
   position: relative;
 }
 
+/* 分界线手柄是 .viewer 的兄弟节点（挂在 .main-body 上），right 由组件按面板
+   宽度内联给出，整条贴在面板左侧、压在第二栏上。不能放进 .viewer 里：
+   ① .viewer 有 overflow: hidden，伸出边框的半截会被裁掉；
+   ② 远端网页的原生子 WebView 浮在面板内侧一切 DOM 之上，手柄放内侧的话
+   头部以下那整段都被盖住——「分界线只有上面一截能拉」就是这两个原因叠加。 */
 .viewer-resizer {
   position: absolute;
-  left: -3px;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 7px;
   cursor: col-resize;
-  z-index: 10;
+  z-index: 30;
 }
 
-.viewer-resizer:hover {
-  background: color-mix(in srgb, var(--accent) 25%, transparent);
+.viewer-resizer:hover,
+.viewer-resizer:active {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .viewer-head {

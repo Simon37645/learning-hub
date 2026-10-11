@@ -130,6 +130,10 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   宿主尺寸/位置变了要 `viewer_webview_bounds`（前端用 rAF 合并）。w/h 不足 2 视为不可见，
   只 `hide()` 不设 bounds。安全边界：`web-<tab_id>` 不在 capabilities 的 windows 列表里，
   外部网页拿不到任何 IPC 权限；`on_navigation` 只放行 http/https（含挡 `http://ipc.localhost`）。
+  **分界线手柄同理不能放面板里**：`.viewer` 的 `overflow: hidden` 会把伸出边框的半截裁掉，
+  原生层又从面板内容区开始画——手柄放 `.viewer` 里时头部以下整段被盖住（用户报的
+  「分界线只有上面一截能拉」）。它现在挂在 `.main-body` 上、贴在面板**外侧**，别挪回去；
+  拖动时 `setViewerWidth` 会给第二栏留 400px 最小宽度，别把钳制删了（否则中间被挤成一列字）。
 - **内置浏览器的头部只有一行**：标签 + 页码 + 已读字数 + 重载/外部打开都在 40px 那一行里
   （完整路径放标签的 tooltip）。原来下面还有一条路径栏，白占一行还把正文挤掉一截，被用户点名拿掉，别再往回加。
 - **窗口是自绘标题栏**（`tauri.conf.json` 里 `decorations: false`，见 `components/TitleBar.tsx`）：

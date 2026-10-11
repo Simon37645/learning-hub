@@ -30,6 +30,7 @@ export function ViewerPanel() {
     const onUp = () => {
       dragging.current = false;
       document.body.style.cursor = "";
+      document.body.style.userSelect = "";
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -44,14 +45,24 @@ export function ViewerPanel() {
   const active = viewer.tabs.find((t) => t.id === viewer.activeId) ?? null;
 
   return (
-    <aside className="viewer" style={{ width }}>
+    <>
+      {/* 手柄不能放进 .viewer 里：那里面 overflow: hidden 会把伸出去的半截裁掉，
+          而且网页标签的原生子 WebView 浮在面板内侧一切 DOM 之上，放内侧的话
+          头部以下那段永远抓不到（用户报的「分界线只有上面能拉」）。
+          现在整条贴在面板左侧、压在第二栏上（right 由面板宽度给出），
+          原生层从面板内容区才开始画，盖不到它。 */}
       <div
         className="viewer-resizer"
+        style={{ right: width }}
+        title="拖动调整内置浏览器宽度"
         onMouseDown={() => {
           dragging.current = true;
           document.body.style.cursor = "col-resize";
+          document.body.style.userSelect = "none";
         }}
       />
+
+      <aside className="viewer" style={{ width }}>
 
       <div className="viewer-head">
         <div className="viewer-tabs">
@@ -154,7 +165,8 @@ export function ViewerPanel() {
           </Empty>
         </div>
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
 

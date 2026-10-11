@@ -16,7 +16,8 @@
 //!   AppCore 马上要持有本模块的 WebviewManager，再捕获它就是引用环。
 //! - 安全边界：子 WebView 的 label（`web-<tab_id>`）不在 capabilities 的 windows
 //!   列表里，拿不到任何 IPC 权限；`on_navigation` 再挡一层，只放行 http/https
-//!   （`http://ipc.localhost` 这类内部地址一并拒绝），弹窗一律拒绝并转交系统浏览器。
+//!   （`http://ipc.localhost` 这类内部地址一并拒绝），新窗口请求（弹窗 /
+//!   target=_blank / 中键）一律拒绝真正创建，转成内置浏览器的新标签。
 //!
 //! 程序化通道（`eval_js` / `cdp_call`）：agent 的 webbrowser 工具借此「操作浏览器」
 //! ——执行 JS、走 Chrome DevTools Protocol 截图。两条通道都是「发起后等回调」：
@@ -24,14 +25,13 @@
 //! 阻塞的只有专门的阻塞线程，不是事件循环，也不是 async worker。
 
 use crate::error::{AppError, AppResult};
-use crate::viewer::{ViewerKind, ViewerService, ViewerTab};
+use crate::viewer::{OpenRequest, ViewerKind, ViewerService, ViewerTab};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, Wry};
-use tauri_plugin_opener::OpenerExt;
 
 /// 前端量出来的宿主矩形（CSS 像素，相对视口）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -171,6 +171,10 @@ impl WebviewManager {
     ) -> AppResult<WebviewBuilder<Wry>> {
         let service = service.clone();
         let b = WebviewBuilder::new(label, tauri::WebviewUrl::External(url))
+            // wry 把 WebView2 的 IsZoomControlEnabled / IsPinchZoomEnabled 都绑在这个开关上，
+            // 默认 false——不开它 Ctrl+滚轮就缩不了页面（用户报的「网页不能缩放」）。
+            // 键盘加速键（Ctrl+P 之类）在 wry 里恒为关，不受影响。
+            .zoom_hotkeys_enabled(true)
             .on_navigation({
                 let app = app.clone();
                 let service = service.clone();
@@ -219,15 +223,37 @@ impl WebviewManager {
             })
             .on_new_window({
                 let app = app.clone();
+                let service = service.clone();
                 move |u: url::Url, _features| {
-                    // 弹窗一概不允许出现在应用里：转交系统浏览器开
+                    // 新窗口请求（target=_blank / window.open / 中键）不开系统浏览器：
+                    // 转成内置浏览器的新标签并前台激活，对齐普通浏览器的行为。
+                    // 真正的弹窗仍然 Deny——不会在应用里建出第二个原生窗口。
                     let app = app.clone();
+                    let service = service.clone();
                     let url = u.to_string();
                     tauri::async_runtime::spawn(async move {
-                        if is_web_url(&url) {
-                            if let Err(e) = app.opener().open_url(&url, None::<&str>) {
-                                eprintln!("[viewer] 转交系统浏览器打开弹窗失败：{e}");
+                        // 非普通网页（mailto: 等）：和以前一样拒绝，不转到任何地方
+                        if !is_web_url(&url) {
+                            return;
+                        }
+                        match service
+                            .open(OpenRequest {
+                                url: Some(url),
+                                new_tab: true,
+                                ..Default::default()
+                            })
+                            .await
+                        {
+                            Ok(_) => {
+                                // open() 已把新标签置为激活；发 Sync 让前端整体覆盖，
+                                // 新标签的 WebTab 挂载后自己会建原生子 WebView
+                                let snapshot = service.snapshot().await;
+                                let _ = app.emit(
+                                    crate::agent::event::EVENT_VIEWER,
+                                    crate::agent::event::ViewerEvent::Sync { snapshot },
+                                );
                             }
+                            Err(e) => eprintln!("[viewer] 新窗口请求转为内置标签失败：{e}"),
                         }
                     });
                     tauri::webview::NewWindowResponse::Deny

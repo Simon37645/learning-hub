@@ -120,7 +120,12 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   `web_frame_check` 自动切阅读模式，阅读模式本身是 TabBar 上的手动按钮，别把自动切换
   加回原生路径。页面状态（标题 / url / loading）由 `on_navigation` / `on_document_title_changed` /
   `on_page_load` 回调经 `ViewerEvent::Updated` 推回前端；url 变了会**清空正文快照**，
-  agent 下一次 `viewer_read` 自动重新提取。弹窗一律 `Deny` 并用 opener 交给系统浏览器。
+  agent 下一次 `viewer_read` 自动重新提取。新窗口请求（弹窗 / target=_blank / 中键）一律
+  `Deny` 真正创建、转成内置浏览器**新标签**并前台激活（发 `ViewerEvent::Sync` 让前端刷新；
+  非普通网页如 `mailto:` 原样拒绝）——用户明确不要「点链接跑系统浏览器」。
+  Ctrl+滚轮缩放挂在 `zoom_hotkeys_enabled(true)` 上：wry 把 WebView2 的
+  `IsZoomControlEnabled` / `IsPinchZoomEnabled` 都绑在这个属性，默认 false（网页缩不了）；
+  键盘加速键（Ctrl+P 等）在 wry 里恒为关，开了这个也不受影响。
 - **原生子 WebView 浮在一切 DOM 之上**：它是独立的原生窗口，Modal / 图片大图 / 命令面板 /
   拖放提示 / 演示卡片全屏（Fullscreen API）都会被它盖住。所以这些全屏浮层都要挂
   `useOverlay()`（`store` 里的 `overlayCount`），`WebTab` 计数非零 / 阅读模式 / zen 时调

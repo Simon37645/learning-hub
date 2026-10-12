@@ -10,6 +10,7 @@ import { STAGE_LABEL, THEME_LABEL, type AgentMode, type StudyStage, type TopicSu
 import { hotkey, relTime } from "../lib/format";
 import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, useOverlay } from "./ui";
 import { McpDialog, SkillsDialog } from "./Extend";
+import { RemoteDialog } from "./Remote";
 import { MemoryPanel } from "./Memory";
 import { api } from "../lib/api";
 
@@ -67,6 +68,8 @@ export function Sidebar() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [remoteClients, setRemoteClients] = useState(0);
   const [skillCount, setSkillCount] = useState(0);
   const [mcpCount, setMcpCount] = useState(0);
   const [memoryCount, setMemoryCount] = useState(0);
@@ -130,6 +133,14 @@ export function Sidebar() {
         // 角标显示「当前上下文真正会注入」的条数（与提示词一致），不是磁盘上的总条数
         const mem = await api.memoryOverview(activeSlug);
         setMemoryCount(mem.activeCount);
+      } catch {
+        /* 忽略 */
+      }
+      try {
+        // 远程控制：连着几台设备（0 就不显示角标）。这个查询很轻（只读内存状态），
+        // 和上面几个一起顺手拉，面板打开时另有自己的 3 秒轮询
+        const remote = await api.remoteStatus();
+        setRemoteClients(remote.clients);
       } catch {
         /* 忽略 */
       }
@@ -278,6 +289,15 @@ export function Sidebar() {
           <span className="grow">记忆</span>
           {memoryCount > 0 && <span className="side-kbd">{memoryCount}</span>}
         </button>
+        <button
+          className="side-item"
+          title="在手机 / 平板上远程控制这台电脑上的 agent"
+          onClick={() => setRemoteOpen(true)}
+        >
+          <Icon name="phone" />
+          <span className="grow">远程控制</span>
+          {remoteClients > 0 && <span className="side-kbd">{remoteClients}</span>}
+        </button>
 
         <div className="menu-sep" style={{ margin: "6px 8px" }} />
 
@@ -416,6 +436,7 @@ export function Sidebar() {
         </button>
       </div>
 
+      {remoteOpen && <RemoteDialog onClose={() => setRemoteOpen(false)} />}
       {skillsOpen && <SkillsDialog onClose={() => setSkillsOpen(false)} />}
       {mcpOpen && <McpDialog onClose={() => setMcpOpen(false)} />}
       {memoryOpen && <MemoryPanel onClose={() => setMemoryOpen(false)} />}

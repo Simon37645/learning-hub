@@ -9,6 +9,7 @@
 
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
+import { registerRemoteRenderer } from "../lib/remoterender";
 import { currentMonitor, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 import { fitOuter } from "../lib/winfit";
 import { api, errText } from "../lib/api";
@@ -1329,6 +1330,10 @@ async function bootstrapStore(
     await listen<MemoryEvent>("hub://memory", () => {
       set((s) => ({ memoryTick: s.memoryTick + 1 }));
     });
+
+    // 替手机页面渲染图（Mermaid）：远程服务把请求发到 hub://remote，
+    // 这里画完把 SVG 交回去。手机端不装 mermaid——渲染必须收口在这一处。
+    void registerRemoteRenderer();
 
     // 「工作区模样」的持久化（视图/主题/对话/浏览器标签/宽度/zen），下次启动原样恢复。
     //

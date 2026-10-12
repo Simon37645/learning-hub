@@ -560,3 +560,101 @@ PDF 的文字层里只有字——插图、示意图、公式图、扫描页、�
 | 让某类代码块也渲染成卡片 | `markdown.ts` 的 `DEMO_LANGS` + `demoDocument` |
 | 让某个工具也能返回图片 | 工具里返回 `ToolOutput::with_images(...)`，协议编码已经通了 |
 | 让前端替 agent 渲染别的东西 | 照 `render_request` / `viewer_report_render` 这一对加事件与命令（请求-响应，别只发不收） |
+
+## 18. 移动端远程控制（第六轮）
+
+在手机 / 平板的浏览器里操作这台电脑上的 agent。**不是屏幕共享**：手机上发的消息真的由
+本机 agent 执行，事件也是从桌面端同一套 `AgentEvent` 转出去的——不是「把画面推出去」，
+而是「把控制权交出去」。
+
+```
+手机浏览器 ──HTTP/SSE──→ remote::http（手写迷你 HTTP/1.1）
+                              │
+                              ├─ remote::api ──→ 复用桌面端同一批函数
+                              │     （start_turn / respond_approval / chats::collect …）
+                              └─ SSE 扇出 ←── RemoteService::push_*
+                                                  ▲
+桌面端 AppCore ── emit_agent / emit_topics / toast ──┘（一处转发，不在对话循环里塞远程逻辑）
+```
+
+| 文件 | 干什么 |
+| --- | --- |
+| `remote/http.rs` | 请求解析 / 响应 / SSE 分块 / 常量时间比较令牌（每处上限都有单测） |
+| `remote/api.rs` | 路由与鉴权、`/api/state` `/api/chats` `/api/transcript` `/api/send` `/api/approve` `/api/cancel` `/api/file` `/api/events` |
+| `remote/mod.rs` | `RemoteService`：起停、事件扇出、状态与链接、局域网 IP 探测 |
+| `remote/tunnel.rs` | 反向隧道客户端（自己有公网服务器时主动连出去） |
+| `remote/web/` | 手机页面（`include_str!` 编进二进制，磁盘上没有会被改坏的副本） |
+| `server/relay.mjs` | 中继：跑在用户自己的公网服务器上，零依赖，只做字节搬运 |
+| `commands/remote.rs` | 面板用的四个命令：状态 / 开关 / 改配置 / 换令牌 |
+
+几个刻意的决定：
+
+- **不引 HTTP 框架**：只需要「静态页面 + 几个 JSON 接口 + 一条推送流」，手写 400 行比
+  拖进 hyper/tower 那一串依赖更好交代（与 MCP 客户端同样的取舍）。代价是协议解析要自己
+  扛脏输入，所以头/正文都有硬上限并且各有一条单测。
+- **用 SSE 而不是 WebSocket**：事件是单向的（服务器 → 手机），上行全是普通 POST。
+  省掉自己实现帧协议与握手摘要，断线重连也是 `EventSource` 自带的。
+- **手机端有自己的「当前对话」**：存在 localStorage，不抢桌面端正在看哪条。
+  两边写的是同一份 jsonl，所以「在电脑上接着聊」不会错位。
+- **默认关闭**：这是一条能从别的设备操作本机的通道，不打开就不监听端口。
+- **远程改不了配置**：能读、能发消息、能审批，不能改设置 / 开关技能 / 删主题 /
+  写任意文件。附件读取也限制在工作区内（`resolve_in_root`）。
+- **一处转发**：`emit_agent` / `emit_topics` / `toast` 顺手往 `RemoteService` 推一份，
+  对话循环里一行远程逻辑都没有。没人听的时候连事件克隆都省掉（`receiver_count`）。
+
+### 图由桌面端渲染（`remote/render.rs`）
+
+手机页面里没有 mermaid——那是 3.5MB 的库，再塞一份既重复又会跟桌面端版本漂移，
+而且 AGENTS.md 里有一条硬规矩：**Mermaid 的渲染必须收口到一处**（唯一 id + 串行队列 +
+`suppressErrorRendering`）。所以走一条请求-响应短桥：
+
+```text
+手机 POST /api/render {lang, source}
+  → RenderBridge 登记等待位（oneshot）
+  → 发 hub://remote 给桌面端前端（那里有渲染器）
+  → 前端 renderDiagram() 画成 SVG，调 remote_report_render(id, ok, svg)
+  → 等待位被填上 → HTTP 响应带 SVG 回去
+```
+
+与 `pdf_screenshot` 同一套路（那边是「前端渲染 PDF 页交回 Rust」），只是方向相反。
+两条共同的铁律：**两端都要回话**（失败也要回，否则对面等到超时），以及**等待要有上限**（10 秒）。
+
+手机页面拿到 SVG 后**只删危险标签**（script / iframe / on* / javascript:），
+**不能删 `foreignObject`**——mermaid 的节点文字默认装在它里面，删了就是「一排彩色方块，
+没有字」（实测踩过）。
+
+### 隧道为什么是「连接池」而不是多路复用
+
+中继不区分「哪条连接属于哪个请求」：配对之后它就是一根管子（`GO` 之后双向原始字节）。
+所以本进程维持若干条**空闲**隧道，用掉一条补一条。多路复用能省连接，但要自己实现分帧、
+流控、半关闭，出问题时很难查。
+
+池子由**一个监管循环**统一补（`tunnel::run`），worker 自己不开新连接——唯一的分叉点是
+「配对成功」：那一刻这条连接会被占住很久（SSE 长连接），所以立刻通知监管补一条，
+否则几次并发请求就把池子掏空（手机上会看到 503）。
+
+协议只有三句话，方向刻意不对称：
+
+```text
+客户端 → 中继：LH1 <token>
+   握手，只此一句
+中继 → 客户端：PING
+         空闲时每 30 秒一次（把两边 NAT 都焐热）
+中继 → 客户端：GO
+           配对了，此后双向都是原始字节
+```
+
+**空闲时只有中继说话**，客户端一个字都不发。反过来的话（客户端发心跳）会有个竞态：
+心跳正好落在「中继刚配对、即将开始原始搬运」的瞬间，那几个字节会被当成 HTTP 请求的
+一部分灌给本机服务。只让中继说话就没有这个窗口。
+
+## 19. 第六轮新增的扩展点
+
+| 想加什么 | 改哪儿 |
+| --- | --- |
+| 远程多一个接口 | `remote/api.rs` 的 `route`（记得同时改手机端 `web/app.js`；静态资源与 `/api/*` 的鉴权分界在 `route` 开头） |
+| 手机端多一个事件 | `remote/mod.rs` 的 `Frame` + `state.rs` 里对应的 `emit_*` 转发 + `web/app.js` 的 `handleFrame` |
+| 换一套手机界面 | `remote/web/`（三个文件，编进二进制；改完要重新编译，不是热更新） |
+| 另一种「怎么连进来」 | `RemoteConfig` 加字段 + `RemoteService::status` 里拼链接 + 面板显示 |
+| 手机上多渲染一种东西 | 能在前端画就在 `remote/web/app.js` 里画（演示卡片、表格）；需要重库的照 `render.rs` 那条桥加一个 lang |
+| 局域网地址探测不准 | `remote::rank_addresses` 的排序规则（家用网段优先，VPN/CGNAT 靠后） |

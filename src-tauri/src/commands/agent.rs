@@ -137,28 +137,8 @@ fn collect_overview(
     mode: AgentMode,
     include_archived: bool,
 ) -> AppResult<Vec<ChatOverviewItem>> {
-    let dir = crate::agent::chats_dir_for(core, slug);
-    let ids = crate::agent::list_transcripts(core, slug)?;
-    let mut out = Vec::new();
-    for id in ids {
-        let path = dir.join(format!("{id}.jsonl"));
-        let messages = crate::store::read_jsonl::<ChatMessage>(&path).unwrap_or_default();
-        let meta = crate::agent::chats::load(&dir, &id);
-        if meta.mode != mode {
-            continue;
-        }
-        if meta.archived && !include_archived {
-            continue;
-        }
-        let updated_at = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .map(chrono::DateTime::<chrono::Utc>::from)
-            .unwrap_or_else(|_| crate::store::now());
-        out.push(crate::agent::chats::overview_item(id, &messages, &meta, updated_at));
-    }
-    crate::agent::chats::sort_items(&mut out);
-    out.truncate(60);
-    Ok(out)
+    // 实现在 agent::chats::collect（移动端远程接口也走同一份，排序口径只有一处）
+    crate::agent::chats::collect(core, slug, mode, include_archived)
 }
 
 /// 某个主题（或工作区级）下的历史对话清单（侧栏用）。

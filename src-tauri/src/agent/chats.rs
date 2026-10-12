@@ -212,6 +212,41 @@ pub fn overview_item(
     }
 }
 
+/// 一个主题（或工作区级）下的对话清单：读盘 → 按模式过滤 → 排序 → 截断。
+///
+/// 侧栏（`chat_overview` 命令）与移动端远程接口都走这里——**排序只在 Rust 里算一次**
+/// （置顶 → 最近使用 → 归档沉底），两边各排一次迟早会出现「界面上看是置顶了、
+/// 点进去却排在后面」。条数上限（60）也放在排序**之后**，否则置顶那条会被文件时间截掉。
+pub fn collect(
+    core: &std::sync::Arc<crate::state::AppCore>,
+    slug: Option<&str>,
+    mode: crate::agent::registry::AgentMode,
+    include_archived: bool,
+) -> AppResult<Vec<ChatOverviewItem>> {
+    let dir = crate::agent::chats_dir_for(core, slug);
+    let ids = crate::agent::list_transcripts(core, slug)?;
+    let mut out = Vec::new();
+    for id in ids {
+        let path = dir.join(format!("{id}.jsonl"));
+        let messages = crate::store::read_jsonl::<ChatMessage>(&path).unwrap_or_default();
+        let meta = load(&dir, &id);
+        if meta.mode != mode {
+            continue;
+        }
+        if meta.archived && !include_archived {
+            continue;
+        }
+        let updated_at = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .map(DateTime::<Utc>::from)
+            .unwrap_or_else(|_| crate::store::now());
+        out.push(overview_item(id, &messages, &meta, updated_at));
+    }
+    sort_items(&mut out);
+    out.truncate(60);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

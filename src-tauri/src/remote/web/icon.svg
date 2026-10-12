@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="学习中枢">
+  <!-- 和桌面端图标同源：三层叠起来的山形（越往里越实） -->
+  <rect width="512" height="512" rx="112" fill="#12131a" />
+  <g fill="none" stroke="#e8eaf2" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 372 148 172 232 372" opacity="0.26" />
+    <path d="M168 372 244 196 320 372" opacity="0.5" />
+    <path d="M272 372 328 236 384 372" opacity="0.95" />
+  </g>
+</svg>

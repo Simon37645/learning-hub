@@ -1,7 +1,7 @@
 {
   "name": "learning-hub",
   "private": true,
-  "version": "0.4.1-beta.1",
+  "version": "0.5.0-beta.1",
   "description": "Learning Hub — a personal AI study companion (Tauri 2 + Rust + React)",
   "type": "module",
   "scripts": {
@@ -18,10 +18,12 @@
     "demo:pdf": "node scripts/make-demo-pdf.mjs \"workspace/线性代数/materials/demo-lecture.pdf\" \"演示讲义\"",
     "dev:fake-llm": "node scripts/fake-llm.mjs 4321",
     "test:e2e": "node scripts/e2e-smoke.mjs",
+    "test:remote": "node scripts/remote-check.mjs",
     "icon": "node scripts/make-icon.mjs && tauri icon src-tauri/app-icon.png",
     "test:ui": "vitest run",
     "test:ui:watch": "vitest",
-    "dist": "tauri build && node scripts/package.mjs",
+    "dist": "tauri build && node scripts/package.mjs && node scripts/portable.mjs",
+    "portable": "node scripts/portable.mjs",
     "shortcut": "node scripts/make-shortcut.mjs"
   },
   "dependencies": {
@@ -48,6 +50,7 @@
     "marked-katex-extension": "^5.1.4",
     "mermaid": "^11.17.2",
     "pdfjs-dist": "^4.10.38",
+    "qrcode-generator": "^2.0.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^5.0.3"

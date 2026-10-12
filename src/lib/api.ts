@@ -35,6 +35,7 @@ import type {
   CardKind,
   ReasoningEffort,
   ReasoningStyle,
+  RemoteStatus,
   SkillDirs,
   SkillsOverview,
   Scope,
@@ -394,6 +395,17 @@ export const api = {
   // ---------------- 自定义外观主题 ----------------
   themesOverview: () => invoke<ThemesOverview>("themes_overview"),
   /** 切换自定义主题；传 null 回到内置配色 */
+  // --- 移动端远程控制 ---
+  remoteStatus: () => invoke<RemoteStatus>("remote_status"),
+  remoteSetEnabled: (enabled: boolean) => invoke<RemoteStatus>("remote_set_enabled", { enabled }),
+  remoteConfigPatch: (patch: { port?: number; bind?: "lan" | "local"; publicUrl?: string; relay?: string }) =>
+    invoke<RemoteStatus>("remote_config_patch", patch),
+  remoteTokenReset: (which?: "access" | "relay") =>
+    invoke<RemoteStatus>("remote_token_reset", { which: which ?? null }),
+  /** 替手机页面渲染完一张图之后回话（失败也要回，否则手机那边要等超时） */
+  remoteReportRender: (id: string, ok: boolean, payload: string) =>
+    invoke<boolean>("remote_report_render", { id, ok, payload }),
+
   themeSetActive: (id: string | null) =>
     invoke<PublicConfig>("theme_set_active", { id: id ?? null }),
   themeSave: (theme: CustomTheme) => invoke<ThemesOverview>("theme_save", { theme }),

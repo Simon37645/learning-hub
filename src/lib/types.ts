@@ -444,7 +444,56 @@ export interface PublicConfig {
   agent: AgentConfig;
   viewer: ViewerConfig;
   appearance: AppearanceConfig;
+  remote: RemoteConfig;
   lastTopic?: string | null;
+}
+
+/** 移动端远程控制的配置（存在 config.json 里）。 */
+export interface RemoteConfig {
+  enabled: boolean;
+  port: number;
+  /** lan = 监听所有网卡（同一 WiFi 的手机能连）；local = 只听本机（给反代/隧道用） */
+  bind: "lan" | "local";
+  /** 访问令牌，拼在链接里。前端拿它画二维码——这是本机界面，不外传 */
+  token: string;
+  /** 对外地址（反代 / 隧道给的域名）。填了它，二维码就用它 */
+  publicUrl: string;
+  /** 中继服务器地址（host:port）。填了就主动连出去建隧道 */
+  relay: string;
+  /** 中继口令（要和服务器上 relay.mjs 的 --token 一致） */
+  relayToken: string;
+}
+
+/** 面板上的一行地址（label 由后端给，别在前端靠字符串猜是哪种）。 */
+export interface RemoteUrl {
+  url: string;
+  kind: "public" | "lan" | "local";
+  label: string;
+}
+
+/** 远程控制的运行状态（`remote_status` 命令）。
+ *  注意和 RemoteConfig 的区别：这里的 publicUrl 是**带令牌的完整链接**，
+ *  config 里的 publicUrl 是用户填的对外地址（不带令牌）。 */
+export interface RemoteStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  bind: "lan" | "local";
+  bindLabel: string;
+  /** 访问令牌（本机界面用它画二维码，不外传） */
+  token: string;
+  relay: string;
+  relayToken: string;
+  /** 对外地址 + 令牌；没配对外地址时是 null */
+  publicUrl: string | null;
+  /** 局域网地址可能不止一块网卡（有线/无线/VPN），按「手机最可能连得上」排序 */
+  lanUrls: string[];
+  localUrl: string;
+  /** 带令牌的完整链接，从「任何地方都能用」排到「只有本机能用」；二维码取第一个 */
+  urls: RemoteUrl[];
+  /** 正在连着的浏览器数 */
+  clients: number;
+  lastError: string | null;
 }
 
 export interface ToolSpec {

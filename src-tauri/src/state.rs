@@ -36,6 +36,8 @@ pub struct AppCore {
     mcp_state: RwLock<Vec<McpEntry>>,
     /// 长期记忆（全局 + 各主题），内存里有缓存，磁盘是唯一真相
     memory: RwLock<MemoryStore>,
+    /// 移动端远程控制（迷你 HTTP 服务 + 事件扇出）。没打开时不监听任何端口
+    pub remote: Arc<crate::remote::RemoteService>,
 }
 
 /// 一个 MCP 服务器的运行状态。
@@ -103,6 +105,7 @@ impl AppCore {
             skills_cache: RwLock::new(Vec::new()),
             mcp_state: RwLock::new(Vec::new()),
             memory: RwLock::new(MemoryStore::new()),
+            remote: Arc::new(crate::remote::RemoteService::new()),
         })
     }
 
@@ -140,6 +143,9 @@ impl AppCore {
 
     pub fn emit_agent(&self, ev: &AgentEvent) {
         let _ = self.app.emit(EVENT_AGENT, ev);
+        // 顺手扇给连着的手机：**一处转发**，别在对话循环里到处塞远程逻辑。
+        // 没有订阅者时 broadcast::send 只做一个原子读就返回，桌面端不吃亏。
+        self.remote.push_agent(ev);
     }
 
     pub fn emit_viewer(&self, ev: ViewerEvent) {
@@ -154,6 +160,7 @@ impl AppCore {
 
     pub fn emit_topics(&self, ev: TopicsEvent) {
         let _ = self.app.emit(EVENT_TOPICS, &ev);
+        self.remote.push_topics(&ev);
     }
 
     pub fn emit_topics_created(&self, topic: &Topic) {
@@ -168,10 +175,12 @@ impl AppCore {
     }
 
     pub fn toast(&self, level: &str, message: impl Into<String>) {
+        let message = message.into();
         let _ = self.app.emit(
             EVENT_TOAST,
-            serde_json::json!({ "level": level, "message": message.into() }),
+            serde_json::json!({ "level": level, "message": message.clone() }),
         );
+        self.remote.push_toast(level, &message);
     }
 
     /// 给窗口设置标题（带当前主题名）。

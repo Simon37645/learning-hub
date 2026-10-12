@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const CONFIG_VERSION: u32 = 2;
+pub const CONFIG_VERSION: u32 = 3;
 
 /// 模型服务商协议族。差异只在「请求/响应长什么样」，其余逻辑共用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -374,6 +374,110 @@ impl Default for ViewerConfig {
     }
 }
 
+/// 远程监听在哪儿。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteBind {
+    /// 监听所有网卡：同一个 WiFi 下的手机 / 平板直接能连（默认，扫码就能用）
+    #[default]
+    Lan,
+    /// 只听本机：给「前面有反代或隧道」的用法（端口不对外暴露）
+    Local,
+}
+
+impl RemoteBind {
+    pub fn addr(self) -> &'static str {
+        match self {
+            RemoteBind::Lan => "0.0.0.0",
+            RemoteBind::Local => "127.0.0.1",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RemoteBind::Lan => "局域网",
+            RemoteBind::Local => "仅本机",
+        }
+    }
+}
+
+/// 移动端远程控制。
+///
+/// 这是一条**能从别的设备操作本机 agent** 的通道（手机上发的消息真的由这台电脑
+/// 执行：读写文件、跑工具都在本机），所以默认关闭，打开后才监听端口，且每个
+/// `/api/*` 请求都要带令牌。
+///
+/// 三种可达性各管一段，互不依赖：
+/// - 同一个 WiFi：直接连 `http://<局域网 IP>:<port>`
+/// - 自己有公网服务器：填 `relay`，应用主动连出去建隧道（不用在路由器上做端口映射）
+/// - 前面已有反代 / 隧道（nginx、cloudflared、frp）：填 `public_url`，
+///   二维码与「复制链接」就用那个域名（端口仍听本机）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub bind: RemoteBind,
+    /// 访问令牌，拼在链接里（`?t=`）。空串时首次启动自动生成
+    #[serde(default)]
+    pub token: String,
+    /// 对外地址，例如 `https://hub.example.com` 或 `http://1.2.3.4:8787`。
+    /// 填了它，二维码与「复制链接」用它——隧道/反代对外是什么地址只有用户知道
+    #[serde(default)]
+    pub public_url: String,
+    /// 中继服务器地址（`host:port`）。填了就主动连出去建隧道，
+    /// 让手机从公网访问这台机器，而不需要在路由器上做端口映射
+    #[serde(default)]
+    pub relay: String,
+    /// 中继口令（要和服务器上 relay.mjs 的 `--token` 一致）。
+    /// 刻意与访问令牌分开：访问令牌会出现在 URL 与浏览器历史里，
+    /// 拿它当隧道口令等于把「连进隧道」的资格也一起给了出去
+    #[serde(default)]
+    pub relay_token: String,
+}
+
+fn default_remote_port() -> u16 {
+    8787
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_remote_port(),
+            bind: RemoteBind::default(),
+            token: String::new(),
+            public_url: String::new(),
+            relay: String::new(),
+            relay_token: String::new(),
+        }
+    }
+}
+
+impl RemoteConfig {
+    /// 新令牌：32 位十六进制（uuid v4 去掉横线）。够长、好复制、不用引 base64 依赖。
+    pub fn fresh_token() -> String {
+        uuid::Uuid::new_v4().simple().to_string()
+    }
+
+    /// 缺令牌就补上（首次打开、或用户手动清空后）。
+    pub fn ensure_tokens(&mut self) -> bool {
+        let mut changed = false;
+        if self.token.trim().is_empty() {
+            self.token = Self::fresh_token();
+            changed = true;
+        }
+        if self.relay_token.trim().is_empty() {
+            self.relay_token = Self::fresh_token();
+            changed = true;
+        }
+        changed
+    }
+}
+
 /// 主题模式。默认跟随系统，但用户可以强制明亮——
 /// 系统的深色模式有时候并不适合阅读长文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -431,6 +535,8 @@ pub struct AppConfig {
     pub viewer: ViewerConfig,
     #[serde(default)]
     pub appearance: AppearanceConfig,
+    #[serde(default)]
+    pub remote: RemoteConfig,
     /// 上次打开的主题（下次启动直接回到那里）
     #[serde(default)]
     pub last_topic: Option<String>,
@@ -465,6 +571,7 @@ impl AppConfig {
             agent: AgentConfig::default(),
             viewer: ViewerConfig::default(),
             appearance: AppearanceConfig::default(),
+            remote: RemoteConfig::default(),
             last_topic: None,
             recent_profiles: Vec::new(),
         }
@@ -473,12 +580,19 @@ impl AppConfig {
     pub fn load(path: &Path, default_workspace: PathBuf) -> AppResult<Self> {
         match store::read_json_opt::<AppConfig>(path)? {
             Some(mut cfg) => {
-                cfg.migrate();
+                let migrated = cfg.migrate();
                 if cfg.profiles.is_empty() {
                     cfg.profiles = Self::bootstrap(default_workspace.clone()).profiles;
                 }
                 if cfg.active_profile_id.is_empty() {
                     cfg.active_profile_id = cfg.profiles[0].id.clone();
+                }
+                // 迁移里补出来的东西**要落盘**：最要紧的是远程控制的令牌——
+                // 它只活在内存里的话，每次重启都换一套，用户刚扫的二维码就失效了。
+                if migrated {
+                    if let Err(e) = store::write_json(path, &cfg) {
+                        eprintln!("[配置] 迁移后写盘失败（不影响本次运行）：{e}");
+                    }
                 }
                 Ok(cfg)
             }
@@ -495,13 +609,18 @@ impl AppConfig {
     }
 
     /// 旧版本配置补齐字段。每次加字段都可以在这里写迁移。
-    fn migrate(&mut self) {
+    /// 返回「有没有改过」——调用方据此决定要不要写回磁盘。
+    fn migrate(&mut self) -> bool {
+        let before = (self.version, self.user_name.clone(), self.remote.token.clone());
         if self.version < CONFIG_VERSION {
             self.version = CONFIG_VERSION;
         }
         if self.user_name.trim().is_empty() {
             self.user_name = default_user_name();
         }
+        // 令牌在用户手动清空 / 老配置里是空的，读配置时补上
+        self.remote.ensure_tokens();
+        (self.version, self.user_name.clone(), self.remote.token.clone()) != before
     }
 
     pub fn profile(&self, id: &str) -> Option<&ProviderProfile> {
@@ -531,6 +650,8 @@ pub struct PublicConfig {
     pub agent: AgentConfig,
     pub viewer: ViewerConfig,
     pub appearance: AppearanceConfig,
+    /// 远程控制的配置（含令牌：这是本机界面，用户要靠它拼链接与二维码）
+    pub remote: RemoteConfig,
     pub last_topic: Option<String>,
 }
 
@@ -581,6 +702,7 @@ impl From<&AppConfig> for PublicConfig {
             agent: c.agent.clone(),
             viewer: c.viewer.clone(),
             appearance: c.appearance.clone(),
+            remote: c.remote.clone(),
             last_topic: c.last_topic.clone(),
         }
     }

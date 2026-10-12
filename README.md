@@ -46,6 +46,7 @@ Markdown, and quizzes you the way a medical school exam does.
   - [16. Studio: build your own skills and MCP servers](#16-studio-build-your-own-skills-and-mcp-servers)
   - [17. Demos drawn right in the reply](#17-demos-drawn-right-in-the-reply)
   - [18. The agent can look at a page of a PDF](#18-the-agent-can-look-at-a-page-of-a-pdf)
+  - [19. Remote control from your phone](#19-remote-control-from-your-phone)
 - [Install](#install)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
@@ -388,6 +389,26 @@ only the path, so they are still there when you scroll back. They show up in the
 exactly which page the agent looked at — and click to open them large. Each protocol encodes them its
 own way (Anthropic allows images inside `tool_result`; OpenAI's `tool` messages only take strings, so a
 short follow-up message carries the image).
+### 19. Remote control from your phone
+
+Open a URL on your phone and you are driving the agent on this computer: browse topics and chats,
+send messages (including a photo straight from the camera), approve tool calls, stop the current turn.
+It is **not screen sharing** — the message you type on the phone really runs on your machine;
+tools, file writes and note edits all happen locally. The phone is just a better remote.
+
+- **Same Wi-Fi**: sidebar → "Remote control" → turn it on → scan the QR code (the link carries an access token).
+- **Away from home**: fill in the relay address. [`server/relay.mjs`](server/relay.mjs) runs on
+  your own VPS (a few dozen lines, zero dependencies) and the app dials out to it, so your home
+  router needs no port forwarding. Already have nginx / cloudflared / frp? Just fill in "public address".
+- Portrait gives you chat plus a drawer; landscape and iPad switch to a topics column beside the chat.
+  "Add to home screen" opens it full screen like a small app.
+- Replies look the same as on the desktop: Markdown, tables, thinking, tool cards, demo cards —
+  and **Mermaid diagrams are rendered by the desktop** and shipped over as SVG (the phone does not
+  carry a second copy of the renderer, so the diagram and its colours match the desktop exactly).
+- Off by default. Two separate tokens (access + relay), both rotatable. Remote **cannot change
+  settings** — it can read, send and approve, but not toggle skills, delete topics or write arbitrary files.
+
+Full walkthrough (systemd unit for the relay, troubleshooting table) in [docs/REMOTE.md](docs/REMOTE.md).
 
 ---
 

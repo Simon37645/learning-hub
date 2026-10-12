@@ -21,6 +21,7 @@ pub mod kb;
 pub mod mcp;
 pub mod net;
 pub mod paths;
+pub mod remote;
 pub mod skills;
 pub mod state;
 pub mod store;
@@ -107,6 +108,15 @@ pub fn run() {
                 }
             }
 
+            // 上次开着远程控制的话，这次开机接着开——用户既然开了就是想让它在。
+            // 起不来（端口被占等）不该挡住启动，只记一句日志，面板上也能看到原因。
+            if core.config_read().remote.enabled {
+                let core_bg = core.clone();
+                if let Err(e) = core_bg.remote.start(core_bg.clone()) {
+                    eprintln!("[启动] 远程控制没起来：{e}");
+                }
+            }
+
             app.manage(AppState(core));
             Ok(())
         })
@@ -151,6 +161,12 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             commands::app::reveal_in_explorer,
             commands::app::open_with_system,
             commands::app::config_summary,
+            // --- 移动端远程控制 ---
+            commands::remote::remote_status,
+            commands::remote::remote_set_enabled,
+            commands::remote::remote_config_patch,
+            commands::remote::remote_token_reset,
+            commands::remote::remote_report_render,
             // --- 一键更新 ---
             commands::updater::update_check,
             commands::updater::update_download,

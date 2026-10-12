@@ -12,6 +12,7 @@ pub mod file;
 pub mod lesson;
 pub mod memory;
 pub mod quiz;
+pub mod remote;
 pub mod studio;
 pub mod study;
 pub mod theme;

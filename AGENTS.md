@@ -13,11 +13,13 @@ npm run build                                          # 前端构建
 npm run rust:check                                     # 后端类型检查
 npm run rust:test                                      # 后端单测（79 个）
 npm run test:ui                                        # 前端单测（vitest：InkNote 回归网 + 应用自己的纯逻辑）
-npm run dist                                           # 打包（tauri build + scripts/package.mjs）
+npm run dist                                           # 打包（tauri build + 安装包 + 绿色版 zip）
+npm run portable                                       # 只出绿色版 zip（要先 build 过）
 npm run shortcut                                       # 把打包版同步到 release/app 并在桌面建快捷方式（应用开着时会跳过同步并提示）
 npm run demo:seed && npm run demo:pdf                  # 造演示数据（workspace/）
 npm run dev:fake-llm                                   # 本地假模型（无需 API Key 验证对话链路）
 npm run test:e2e                                       # 端到端冒烟（需要应用带调试端口启动）
+npm run test:remote                                    # 远程控制的端到端（假模型自起自收 + 真浏览器量布局）
 ```
 
 跑完改动后至少执行：`npm run typecheck` + `npm run rust:check`。改到 `domain/` 或 `viewer/` 时必须跑 `npm run rust:test`；
@@ -31,6 +33,9 @@ npm run test:e2e                                       # 端到端冒烟（需�
 # 带调试端口启动
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
 npm run app:dev
+# 注意：机器上**已经开着**一份学习中枢时，dev 实例会因 WebView2 用户数据目录被占用而
+# 起不来（HRESULT 0x8007139F）。给 dev 单独指一份：
+#   export WEBVIEW2_USER_DATA_FOLDER="C:/Users/<你>/AppData/Local/Temp/lh-dev-webview"
 
 node scripts/cdp.mjs metrics                      # 量布局（各区域宽高、是否居中、有没有溢出）
 node scripts/cdp.mjs eval "document.title"        # 任意 JS 求值
@@ -302,6 +307,39 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
     `main_invoke_handler` 里用两张表合并，release 构建没有这两个符号）。
     依赖只有 `webview2-com 0.39` + `windows-core 0.62`——**必须跟 wry/tauri
     依赖树里的版本一致**（0.62 不是 0.61，差一个 minor HSTRING 就是两个类型）。
+- **远程控制是「手写的迷你 HTTP + SSE」，别顺手换成框架**：`remote/http.rs` 只实现
+  需要的那一小块（定长正文、定长响应、SSE 分块），每个上限都有单测兜着。
+  几个连带约定：**静态页面不需要令牌、`/api/*` 一律要**（分界就在 `api::route` 开头）；
+  手机端页面用 `include_str!` 编进二进制，改完必须重新编译（不是热更新）；
+  事件扇出只在 `state.rs` 的 `emit_agent` / `emit_topics` / `toast` 三处，
+  **别在对话循环里塞远程逻辑**（`receiver_count() == 0` 时连克隆都省了）。
+- **远程的能力边界要守住**：只能读主题/对话、发消息、审批、取消、读工作区内的文件。
+  别为了「方便」把 config_patch / 文件写 / 删主题开给远程——那是一台陌生浏览器
+  （可能只是别人借你手机）能做的事，而设置页是坐在电脑前才该动的。
+  同理：附件路径必须走 `paths::resolve_in_root`，令牌比较必须是常量时间的
+  （`http::token_matches`），新增接口记得在 `route` 里放在鉴权之后。
+- **`TcpListener::from_std` 必须在 tokio 运行时里调**：在 `setup()` / 命令线程里直接调
+  会 panic（`there is no reactor running`），而且是在**启动路径**上——整个应用起不来，
+  报错看着像 Tauri 的锅。现在的写法：同步 `std::net::TcpListener::bind`（这样「端口被占用」
+  能立刻回报给面板）→ 把监听器交给 `tauri::async_runtime::spawn` 里再 `from_std`。
+- **手机页面里的 `[hidden]` 要自己兜住**：UA 的 `[hidden]{display:none}` 优先级不如
+  作者样式表里的 `.viewer{display:grid}`，于是「藏起来」的浮层照样显示（实测症状：
+  大图浮层的关闭按钮浮在顶栏上、发送/停止两个按钮同时出现）。`remote/web/app.css`
+  开头有一行 `[hidden] { display: none !important; }`，别删。
+- **给手机送 SVG 时不能删 `foreignObject`**：mermaid 的节点文字默认是 HTML，装在
+  `foreignObject` 里。净化脚本里删掉它，图会变成「一排彩色方块、没有字」。
+  只删能执行/能外联的东西（script / iframe / on* / javascript:）。
+- **反向隧道只有三句话，方向不能反**：`LH1 <token>` / `PING` / `GO`，
+  **空闲时只允许中继往客户端发**——客户端若自己发心跳，那几个字节会撞进
+  「刚配对、即将开始原始搬运」的窗口，被当成 HTTP 请求灌给本机服务。
+  池子由 `tunnel::run` 一个监管循环统一补（worker 配对成功后立刻通知它），
+  别让 worker 自己再开连接：那样每次配对都会翻倍地长。
+  等 GO 的超时是**每次读**重新计时（中继每 30 秒 PING），写成整体超时的话
+  空闲隧道每 5 分钟就集体轮换一次、日志里全是假警报（踩过）。
+- **局域网地址要枚举 + 排序，别只问默认路由**：装了 Tailscale / ZeroTier 的机器上，
+  默认路由那块网卡不是手机能到的那块，二维码里会出现 `100.64.x.x`（实测踩过）。
+  现在走 `remote::rank_addresses`：家用网段（192.168 / 10 / 172.16-31）优先，
+  VPN 用的 CGNAT 段靠后，并把多个地址都列在面板上让用户换着试。
 - **一键更新走自研三步，别换成 tauri-plugin-updater**（`updater.rs`）：官方插件要
   minisign 签名 + 固定 endpoint 的 latest.json，预发布也不在 `/releases/latest`
   别名里，跟「β 满天飞、`gh release` 手动发」对不上。要点：GitHub API **无认证
@@ -346,7 +384,15 @@ PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看—
 网页操作（`web_scan` / `web_eval` / `web_screenshot`：agent 能扫描内置浏览器里网页的结构、
   在页面里执行 JS、把网页截图给自己看——对标外部浏览器操作 MCP 的能力，
   纯 Rust 内置零依赖，走原生子 WebView 的 eval / CDP 通道，只对远端网页标签生效）、
-专注模式（F11：窗口全屏 + 收起标题栏/侧栏/内置浏览器，写笔记时整屏）。
+专注模式（F11：窗口全屏 + 收起标题栏/侧栏/内置浏览器，写笔记时整屏）、
+移动端远程控制（侧栏「远程控制」：手机/平板浏览器里操作这台电脑的 agent——
+  回复里的渲染与桌面端一致（Markdown / 表格 / 思考过程 / 工具卡片 / 演示卡片 /
+  **Mermaid 图由桌面端画好送过来**，见 docs/ARCHITECTURE.md 第 18 节）；
+  同一 WiFi 直接扫码；在外面用就填「中继服务器」（`server/relay.mjs` 跑在自己的
+  VPS 上，应用主动连出去建隧道，家里不用开端口）或填「对外地址」走现成的反代；
+  手机端能读主题/对话、发消息（含拍照贴图）、审批工具、中止当前轮，
+  竖屏抽屉 / 横屏双栏，可「添加到主屏幕」；默认关闭，令牌分访问/中继两把，
+  详见 docs/REMOTE.md）。
 
 已知待办（按价值排序）：
 

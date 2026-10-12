@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="学习中枢" />
+    <title>学习中枢 · 远程</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <!-- 页面骨架写死在 HTML 里（不是 JS 拼的）：慢网络上第一眼就能看到界面，
+         而不是先白屏一会儿再长出内容。 -->
+    <div class="app" id="app">
+      <header class="top">
+        <button class="icon-btn only-narrow" id="menu-btn" aria-label="打开列表">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" /></svg>
+        </button>
+        <div class="top-title">
+          <div class="title" id="chat-title">学习中枢</div>
+          <div class="subtitle" id="chat-sub"></div>
+        </div>
+        <span class="dot" id="dot" title="连接状态"></span>
+        <button class="icon-btn" id="theme-btn" aria-label="切换明暗">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 9.6A5.6 5.6 0 0 1 6.4 3c0-.6.1-1.2.3-1.7A5.6 5.6 0 1 0 13 9.6Z" /></svg>
+        </button>
+        <button class="icon-btn" id="new-btn" aria-label="新建对话">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" /></svg>
+        </button>
+      </header>
+
+      <div class="body">
+        <aside class="rail" id="rail">
+          <div class="rail-head">
+            <span class="rail-title">工作区</span>
+            <button class="icon-btn small" id="refresh-btn" aria-label="刷新">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V5h-2.4" /></svg>
+            </button>
+          </div>
+          <div class="rail-list" id="rail-list"></div>
+          <div class="rail-foot" id="rail-foot"></div>
+        </aside>
+
+        <main class="main">
+          <div class="messages" id="messages"></div>
+          <div class="dock" id="dock"></div>
+          <form class="composer" id="composer">
+            <div class="chips" id="chips"></div>
+            <div class="composer-row">
+              <button type="button" class="icon-btn" id="attach-btn" aria-label="贴图片">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1.6" /><path d="M2.8 10.6 6 7.6l2.4 2.2L10.8 7l2.4 2.6" /><circle cx="6" cy="6" r="0.9" /></svg>
+              </button>
+              <textarea id="text" rows="1" placeholder="说点什么…" autocomplete="off"></textarea>
+              <button type="submit" class="send-btn" id="send-btn" aria-label="发送">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5V4M4.4 7.4 8 3.6l3.6 3.8" /></svg>
+              </button>
+              <button type="button" class="stop-btn" id="stop-btn" aria-label="停止" hidden>
+                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.2" /></svg>
+              </button>
+            </div>
+            <input type="file" id="file-input" accept="image/*" multiple hidden />
+          </form>
+        </main>
+      </div>
+    </div>
+
+    <div class="backdrop" id="backdrop" hidden></div>
+    <div class="toast-wrap" id="toasts"></div>
+    <div class="viewer" id="viewer" hidden>
+      <img id="viewer-img" alt="" />
+      <button class="viewer-close" id="viewer-close" aria-label="关闭">×</button>
+    </div>
+    <!-- 演示卡片放大：横屏 / iPad 上按一屏看演示页 -->
+    <div class="viewer" id="demo-view" hidden>
+      <iframe id="demo-frame" class="demo-frame big" sandbox="" title="演示"></iframe>
+      <button class="viewer-close" id="demo-close" aria-label="关闭">×</button>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

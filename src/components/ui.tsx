@@ -76,6 +76,7 @@ export type IconName =
   | "hammer"
   | "expand"
   | "collapse"
+  | "phone"
   | "box";
 
 const PATHS: Record<IconName, ReactNode> = {
@@ -270,6 +271,13 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   // 归档：一个带盖的收纳盒
+  // 手机：远程控制的入口图标
+  phone: (
+    <>
+      <rect x="4.6" y="2.2" width="6.8" height="11.6" rx="1.6" />
+      <path d="M7.2 11.6h1.6" />
+    </>
+  ),
   box: (
     <>
       <rect x="2.2" y="2.6" width="11.6" height="3.2" rx="1" />

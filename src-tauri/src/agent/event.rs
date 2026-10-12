@@ -200,6 +200,19 @@ pub const EVENT_MEMORY: &str = "hub://memory";
 /// `remote_report_render` 把 SVG 交回去。
 pub const EVENT_REMOTE: &str = "hub://remote";
 
+/// 一键装中继的实时输出（面板上那几行「正在下载 Node…」）。
+/// 单独开一个频道而不是塞进 `hub://remote`：渲染请求是请求-响应，
+/// 这个是单向进度流，混在一起两边都要多写一层判断。
+pub const EVENT_REMOTE_DEPLOY: &str = "hub://remote-deploy";
+
+/// 一行安装进度。`stage`：running / done / failed。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDeployEvent {
+    pub stage: String,
+    pub line: String,
+}
+
 /// 一次「帮我画一张图」的请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

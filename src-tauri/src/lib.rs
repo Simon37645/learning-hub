@@ -167,6 +167,8 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             commands::remote::remote_config_patch,
             commands::remote::remote_token_reset,
             commands::remote::remote_report_render,
+            commands::remote::remote_deploy_relay,
+            commands::remote::remote_forget_host_key,
             // --- 一键更新 ---
             commands::updater::update_check,
             commands::updater::update_download,

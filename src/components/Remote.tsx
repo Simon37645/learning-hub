@@ -9,9 +9,10 @@
 // 不该让它在别的地方过一道；画成 data URL 的 <img>，不用 dangerouslySetInnerHTML。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import qrcode from "qrcode-generator";
 import { api, errText } from "../lib/api";
-import type { RemoteStatus } from "../lib/types";
+import type { RemoteDeployEvent, RemoteStatus } from "../lib/types";
 import { useApp } from "../store/app";
 import { Field, Icon, Modal, Segmented, Spinner, Switch } from "./ui";
 
@@ -40,6 +41,11 @@ export function RemoteDialog({ onClose }: { onClose: () => void }) {
   const [publicUrl, setPublicUrl] = useState("");
   const [relay, setRelay] = useState("");
   const [showSetup, setShowSetup] = useState(false);
+  // 一键安装：服务器地址 / SSH 端口 / 用户名 / 密码（密码只在这次用，不落盘）
+  const [ssh, setSsh] = useState({ host: "", port: "22", user: "root", password: "" });
+  const [deploying, setDeploying] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const logBox = useRef<HTMLDivElement>(null);
   const timer = useRef<number | null>(null);
 
   const apply = useCallback((st: RemoteStatus) => {
@@ -47,6 +53,24 @@ export function RemoteDialog({ onClose }: { onClose: () => void }) {
     setPort(String(st.port));
     setPublicUrl(st.publicUrl ?? "");
     setRelay(st.relay);
+    // 服务器地址/用户名回填（安装过一次就不用再敲）
+    setSsh((prev) => ({
+      host: prev.host || (st.relay ? st.relay.split(":")[0] : ""),
+      port: String(st.sshPort || 22),
+      user: prev.user === "root" && st.sshUser ? st.sshUser : prev.user || "root",
+      password: "",
+    }));
+  }, []);
+
+  // 安装过程逐行推过来（一次可能几十秒，不能干等）
+  useEffect(() => {
+    const un = listen<RemoteDeployEvent>("hub://remote-deploy", (e) => {
+      setLog((prev) => [...prev.slice(-400), e.payload.line]);
+      const box = logBox.current;
+      if (box) requestAnimationFrame(() => (box.scrollTop = box.scrollHeight));
+      if (e.payload.stage === "done" || e.payload.stage === "failed") setDeploying(false);
+    });
+    return () => void un.then((f) => f());
   }, []);
 
   const refresh = useCallback(async () => {
@@ -248,7 +272,7 @@ export function RemoteDialog({ onClose }: { onClose: () => void }) {
             />
           </Field>
 
-          <Field label="端口" hint="1024 以上；被占用时换一个（比如 8788）">
+          <Field label="端口" hint="1024 以上；被占用时换一个（比如 54714）">
             <input
               className="input mono"
               value={port}
@@ -276,9 +300,116 @@ export function RemoteDialog({ onClose }: { onClose: () => void }) {
             />
           </Field>
 
+          <div className="deploy-box">
+            <div className="remote-card-head">
+              <Icon name="download" size={13} />
+              <span className="grow">一键装到我的服务器</span>
+              {deploying && <Spinner />}
+            </div>
+            <p className="remote-note">
+              填服务器的 IP、用户名和密码，应用自己 SSH 上去把中继装好、起成常驻服务，
+              再把地址填好接上隧道——不用你登服务器敲命令。<b>不需要反代</b>：中继自己听一个端口。
+            </p>
+            <div className="deploy-grid">
+              <input
+                className="input mono"
+                placeholder="服务器 IP 或域名"
+                value={ssh.host}
+                onChange={(e) => setSsh({ ...ssh, host: e.target.value })}
+              />
+              <input
+                className="input mono"
+                placeholder="22"
+                inputMode="numeric"
+                value={ssh.port}
+                onChange={(e) => setSsh({ ...ssh, port: e.target.value.replace(/[^\d]/g, "") })}
+              />
+            </div>
+            <div className="deploy-grid">
+              <input
+                className="input mono"
+                placeholder="用户名（root 或带 sudo 的账号）"
+                value={ssh.user}
+                onChange={(e) => setSsh({ ...ssh, user: e.target.value })}
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="SSH 密码"
+                value={ssh.password}
+                onChange={(e) => setSsh({ ...ssh, password: e.target.value })}
+              />
+            </div>
+            <div className="row" style={{ gap: 6 }}>
+              <button
+                className="btn primary"
+                disabled={deploying || !ssh.host.trim() || !ssh.user.trim() || !ssh.password}
+                onClick={async () => {
+                  setLog([]);
+                  setDeploying(true);
+                  setLog([`连接 ${ssh.host}（${ssh.user}）…`]);
+                  try {
+                    const r = await api.remoteDeployRelay(
+                      ssh.host.trim(),
+                      ssh.user.trim(),
+                      ssh.password,
+                      Number(ssh.port) || 22,
+                    );
+                    setSsh((prev) => ({ ...prev, password: "" }));
+                    if (r.ok) {
+                      toast("success", `中继已装好（${r.node} · ${r.service}）`);
+                      await refresh();
+                    } else {
+                      toast("error", r.error ?? "安装失败");
+                    }
+                  } catch (e) {
+                    toast("error", errText(e));
+                  } finally {
+                    setDeploying(false);
+                  }
+                }}
+              >
+                <Icon name="download" size={13} /> {deploying ? "正在安装…" : "安装并连接"}
+              </button>
+              {status?.hostKey && (
+                <button
+                  className="btn"
+                  title="换机器 / 重装了系统之后，指纹会变——确认无误后点这里重新信任"
+                  onClick={async () => {
+                    if (!window.confirm("忘掉记住的服务器指纹？下次连接会重新信任对方。")) return;
+                    await api.remoteForgetHostKey().catch(() => {});
+                    toast("success", "已忘掉旧指纹");
+                    await refresh();
+                  }}
+                >
+                  重新信任服务器
+                </button>
+              )}
+            </div>
+            {log.length > 0 && (
+              <div className="deploy-log" ref={logBox}>
+                {log.map((line, i) => {
+                  // 脚本里那几行 LH_* 是给程序看的标记，转成人话再显示；
+                  // 成功标记本身不用露脸（成功另有提示）
+                  if (line.startsWith("LH_DEPLOY_DONE")) return null;
+                  if (line.startsWith("LH_ERROR=")) {
+                    return (
+                      <div key={i} className="err">
+                        ✗ {line.slice("LH_ERROR=".length)}
+                      </div>
+                    );
+                  }
+                  if (line.startsWith("LH_NODE=")) return <div key={i}>Node：{line.slice(8)}</div>;
+                  if (line.startsWith("LH_SERVICE=")) return <div key={i}>服务：{line.slice(11)}</div>;
+                  return <div key={i}>{line}</div>;
+                })}
+              </div>
+            )}
+          </div>
+
           <Field
             label="中继服务器"
-            hint="自己有公网服务器时填 host:port：应用主动连出去建隧道，家里不用开端口"
+            hint="自己填也行：应用主动连出去建隧道，家里不用开端口"
           >
             <input
               className="input mono"
@@ -321,7 +452,7 @@ export function RemoteDialog({ onClose }: { onClose: () => void }) {
           </div>
 
           <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setShowSetup((v) => !v)}>
-            <Icon name={showSetup ? "collapse" : "expand"} size={13} /> 在自己服务器上架中继
+            <Icon name={showSetup ? "collapse" : "expand"} size={13} /> 手动装（不想给密码的话）
           </button>
 
           {showSetup && (

@@ -35,6 +35,7 @@ import type {
   CardKind,
   ReasoningEffort,
   ReasoningStyle,
+  DeployReport,
   RemoteStatus,
   SkillDirs,
   SkillsOverview,
@@ -402,6 +403,11 @@ export const api = {
     invoke<RemoteStatus>("remote_config_patch", patch),
   remoteTokenReset: (which?: "access" | "relay") =>
     invoke<RemoteStatus>("remote_token_reset", { which: which ?? null }),
+  /** 一键把中继装到用户自己的服务器上（IP + 用户名 + 密码 → 开箱即用） */
+  remoteDeployRelay: (host: string, user: string, password: string, sshPort?: number) =>
+    invoke<DeployReport>("remote_deploy_relay", { host, user, password, sshPort: sshPort ?? null }),
+  /** 忘掉记住的服务器公钥指纹（换机器 / 重装系统时用） */
+  remoteForgetHostKey: () => invoke<void>("remote_forget_host_key"),
   /** 替手机页面渲染完一张图之后回话（失败也要回，否则手机那边要等超时） */
   remoteReportRender: (id: string, ok: boolean, payload: string) =>
     invoke<boolean>("remote_report_render", { id, ok, payload }),

@@ -397,9 +397,11 @@ It is **not screen sharing** — the message you type on the phone really runs o
 tools, file writes and note edits all happen locally. The phone is just a better remote.
 
 - **Same Wi-Fi**: sidebar → "Remote control" → turn it on → scan the QR code (the link carries an access token).
-- **Away from home**: fill in the relay address. [`server/relay.mjs`](server/relay.mjs) runs on
-  your own VPS (a few dozen lines, zero dependencies) and the app dials out to it, so your home
-  router needs no port forwarding. Already have nginx / cloudflared / frp? Just fill in "public address".
+- **Away from home**: type your server's IP, SSH user and password, then hit "install and connect" —
+  the app SSHes in, installs the relay (a few dozen lines, zero dependencies), runs it as a service
+  and connects the tunnel itself. Default port 54713, **no reverse proxy needed**; the home router
+  needs no port forwarding. Prefer not to hand over a password? Install it by hand (docs/REMOTE.md),
+  or point "public address" at an existing nginx / cloudflared / frp setup.
 - Portrait gives you chat plus a drawer; landscape and iPad switch to a topics column beside the chat.
   "Add to home screen" opens it full screen like a small app.
 - Replies look the same as on the desktop: Markdown, tables, thinking, tool cards, demo cards —

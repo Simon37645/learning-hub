@@ -5,7 +5,7 @@
 // 做一根管子——电脑主动连出来（所以家里不用开任何端口），手机连到公网 IP，
 // 中继把两边接上。
 //
-//   node relay.mjs --token <口令> [--port 8787] [--bind 0.0.0.0] [--pool 32]
+//   node relay.mjs --token <口令> [--port 54713] [--bind 0.0.0.0] [--pool 32]
 //
 // 协议（三句话，别加东西）：
 //   电脑 → 中继：`LH1 <口令>\n`   握手，只此一句
@@ -36,10 +36,11 @@ const { values } = parseArgs({
 
 const TOKEN = (values.token || process.env.LH_RELAY_TOKEN || "").trim();
 if (!TOKEN) {
-  console.error("缺少隧道口令。用法：node relay.mjs --token <口令> [--port 8787]");
+  console.error("缺少隧道口令。用法：node relay.mjs --token <口令> [--port 54713]");
   process.exit(1);
 }
-const PORT = Number(values.port || process.env.LH_RELAY_PORT || 8787);
+// 默认端口刻意不常见：8787 是 RStudio Server 的，5000/8000/8080 满地都是
+const PORT = Number(values.port || process.env.LH_RELAY_PORT || 54713);
 const BIND = values.bind || process.env.LH_RELAY_BIND || "0.0.0.0";
 const MAX_POOL = Number(values.pool || 32);
 const QUIET = !!values.quiet;

@@ -462,6 +462,31 @@ export interface RemoteConfig {
   relay: string;
   /** 中继口令（要和服务器上 relay.mjs 的 --token 一致） */
   relayToken: string;
+  /** SSH 端口 / 用户名：一键安装要重装时预填（**密码不存**） */
+  sshPort: number;
+  sshUser: string;
+  /** 服务器公钥指纹（首次连接记住，变了就拒绝） */
+  hostKey: string;
+}
+
+/** 一键装中继的结果（`remote_deploy_relay`）。 */
+export interface DeployReport {
+  ok: boolean;
+  /** 服务器上的输出，逐行 */
+  log: string[];
+  /** Node 从哪来：已有 / apt / 下载 */
+  node: string;
+  /** systemd 还是后台进程 */
+  service: string;
+  port: number;
+  hostKey: string;
+  error: string | null;
+}
+
+/** 一行安装进度（`hub://remote-deploy` 事件）。 */
+export interface RemoteDeployEvent {
+  stage: "running" | "done" | "failed";
+  line: string;
 }
 
 /** 面板上的一行地址（label 由后端给，别在前端靠字符串猜是哪种）。 */
@@ -484,6 +509,9 @@ export interface RemoteStatus {
   token: string;
   relay: string;
   relayToken: string;
+  sshPort: number;
+  sshUser: string;
+  hostKey: string;
   /** 对外地址 + 令牌；没配对外地址时是 null */
   publicUrl: string | null;
   /** 局域网地址可能不止一块网卡（有线/无线/VPN），按「手机最可能连得上」排序 */

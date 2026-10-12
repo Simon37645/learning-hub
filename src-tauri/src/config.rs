@@ -437,11 +437,33 @@ pub struct RemoteConfig {
     /// 拿它当隧道口令等于把「连进隧道」的资格也一起给了出去
     #[serde(default)]
     pub relay_token: String,
+    /// 中继服务器的 SSH 端口 / 用户名（**只记这两个，不记密码**）。
+    /// 一键安装要重装时不用再敲一遍；密码只在点安装那一次用，不落盘。
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+    #[serde(default)]
+    pub ssh_user: String,
+    /// 服务器公钥指纹（首次连接记住，之后变了就拒绝——见 remote::deploy 的 TOFU 说明）
+    #[serde(default)]
+    pub host_key: String,
 }
 
-fn default_remote_port() -> u16 {
-    8787
+fn default_ssh_port() -> u16 {
+    22
 }
+
+/// 默认端口：**刻意选一个不常见的**。
+///
+/// 8787 是 RStudio Server 的默认端口（用户点名提过），5000/8000/8080/3000 这类
+/// 更是满地都是。这个号段在 IANA 的私有/动态范围（49152-65535）里，
+/// 没有注册服务占用，也不会跟常见的开发服务器撞上。
+fn default_remote_port() -> u16 {
+    54713
+}
+
+/// 旧默认端口（0.5.0-beta.1 用过）。用户没改过的话迁移到新默认值——
+/// 那个端口会和本机的 RStudio Server 撞车。
+pub const LEGACY_REMOTE_PORT: u16 = 8787;
 
 impl Default for RemoteConfig {
     fn default() -> Self {
@@ -453,8 +475,35 @@ impl Default for RemoteConfig {
             public_url: String::new(),
             relay: String::new(),
             relay_token: String::new(),
+            ssh_port: default_ssh_port(),
+            ssh_user: String::new(),
+            host_key: String::new(),
         }
     }
+}
+
+/// 中继地址（`host:port`）→ 公网入口地址（`http://host:port`）。
+///
+/// 手机要访问的就是中继那个端口：它既是隧道的入口，也是网页的入口
+/// （中继按首行区分「电脑的握手」与「来访的浏览器」）。所以用户装好中继之后，
+/// 二维码可以直接用它，不必再填「对外地址」——那一步是留给有反代的人的。
+pub fn relay_base(relay: &str) -> Option<String> {
+    let t = relay.trim();
+    if t.is_empty() {
+        return None;
+    }
+    // 允许用户填 host / host:port / 带协议的地址
+    if t.starts_with("http://") || t.starts_with("https://") {
+        return Some(t.trim_end_matches('/').to_string());
+    }
+    let (host, port) = match t.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
+        _ => (t, None),
+    };
+    Some(match port {
+        Some(p) => format!("http://{host}:{p}"),
+        None => format!("http://{host}:{}", default_remote_port()),
+    })
 }
 
 impl RemoteConfig {
@@ -620,6 +669,10 @@ impl AppConfig {
         }
         // 令牌在用户手动清空 / 老配置里是空的，读配置时补上
         self.remote.ensure_tokens();
+        // 8787 是 RStudio Server 的端口，用户没改过的话换掉（改过的保持不动）
+        if self.remote.port == LEGACY_REMOTE_PORT {
+            self.remote.port = default_remote_port();
+        }
         (self.version, self.user_name.clone(), self.remote.token.clone()) != before
     }
 

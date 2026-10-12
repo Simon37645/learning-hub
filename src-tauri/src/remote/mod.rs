@@ -27,6 +27,7 @@
 //! - 附件只能读**工作区内**的路径（`paths::resolve_in_root`），`../` 一律拒绝。
 
 pub mod api;
+pub mod deploy;
 pub mod http;
 pub mod render;
 pub mod tunnel;
@@ -270,11 +271,19 @@ impl RemoteService {
         // 局域网地址可能不止一个（有线 + 无线 + VPN），全列出来——
         // 排第一的那个不一定是手机能到的那块网卡，用户要能换一个试。
         let mut urls: Vec<RemoteUrl> = Vec::new();
-        if let Some(base) = normalize_base(&cfg.public_url) {
+        // 公网入口优先用「对外地址」（有反代的填它），没填就用中继地址——
+        // 中继那个端口既是隧道入口也是网页入口，所以装好中继之后二维码直接能扫，
+        // 用户不必再理解「对外地址」是什么。
+        let public_base = normalize_base(&cfg.public_url).or_else(|| crate::config::relay_base(&cfg.relay));
+        if let Some(base) = public_base {
             urls.push(RemoteUrl {
                 url: link(&base, &token),
                 kind: "public".into(),
-                label: "对外".into(),
+                label: if normalize_base(&cfg.public_url).is_some() {
+                    "对外".into()
+                } else {
+                    "公网中继".into()
+                },
             });
         }
         if cfg.bind == crate::config::RemoteBind::Lan {
@@ -306,6 +315,9 @@ impl RemoteService {
             token,
             relay: cfg.relay.clone(),
             relay_token: cfg.relay_token.clone(),
+            ssh_port: cfg.ssh_port,
+            ssh_user: cfg.ssh_user.clone(),
+            host_key: cfg.host_key.clone(),
             public_url: normalize_base(&cfg.public_url).map(|b| link(&b, &cfg.token)),
             lan_urls: urls.iter().filter(|u| u.kind == "lan").map(|u| u.url.clone()).collect(),
             local_url: urls.iter().find(|u| u.kind == "local").map(|u| u.url.clone()).unwrap_or_default(),
@@ -344,6 +356,10 @@ pub struct RemoteStatus {
     pub token: String,
     pub relay: String,
     pub relay_token: String,
+    /// SSH 端口 / 用户名（一键安装要重装时预填；密码不存）
+    pub ssh_port: u16,
+    pub ssh_user: String,
+    pub host_key: String,
     pub public_url: Option<String>,
     pub lan_urls: Vec<String>,
     pub local_url: String,

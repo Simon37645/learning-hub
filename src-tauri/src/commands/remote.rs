@@ -6,7 +6,7 @@
 use crate::error::{AppError, AppResult};
 use crate::remote::RemoteStatus;
 use crate::state::AppState;
-use tauri::State;
+use tauri::{Emitter, State};
 
 /// 现在能不能用、地址是什么、连着几台设备。
 #[tauri::command]
@@ -77,6 +77,112 @@ pub async fn remote_config_patch(
         core.remote.restart(core2)?;
     }
     Ok(core.remote.status(&core))
+}
+
+/// 一键把中继装到用户自己的服务器上（IP + 用户名 + 密码 → 开箱即用）。
+///
+/// 做四件事：SSH 连上去把中继装好并起常驻服务 → 把「中继服务器」填进配置 →
+/// 重开隧道 → 返回全过程日志（面板上逐行显示）。
+///
+/// **密码只用这一次，不写进配置**：日常使用靠的是中继口令（已经在配置里），
+/// 重新安装才需要再输一次密码。把 root 密码落盘换来的那点方便不值。
+#[tauri::command]
+pub async fn remote_deploy_relay(
+    state: State<'_, AppState>,
+    host: String,
+    ssh_port: Option<u16>,
+    user: String,
+    password: String,
+) -> AppResult<crate::remote::deploy::DeployReport> {
+    let core = state.0.clone();
+    let cfg = core.config_read().remote;
+    let port = cfg.port;
+    let token = cfg.relay_token.clone();
+    if token.trim().is_empty() {
+        return Err(AppError::invalid("还没有中继口令，先点一下「换」生成一个"));
+    }
+    let target = crate::remote::deploy::SshTarget {
+        host: host.trim().to_string(),
+        port: ssh_port.unwrap_or(22),
+        user: user.trim().to_string(),
+        password,
+    };
+
+    // 进度实时推给面板（一次安装可能几十秒，中间不能干等）
+    let app = core.app.clone();
+    let progress = move |line: &str| {
+        let _ = app.emit(
+            crate::agent::event::EVENT_REMOTE_DEPLOY,
+            crate::agent::event::RemoteDeployEvent {
+                stage: "running".into(),
+                line: line.to_string(),
+            },
+        );
+    };
+
+    let expected = core.config_read().remote.host_key;
+    let report = crate::remote::deploy::deploy(
+        &target,
+        port,
+        &token,
+        if expected.trim().is_empty() { None } else { Some(expected.as_str()) },
+        progress,
+    )
+    .await;
+
+    // 连都没连上（密码错、端口不通）：把这句话也推进面板，别让用户盯着空白
+    let report = match report {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = core.app.emit(
+                crate::agent::event::EVENT_REMOTE_DEPLOY,
+                crate::agent::event::RemoteDeployEvent { stage: "failed".into(), line: msg.clone() },
+            );
+            return Err(e);
+        }
+    };
+
+    // 记下服务器信息（不含密码）与公钥指纹，下次预填、也做 TOFU 校验
+    let core2 = core.clone();
+    let relay = format!("{}:{}", target.host, port);
+    let host_key = report.host_key.clone();
+    let ssh_user = target.user.clone();
+    let ssh_port = target.port;
+    core.update_config(|c| {
+        c.remote.ssh_user = ssh_user.clone();
+        c.remote.ssh_port = ssh_port;
+        c.remote.host_key = host_key.clone();
+        if report.ok {
+            c.remote.relay = relay.clone();
+            c.remote.relay_token = token.clone();
+            c.remote.enabled = true;
+        }
+    })?;
+    if report.ok && core.config_read().remote.enabled {
+        // 配置变了 + 隧道要连新地址：重启一次（幂等，失败也只在面板上报错）
+        core.remote.restart(core2)?;
+    }
+
+    let _ = core.app.emit(
+        crate::agent::event::EVENT_REMOTE_DEPLOY,
+        crate::agent::event::RemoteDeployEvent {
+            stage: if report.ok { "done".into() } else { "failed".into() },
+            line: if report.ok {
+                "安装完成，隧道已接上".into()
+            } else {
+                report.error.clone().unwrap_or_else(|| "安装失败".into())
+            },
+        },
+    );
+    Ok(report)
+}
+
+/// 忘掉记住的服务器公钥指纹（换了机器 / 重装了系统时用）。
+#[tauri::command]
+pub async fn remote_forget_host_key(state: State<'_, AppState>) -> AppResult<()> {
+    state.0.update_config(|c| c.remote.host_key.clear())?;
+    Ok(())
 }
 
 /// 桌面端渲染完一张图之后回话（`hub://remote` 事件的对应动作）。

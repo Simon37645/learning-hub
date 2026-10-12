@@ -329,9 +329,20 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **给手机送 SVG 时不能删 `foreignObject`**：mermaid 的节点文字默认是 HTML，装在
   `foreignObject` 里。净化脚本里删掉它，图会变成「一排彩色方块、没有字」。
   只删能执行/能外联的东西（script / iframe / on* / javascript:）。
+- **一键装中继的脚本要当「用户输入」对待**：`remote/deploy.rs` 的 `build_script` 把端口、
+  口令、SSH 密码拼进一段 shell 脚本。密码走 `sh_quote`（有单测，`'; rm -rf /` 这种也要对），
+  脚本本身走 SSH 的 **stdin**（`bash -s`）——走命令行的话服务器上 `ps` 就能看见密码。
+  脚本里**不许出现 nginx / ufw / iptables 的写操作**（默认不反代、不动防火墙），
+  这条也有单测盯着。
+- **SSH 客户端用 russh，别换成调系统 ssh**：Windows 上没有 sshpass，密码登录只能交互输入。
+  russh 关掉默认特性用 `ring`（默认的 aws-lc-rs 在 Windows 上要 cmake + NASM）。
+  几个 API 坑：`check_server_key` 收的是 `russh::keys::PublicKeyOrCertificate`（`cert` 模块是私有的，
+  公开路径在 `keys` 下）；`Channel` 不直接实现 `AsyncWrite`，发脚本用 `data_bytes`；
+  handler 会被 move 进 `connect`，要在连接后读指纹就把 `seen` 做成 `Arc<Mutex<..>>`。
 - **反向隧道只有三句话，方向不能反**：`LH1 <token>` / `PING` / `GO`，
   **空闲时只允许中继往客户端发**——客户端若自己发心跳，那几个字节会撞进
   「刚配对、即将开始原始搬运」的窗口，被当成 HTTP 请求灌给本机服务。
+  默认端口是 **54713**（8787 是 RStudio 的，用户点名提过），旧配置里的 8787 会在迁移时换掉。
   池子由 `tunnel::run` 一个监管循环统一补（worker 配对成功后立刻通知它），
   别让 worker 自己再开连接：那样每次配对都会翻倍地长。
   等 GO 的超时是**每次读**重新计时（中继每 30 秒 PING），写成整体超时的话
@@ -386,6 +397,8 @@ PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看—
   纯 Rust 内置零依赖，走原生子 WebView 的 eval / CDP 通道，只对远端网页标签生效）、
 专注模式（F11：窗口全屏 + 收起标题栏/侧栏/内置浏览器，写笔记时整屏）、
 移动端远程控制（侧栏「远程控制」：手机/平板浏览器里操作这台电脑的 agent——
+  **一键装中继**：给服务器 IP + SSH 用户名 + 密码，应用自己 SSH 上去装好、起常驻服务、
+  填好配置（密码不落盘、公钥指纹 TOFU；默认端口 54713、默认不反代）；
   回复里的渲染与桌面端一致（Markdown / 表格 / 思考过程 / 工具卡片 / 演示卡片 /
   **Mermaid 图由桌面端画好送过来**，见 docs/ARCHITECTURE.md 第 18 节）；
   同一 WiFi 直接扫码；在外面用就填「中继服务器」（`server/relay.mjs` 跑在自己的

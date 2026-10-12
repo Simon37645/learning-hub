@@ -3535,3 +3535,39 @@ pre[data-mermaid="failed"] {
   word-break: break-all;
   color: var(--text);
 }
+
+/* 一键安装中继：输入三样东西，剩下的交给应用 */
+.deploy-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sub);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  gap: 6px;
+}
+
+.deploy-log {
+  max-height: 168px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-code);
+  padding: 7px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--text-sub);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.deploy-log .err {
+  color: var(--danger);
+}

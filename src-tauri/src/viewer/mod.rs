@@ -200,6 +200,45 @@ pub struct OpenRequest {
     pub new_tab: bool,
 }
 
+/// `ui-state.json` 里持久化的标签页（前端从 TabView 序列化而来，只取重建需要的字段）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedTab {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub topic_slug: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub kind: Option<ViewerKind>,
+    #[serde(default)]
+    pub page: Option<u32>,
+}
+
+/// `ui-state.json` 里 `viewer` 字段的形状。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedViewer {
+    #[serde(default)]
+    pub tabs: Vec<SavedTab>,
+    #[serde(default)]
+    pub active_id: Option<String>,
+    #[serde(default)]
+    pub visible: Option<bool>,
+}
+
+/// `ui-state.json` 的顶层形状：Rust 只关心 `viewer` 字段，
+/// 其余（视图/主题/对话/宽度）由前端自己解析。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedViewerShell {
+    #[serde(default)]
+    pub viewer: Option<SavedViewer>,
+}
+
 struct Inner {
     tabs: Vec<ViewerTab>,
     active: Option<String>,
@@ -259,6 +298,36 @@ impl ViewerService {
         let rel = tab.path.ok_or_else(|| AppError::invalid("标签页缺少文件路径"))?;
         let root = resolve_root(&slug)?;
         crate::paths::resolve_in_root(&root, &rel)
+    }
+
+    /// 启动时恢复上次关闭时的标签页。
+    ///
+    /// 只重建「标签壳」：内容提取与网页视图都由前端组件挂载时自己补
+    /// （loading 标志会被 report_state/report_snapshot 清掉，链路和
+    /// 用户手开完全一致）。文件/网址已经失效的标签静默跳过。
+    pub async fn restore(&self, saved: SavedViewer) {
+        for t in &saved.tabs {
+            if t.url.is_none() && t.path.is_none() {
+                continue;
+            }
+            let _ = self
+                .open(OpenRequest {
+                    url: t.url.clone(),
+                    path: t.path.clone(),
+                    topic_slug: t.topic_slug.clone(),
+                    title: t.title.clone(),
+                    kind: t.kind.clone(),
+                    page: t.page,
+                    new_tab: true,
+                })
+                .await;
+        }
+        if let Some(id) = &saved.active_id {
+            let _ = self.activate(id).await;
+        }
+        if let Some(visible) = saved.visible {
+            self.set_visible(visible).await;
+        }
     }
 
     /// 打开（或复用）标签页。

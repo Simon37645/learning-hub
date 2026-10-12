@@ -100,6 +100,25 @@ pub async fn config_get(state: State<'_, AppState>) -> AppResult<PublicConfig> {
     Ok(PublicConfig::from(&state.0.config_read()))
 }
 
+/// 读工作区的界面快照（上次关闭时的模样）。没有就返回 None。
+#[tauri::command]
+pub async fn ui_state_get(state: State<'_, AppState>) -> AppResult<Option<String>> {
+    store::read_text_opt(&state.0.ui_state_path())
+}
+
+/// 保存工作区的界面快照（关闭窗口前由前端调用）。
+///
+/// 前端只存这一份 JSON（含浏览器标签），启动时 Rust 和前端各取所需。
+#[tauri::command]
+pub async fn ui_state_save(state: State<'_, AppState>, text: String) -> AppResult<()> {
+    // 快照里就是视图/宽度/标签列表，正常几 KB；异常大的直接拒绝，
+    // 免得哪个 bug 把大块数据塞进来，每次关闭都重写一份
+    if text.len() > 512 * 1024 {
+        return Err(AppError::invalid("界面快照过大，拒绝保存"));
+    }
+    store::atomic_write(&state.0.ui_state_path(), text.as_bytes())
+}
+
 /// 局部更新配置。只覆盖传了值的字段。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -115,6 +115,17 @@ impl AppCore {
         Workspace::new(self.config.read().workspace_root.clone())
     }
 
+    /// 工作区界面快照的落盘位置：`<工作区>/.hub/ui-state.json`。
+    ///
+    /// 跟着工作区走而不是放在应用配置目录——内置浏览器标签里全是
+    /// 工作区内的相对引用，换一个工作区恢复另一份标签没有意义。
+    pub fn ui_state_path(&self) -> PathBuf {
+        self.config_read()
+            .workspace_root
+            .join(crate::domain::topic::DIR_INTERNAL)
+            .join("ui-state.json")
+    }
+
     /// 改配置并落盘。**先写盘成功再提交进内存**：反过来的话，保存失败（磁盘满 /
     /// 安全软件锁文件）时命令报了错，运行态却已经变了样，重启又全回退。
     pub fn update_config(&self, f: impl FnOnce(&mut AppConfig)) -> AppResult<AppConfig> {

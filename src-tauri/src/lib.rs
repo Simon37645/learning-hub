@@ -90,6 +90,23 @@ pub fn run() {
                 eprintln!("[启动] 工作区初始化失败：{e}");
             }
 
+            // 恢复上次关闭时的内置浏览器标签（只建壳，内容前端挂载时自己补）。
+            // 界面其余部分（视图/主题/对话/宽度）由前端在 bootstrap 里恢复。
+            // block_on：必须赶在前端第一次 viewer_snapshot 之前完成。
+            {
+                let text = store::read_text_opt(&core.ui_state_path()).unwrap_or(None);
+                if let Some(text) = text {
+                    match serde_json::from_str::<viewer::SavedViewerShell>(&text) {
+                        Ok(shell) => {
+                            if let Some(saved) = shell.viewer {
+                                tauri::async_runtime::block_on(core.viewer.restore(saved));
+                            }
+                        }
+                        Err(e) => eprintln!("[启动] 界面快照解析失败，按全新启动处理：{e}"),
+                    }
+                }
+            }
+
             app.manage(AppState(core));
             Ok(())
         })
@@ -122,6 +139,8 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             // --- 应用 ---
             commands::app::app_bootstrap,
             commands::app::config_get,
+            commands::app::ui_state_get,
+            commands::app::ui_state_save,
             commands::app::config_patch,
             commands::app::profile_upsert,
             commands::app::profile_delete,

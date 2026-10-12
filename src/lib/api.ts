@@ -75,6 +75,9 @@ export const api = {
   // ---------------- 应用 ----------------
   bootstrap: () => invoke<Bootstrap>("app_bootstrap"),
   configGet: () => invoke<PublicConfig>("config_get"),
+  /** 上次关闭时保存的工作区界面快照（JSON 文本），没有就是 null */
+  uiStateGet: () => invoke<string | null>("ui_state_get"),
+  uiStateSave: (text: string) => invoke<void>("ui_state_save", { text }),
   configPatch: (patch: ConfigPatch) => invoke<PublicConfig>("config_patch", { patch }),
   profileUpsert: (input: ProfileInput) => invoke<PublicConfig>("profile_upsert", { input }),
   profileDelete: (id: string) => invoke<PublicConfig>("profile_delete", { id }),

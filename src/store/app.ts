@@ -141,6 +141,10 @@ interface AppStore {
 
   // --- UI ---
   view: ViewName;
+  /** 主题视图里「对话 / 工作台」哪个在前（进主题视图恢复到上次的那半边） */
+  topicTab: "chat" | "workbench";
+  /** 启动恢复用的一次性值：下次进主题视图时优先用它，用完即清 */
+  pendingTopicTab: "chat" | "workbench" | null;
   /** 专注/全屏模式（F11）：窗口真全屏，界面上只留当前内容（见 App.tsx 与 .app-shell.zen） */
   zen: boolean;
   paletteOpen: boolean;
@@ -163,6 +167,8 @@ interface AppStore {
 
   // --- 动作 ---
   init: () => Promise<void>;
+  /** 把当前工作区模样存进 `<工作区>/.hub/ui-state.json`（关窗前自动调） */
+  saveUiState: () => Promise<void>;
   refreshTopics: () => Promise<void>;
   refreshBrief: () => Promise<void>;
   refreshAgenda: () => Promise<void>;
@@ -327,6 +333,8 @@ export const useApp = create<AppStore>((set, get) => ({
   reloadSeq: {},
 
   view: "home",
+  topicTab: "chat",
+  pendingTopicTab: null,
   zen: false,
   paletteOpen: false,
   toasts: [],
@@ -348,8 +356,28 @@ export const useApp = create<AppStore>((set, get) => ({
     return initPromise;
   },
 
-  async refreshTopics() {
+  async saveUiState() {
+    const s = get();
+    const snapshot = {
+      savedAt: new Date().toISOString(),
+      view: s.view,
+      topicSlug: s.topic?.slug ?? null,
+      chatId: s.chatId,
+      topicTab: s.topicTab,
+      sidebarWidth: s.sidebarWidth,
+      viewerWidth: s.viewerWidth,
+      zen: s.zen,
+      // 浏览器标签原样交给 Rust（启动时只重建壳，内容前端挂载时自己补）
+      viewer: s.viewer,
+    };
     try {
+      await api.uiStateSave(JSON.stringify(snapshot));
+    } catch (e) {
+      console.warn("保存界面快照失败", e);
+    }
+  },
+
+  async refreshTopics() {    try {
       const topics = await api.topicList();
       set({ topics });
       const cur = get().topic;
@@ -1302,17 +1330,97 @@ async function bootstrapStore(
       set((s) => ({ memoryTick: s.memoryTick + 1 }));
     });
 
+    // 「工作区模样」的持久化（视图/主题/对话/浏览器标签/宽度/zen），下次启动原样恢复。
+    //
+    // 为什么不只在关窗时存：JS 的 onCloseRequested 与窗口销毁是竞态——Rust 侧
+    // 不会等 JS 处理完再关，实测会整份丢失。改成**状态变化后防抖落盘**，
+    // 关窗钩子只是兜底（多存一次不吃亏）。快照就几 KB，写入走原子替换。
+    const uiSaveFields = (s: AppStore) =>
+      [s.view, s.topic?.slug, s.chatId, s.topicTab, s.sidebarWidth, s.viewerWidth, s.zen, s.viewer] as const;
+    let lastUiSaveKey = "";
+    let uiSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    useApp.subscribe((s) => {
+      const key = JSON.stringify(uiSaveFields(s));
+      if (key === lastUiSaveKey) return;
+      lastUiSaveKey = key;
+      if (uiSaveTimer) clearTimeout(uiSaveTimer);
+      // 先等主题详情（openTopic 的多次 set）稳定下来再存，避免存到中间态
+      uiSaveTimer = setTimeout(() => void get().saveUiState(), 900);
+    });
+    const unlistenClose = await getCurrentWindow().onCloseRequested(async () => {
+      if (uiSaveTimer) clearTimeout(uiSaveTimer);
+      await get().saveUiState();
+    });
+    void unlistenClose; // 窗口生命周期 = 应用生命周期，不退订
+
     void get().refreshBrief();
     void get().refreshAgenda();
 
-    // 回到上次打开的主题
-    const last = boot.config.lastTopic;
-    if (last && boot.topics.some((t) => t.slug === last)) {
-      void get().openTopic(last);
+    // 回到上次关闭时的模样。快照优先于 last_topic（后者只是浏览器标签恢复
+    // 之外的兜底：快照缺失/损坏时至少还回得到上次的主题）。
+    let restored = false;
+    try {
+      const text = await api.uiStateGet();
+      const ui = text ? (JSON.parse(text) as SavedUiState) : null;
+      if (ui) {
+        if (typeof ui.sidebarWidth === "number" && ui.sidebarWidth >= 200 && ui.sidebarWidth <= 420) {
+          set({ sidebarWidth: ui.sidebarWidth });
+          localStorage.setItem("hub.sidebarWidth", String(ui.sidebarWidth));
+        }
+        if (typeof ui.viewerWidth === "number" && ui.viewerWidth >= 280) {
+          set({ viewerWidth: ui.viewerWidth });
+        }
+        if (ui.topicTab === "workbench" || ui.topicTab === "chat") {
+          set({ pendingTopicTab: ui.topicTab });
+        }
+      }
+      if (ui?.view === "topic" && ui.topicSlug && boot.topics.some((t) => t.slug === ui.topicSlug)) {
+        await get().openTopic(ui.topicSlug);
+        // openTopic 默认续上最近一条对话；快照里存的那条还在就切回去
+        if (ui.chatId && ui.chatId !== get().chatId) {
+          await get().loadChat(ui.chatId);
+        }
+        restored = true;
+      } else if (ui?.view === "studio") {
+        await get().openStudio();
+        if (ui.chatId && ui.chatId !== get().chatId) {
+          await get().loadChat(ui.chatId);
+        }
+        restored = true;
+      } else if (ui?.view === "home") {
+        set({ view: "home" });
+        if (ui.chatId) await get().loadChat(ui.chatId);
+        restored = true;
+      }
+      // 关在专注模式里就原样回专注模式（几何由 applyZenWindow 自己摆）
+      if (ui?.zen) {
+        set({ zen: true });
+        void applyZenWindow(true);
+      }
+    } catch (e) {
+      console.warn("恢复界面快照失败，按全新启动处理", e);
+    }
+    if (!restored) {
+      const last = boot.config.lastTopic;
+      if (last && boot.topics.some((t) => t.slug === last)) {
+        void get().openTopic(last);
+      }
     }
   } catch (e) {
     set({ bootError: errText(e), ready: false });
   }
+}
+
+/** ui-state.json 的形状（Rust 侧只取 viewer 字段，这里全量用） */
+interface SavedUiState {
+  savedAt?: string;
+  view?: ViewName;
+  topicSlug?: string | null;
+  chatId?: string | null;
+  topicTab?: "chat" | "workbench";
+  sidebarWidth?: number;
+  viewerWidth?: number;
+  zen?: boolean;
 }
 
 // ============================================================ 专注模式的窗口几何

@@ -1,6 +1,6 @@
 // 应用外壳：布局、视图路由、全局快捷键。
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useApp } from "./store/app";
 import { Sidebar, SearchPalette } from "./components/Sidebar";
 import { SidebarResizer } from "./components/SidebarResizer";
@@ -130,15 +130,22 @@ export default function App() {
   );
 }
 
-/** 打开主题后，主区域在「对话」和「工作台」之间切换。 */
+/** 打开主题后，主区域在「对话」和「工作台」之间切换。
+ *  tab 放在 store 里而不是本地 state：关窗快照要带上它，
+ *  下次打开恢复到上次的哪一半。 */
 function TopicSurface() {
   const slug = useApp((s) => s.topic?.slug);
   const topic = useApp((s) => s.topic)!;
   const streaming = useApp((s) => s.streaming);
-  const [tab, setTab] = useState<"chat" | "workbench">("chat");
+  const tab = useApp((s) => s.topicTab);
+  const setTab = (t: "chat" | "workbench") => useApp.setState({ topicTab: t });
 
-  // 换主题时回到对话
-  useEffect(() => setTab("chat"), [slug]);
+  // 换主题时回到对话半区；但启动恢复时 bootstrap 会先塞一个
+  // pendingTopicTab（上次关在哪个半区），它优先于「回对话」
+  useEffect(() => {
+    const pending = useApp.getState().pendingTopicTab;
+    useApp.setState({ topicTab: pending ?? "chat", pendingTopicTab: null });
+  }, [slug]);
 
   return (
     <>

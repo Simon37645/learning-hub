@@ -185,20 +185,22 @@ pub async fn remote_forget_host_key(state: State<'_, AppState>) -> AppResult<()>
     Ok(())
 }
 
-/// 桌面端渲染完一张图之后回话（`hub://remote` 事件的对应动作）。
+/// 桌面端前端执行完一条远程命令之后回话（`hub://remote-invoke` 的对应动作）。
 ///
-/// **失败也要回**：不回的话手机那边要等到 10 秒超时，用户盯着一个不动的占位。
+/// **失败也要回**：不回的话手机那边要等到 30 秒超时，用户盯着一个不动的界面。
+/// `payload` 就是 `invoke` 的返回值（失败时是错误文案），原样转给手机。
 #[tauri::command]
-pub async fn remote_report_render(
+pub async fn remote_report_invoke(
     state: State<'_, AppState>,
     id: String,
     ok: bool,
-    payload: String,
+    payload: serde_json::Value,
 ) -> AppResult<bool> {
-    Ok(state.0.remote.render.finish(
-        &id,
-        crate::remote::render::RenderOutcome { ok, payload },
-    ))
+    Ok(state
+        .0
+        .remote
+        .bridge
+        .finish(&id, crate::remote::bridge::Outcome { ok, payload }))
 }
 
 /// 换一个访问令牌。旧链接与旧二维码立刻失效（手机上那台会被踢下线）。

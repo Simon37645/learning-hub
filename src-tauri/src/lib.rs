@@ -166,7 +166,7 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             commands::remote::remote_set_enabled,
             commands::remote::remote_config_patch,
             commands::remote::remote_token_reset,
-            commands::remote::remote_report_render,
+            commands::remote::remote_report_invoke,
             commands::remote::remote_deploy_relay,
             commands::remote::remote_forget_host_key,
             // --- 一键更新 ---
@@ -324,3 +324,46 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
 
 /// 给测试用的常量：默认 HTTP 超时。
 pub const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[cfg(test)]
+mod tests {
+    /// 自绘标题栏与前端调用的窗口 API，**每一项都必须在 capabilities 里显式授权**。
+    ///
+    /// 为什么要有这个测试：漏一项的后果不是「报个错」，而是**静默失效**——
+    /// `allow-destroy` 漏掉那次，症状是「右上角关闭点了没反应」：JS 侧的
+    /// `onCloseRequested` 一旦注册，Tauri 就会 `prevent_close()`（见 tauri
+    /// `manager/window.rs`），关窗口只能由 JS 调 `destroy()` 完成；而那个 IPC
+    /// 因为没有权限被拒，异常又落在事件回调里没人接——于是窗口永远关不掉。
+    /// 连带还把一键更新卡死（安装器要靠 Restart Manager 关掉本应用，关不掉就
+    /// 静默放弃安装，界面停在「正在启动安装程序…」）。typecheck 查不出这类问题。
+    #[test]
+    fn window_permissions_cover_what_the_ui_calls() {
+        let caps = include_str!("../capabilities/default.json");
+        let json: serde_json::Value = serde_json::from_str(caps).expect("capabilities 不是合法 JSON");
+        let perms: Vec<&str> = json["permissions"]
+            .as_array()
+            .expect("capabilities 缺少 permissions 数组")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        for need in [
+            "core:window:allow-minimize",       // 标题栏的最小化
+            "core:window:allow-toggle-maximize", // 标题栏的最大化/还原
+            "core:window:allow-is-maximized",
+            "core:window:allow-close",          // win.close()
+            "core:window:allow-destroy",        // onCloseRequested 真正关窗的那一步
+            "core:window:allow-start-dragging", // data-tauri-drag-region
+            "core:window:allow-set-title",
+            "core:window:allow-set-size",
+            "core:window:allow-set-position",
+            "core:window:allow-outer-size",
+            "core:window:allow-outer-position",
+            "core:window:allow-unmaximize",
+            "core:window:allow-set-fullscreen",              // 专注模式 F11
+            "core:window:allow-set-fullscreen-on-monitor",
+            "core:window:allow-is-fullscreen",
+        ] {
+            assert!(perms.contains(&need), "capabilities 里缺 {need}（界面会静默失效）");
+        }
+    }
+}

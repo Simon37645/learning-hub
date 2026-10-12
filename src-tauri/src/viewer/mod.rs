@@ -21,6 +21,30 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{oneshot, RwLock as AsyncRwLock};
 
+/// 单次送进前端的文件大小上限（防止把内存吃爆）。
+/// 远程的 `/api/tab-bytes` 也认这个上限——两边都是「把一个文件整份读进内存」。
+pub const MAX_INLINE_BYTES: u64 = 160 * 1024 * 1024;
+
+/// 按扩展名猜 MIME。只覆盖内置浏览器真的会渲染的那几种，
+/// 其余交给 `application/octet-stream`（浏览器会下载而不是硬渲染）。
+pub fn mime_of(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViewerKind {
@@ -298,6 +322,42 @@ impl ViewerService {
         let rel = tab.path.ok_or_else(|| AppError::invalid("标签页缺少文件路径"))?;
         let root = resolve_root(&slug)?;
         crate::paths::resolve_in_root(&root, &rel)
+    }
+
+    /// 读标签页对应的**原始字节**（PDF / 图片），连同它的 MIME。
+    ///
+    /// 收口在这里是为了让「电脑上的内置浏览器」和「手机上的内置浏览器」读到
+    /// 同一个文件：桌面端走 `viewer_load_bytes` 命令，远程走 `/api/tab-bytes`，
+    /// 两边都调这一份（含「引用里带『第三章』」那套路径容错）。
+    pub async fn load_bytes(
+        &self,
+        id: &str,
+        resolve_root: impl Fn(&str) -> AppResult<std::path::PathBuf>,
+    ) -> AppResult<(Vec<u8>, &'static str)> {
+        let tab = self.find(id).await.ok_or_else(|| AppError::NotFound(format!("标签页不存在：{id}")))?;
+        let slug = tab
+            .topic_slug
+            .clone()
+            .ok_or_else(|| AppError::invalid("这个标签页不是本地文件"))?;
+        let rel = tab.path.clone().ok_or_else(|| AppError::invalid("标签页缺少文件路径"))?;
+        let dir = resolve_root(&slug)?;
+        // 引用里常见的「路径 + 章节」（例句：…pdf 第三章）：原路径存在就原样用
+        let rel = crate::paths::strip_locator_if_missing(&dir, &rel);
+        let abs = crate::paths::resolve_in_root(&dir, &rel)?;
+        if !abs.exists() {
+            return Err(AppError::NotFound(format!("文件不存在：{rel}")));
+        }
+        let meta = std::fs::metadata(&abs)?;
+        if meta.len() > MAX_INLINE_BYTES {
+            return Err(AppError::invalid(format!(
+                "文件太大（{}），请用系统程序打开",
+                crate::paths::human_size(meta.len())
+            )));
+        }
+        let bytes = tokio::fs::read(&abs)
+            .await
+            .map_err(|e| AppError::Io(std::io::Error::new(e.kind(), format!("{rel} — {e}"))))?;
+        Ok((bytes, mime_of(&abs)))
     }
 
     /// 启动时恢复上次关闭时的标签页。

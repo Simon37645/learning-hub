@@ -278,8 +278,20 @@ fn url_filename(url: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 第三步：分离启动 NSIS 安装器。`/S` 静默安装、`/R` 装完自动重启应用；
+/// 第三步：分离启动 NSIS 安装器。`/S` 静默安装、`/R` 装完自动重启应用。
 /// spawn 后不等待，DETACHED 下子进程独立于本应用存活。
+///
+/// **这里不做「关掉自己」这件事，但必须知道它会发生**：安装器起来之后第一件事
+/// （`Section Install` 里的 `CheckIfAppIsRunning`）就是拿 Restart Manager 关掉
+/// 正占着 `$INSTDIR\learning-hub.exe` 的那个进程；**关不掉它就往自己那个
+/// （分离进程看不见的）控制台写一行错误然后 `Abort`**——界面上的表现是
+/// 「卡在『正在启动安装程序…』、什么都没发生、也没有任何报错」（踩过，见
+/// capabilities 里 `allow-destroy` 那条测试的说明：当时是自绘标题栏关不掉窗口，
+/// 应用死活不退，安装器就静默放弃了）。
+///
+/// 所以调用方要保证「应用真的能被关掉」：本应用现在两种方式都通——安装器发
+/// WM_CLOSE 会走前端的 `onCloseRequested`（保存界面快照 → destroy），
+/// 用户自己点关闭也一样。
 #[cfg(windows)]
 pub fn run_installer(path: impl AsRef<std::path::Path>) -> AppResult<()> {
     use std::os::windows::process::CommandExt;

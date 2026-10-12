@@ -19,6 +19,7 @@ import { applyEditorLayoutPrefs } from "../inknote/lib/preferences";
 import { notifyToast, useToast } from "../inknote/lib/useToast";
 import Toast from "../inknote/components/Toast";
 import { api, errText } from "../lib/api";
+import { isRemote } from "../lib/remote";
 import { useApp } from "../store/app";
 import { Icon } from "./ui";
 
@@ -143,6 +144,12 @@ export function NoteEditor({ slug, topicDir, path, onSaved, onDirtyChange }: Pro
         return { text: defaultText || url, url };
       },
       pickImage: async (defaultAlt) => {
+        // 插图＝把电脑上的一张图复制进笔记旁边的 .inknote-assets/，远程接口不放行文件写。
+        // 说清替代办法（让 agent 代劳），别让用户对着一个没反应的按钮点。
+        if (isRemote()) {
+          notifyToast("手机上不能往笔记里插图（那要读写电脑上的文件）；可以让 agent 帮你放进去", "info");
+          return null;
+        }
         const picked = await openDialog({
           multiple: false,
           title: "选择图片（会复制到笔记旁边的 .inknote-assets/）",

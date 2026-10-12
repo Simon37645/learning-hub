@@ -5,10 +5,17 @@
 //! 事件也是从桌面端同一套 `AgentEvent` 转出去的。所以它不是「把画面推出去」，
 //! 而是「把控制权交出去」。
 //!
+//! **手机上的界面就是桌面端的界面**：远程服务把编译进二进制的同一份前端产物
+//! （`dist/`，见 `api::page`）直接送出去，再注入一个 `shim.js` 把
+//! `window.__TAURI_INTERNALS__` 换成「HTTP + SSE」的版本。于是手机上跑的是
+//! 同一套组件、同一份 CSS、同一批命令——不会随时间漂移成「另一个手机版」。
+//!
 //! ```text
 //! 手机浏览器 ──HTTP/SSE──→ remote::http（迷你 HTTP/1.1）──→ remote::api
-//!                                                          │
-//! 桌面端 AppCore ──emit_agent/emit_topics/…──→ RemoteService::push_* ──→ SSE 扇出
+//!                                                          │  /api/invoke
+//!                                                          ↓  remote::bridge（白名单）
+//! 桌面端前端 ←── hub://remote-invoke ──┘                    │
+//! 桌面端 AppCore ──emit_event/…──→ RemoteService::push_event ──→ SSE 扇出
 //! ```
 //!
 //! 三个刻意的取舍：
@@ -22,17 +29,16 @@
 //! 安全边界（都在这一层，别往别处放）：
 //! - `/api/*` 一律要令牌（查询串 `?t=`、`Authorization: Bearer` 或 `X-Remote-Token`），
 //!   比较是常量时间的；静态页面本身不需要令牌（页面里没有秘密，接口才有）。
-//! - 远程**改不了配置**：能做的只有「读主题/对话、发消息、审批工具、取消」，
-//!   没有 config_patch、没有文件写、没有删主题——那些是坐在电脑前才该做的事。
+//! - 远程能执行哪些命令由 [`bridge`] 的白名单说了算：能读、能学、能聊，
+//!   **不能改应用配置、改工作区结构、删文件**（每一条都写了原因，会显示给用户）。
 //! - 附件只能读**工作区内**的路径（`paths::resolve_in_root`），`../` 一律拒绝。
 
 pub mod api;
+pub mod bridge;
 pub mod deploy;
 pub mod http;
-pub mod render;
 pub mod tunnel;
 
-use crate::agent::event::{AgentEvent, TopicsEvent};
 use crate::error::{AppError, AppResult};
 use crate::state::AppCore;
 use parking_lot::Mutex;
@@ -44,19 +50,20 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
 
-/// 移动端页面（编进二进制，随版本一起走——磁盘上没有会被改坏的副本）。
-pub const WEB_INDEX: &str = include_str!("web/index.html");
-pub const WEB_CSS: &str = include_str!("web/app.css");
-pub const WEB_JS: &str = include_str!("web/app.js");
+/// 页面的桥（把 IPC 接到 HTTP/SSE 上）。**静态资源，改完要重新编译**。
+pub const SHIM_JS: &str = include_str!("web/shim.js");
+/// 应用图标：PWA 清单与「添加到主屏幕」的图标都用它。
 pub const WEB_ICON: &str = include_str!("web/icon.svg");
 
-/// 事件扇出的一帧。`kind` 与桌面端的事件频道同名，手机端按同一套逻辑分派。
+/// 事件扇出的一帧。
+///
+/// 手机端跑的是桌面端那份前端，它认的事件名和桌面端完全一样（`hub://agent`、
+/// `hub://viewer`…），所以这里**不做二次翻译**：原样带上事件名与载荷，
+/// shim 按名字分派给 `listen()` 注册的回调。少一层映射就少一处会漂的地方。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
-    Agent { event: AgentEvent },
-    Topics { event: TopicsEvent },
-    Toast { level: String, message: String },
+    Event { name: String, payload: serde_json::Value },
     /// 连着几台设备变了（面板与手机上的计数都据此更新）
     Clients { count: usize },
 }
@@ -83,8 +90,8 @@ pub struct RemoteService {
     tunnel: Mutex<Option<watch::Sender<bool>>>,
     /// 令牌试错计数（窗口内超过上限就限流），见 [`RemoteService::note_auth_failure`]
     failures: Mutex<(std::time::Instant, u32)>,
-    /// 图的渲染借回桌面端（见 `render` 模块）
-    pub render: render::RenderBridge,
+    /// IPC 桥的等待位（手机上每个 invoke 一个）
+    pub bridge: bridge::InvokeBridge,
 }
 
 /// 令牌试错的上限与窗口。令牌是 32 位十六进制，暴力猜不现实；
@@ -104,7 +111,7 @@ impl RemoteService {
             last_error: Mutex::new(None),
             tunnel: Mutex::new(None),
             failures: Mutex::new((std::time::Instant::now(), 0)),
-            render: render::RenderBridge::new(),
+            bridge: bridge::InvokeBridge::new(),
         }
     }
 
@@ -128,27 +135,19 @@ impl RemoteService {
 
     // ------------------------------------------------------------ 事件扇出
 
-    // 每个 push 都先看一眼「有没有人听」：没人听的时候连克隆都省掉——
-    // 桌面端自己在跑的时候不该为了一个没打开的远程多付一次事件拷贝。
-    pub fn push_agent(&self, ev: &AgentEvent) {
+    /// 把一个事件原样扇给连着的手机。
+    ///
+    /// 每个 push 都先看一眼「有没有人听」：没人听的时候连克隆都省掉——
+    /// 桌面端自己在跑的时候不该为了一个没打开的远程多付一次事件拷贝。
+    /// 调用点只有 `AppCore::emit_event` 一处（见那里的说明）。
+    pub fn push_event<T: Serialize>(&self, name: &str, payload: &T) {
         if self.hub.receiver_count() == 0 {
             return;
         }
-        let _ = self.hub.send(Frame::Agent { event: ev.clone() });
-    }
-
-    pub fn push_topics(&self, ev: &TopicsEvent) {
-        if self.hub.receiver_count() == 0 {
+        let Ok(payload) = serde_json::to_value(payload) else {
             return;
-        }
-        let _ = self.hub.send(Frame::Topics { event: ev.clone() });
-    }
-
-    pub fn push_toast(&self, level: &str, message: &str) {
-        if self.hub.receiver_count() == 0 {
-            return;
-        }
-        let _ = self.hub.send(Frame::Toast { level: level.to_string(), message: message.to_string() });
+        };
+        let _ = self.hub.send(Frame::Event { name: name.to_string(), payload });
     }
 
     fn push_clients(&self) {
@@ -739,9 +738,13 @@ mod tests {
 
     #[test]
     fn frames_serialize_with_kind() {
-        let f = Frame::Toast { level: "info".into(), message: "hi".into() };
+        let f = Frame::Event {
+            name: "hub://toast".into(),
+            payload: serde_json::json!({ "level": "info", "message": "hi" }),
+        };
         let s = serde_json::to_string(&f).unwrap();
-        assert!(s.contains("\"kind\":\"toast\""), "实际：{s}");
+        assert!(s.contains("\"kind\":\"event\""), "实际：{s}");
+        assert!(s.contains("\"name\":\"hub://toast\""), "实际：{s}");
         assert!(s.contains("\"message\":\"hi\""), "实际：{s}");
     }
 }

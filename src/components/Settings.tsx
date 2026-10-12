@@ -1,8 +1,7 @@
 // 设置页：用户 / 外观（含自定义主题）/ 工作区 / 模型档案 / Agent 行为 / 内置浏览器 / 版本与更新 / 关于。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errText } from "../lib/api";
 import {
   PERMISSION_LABEL,
@@ -771,19 +770,34 @@ function ThemeEditor({ initial, onClose }: { initial: string; onClose: () => voi
  *
  * 只在用户点按钮时才去问 GitHub（无认证限额 60 次/小时），挂载时的那一次
  * 是为了把「当前版本 + 有没有新版」摆出来；不做任何自动轮询。
- * 安装是「分离启动 NSIS 安装器」：应用自己先关掉，装完由安装器负责拉起新版。
+ * 安装是「分离启动 NSIS 安装器」：**安装器自己会关掉本应用**（Restart Manager，
+ * 见 `updater::run_installer` 的说明），装完它再拉起新版。
+ * 万一它没能关掉本应用（那意味着它已经静默放弃安装了），界面必须说清楚，
+ * 所以这里备了一条「卡住」提示 —— 不能只留一句「正在启动安装程序…」让用户干等。
  */
 function UpdateSection() {
   const toast = useApp((s) => s.toast);
   const version = useApp((s) => s.version);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
-  /** idle → downloading → installing（装完 1.5 秒后关窗口，停在 installing 免得按钮闪回） */
+  /** idle → downloading → installing（停在 installing 免得按钮闪回） */
   const [phase, setPhase] = useState<"idle" | "downloading" | "installing">("idle");
   const [progress, setProgress] = useState<{ received: number; total: number | null }>({ received: 0, total: null });
   const [confirming, setConfirming] = useState(false);
   /** 最近一次检查是否失败：失败要跟「还没检查过」分开说，别误导用户 */
   const [failed, setFailed] = useState(false);
+  /** 下载好的安装包路径（卡住时告诉用户它在哪，可以直接双击装） */
+  const [installer, setInstaller] = useState<string | null>(null);
+  /** 启动安装器后迟迟没退出应用：安装器多半已经放弃了，得给用户一条出路 */
+  const [stuck, setStuck] = useState(false);
+  const stuckTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (stuckTimer.current !== null) window.clearTimeout(stuckTimer.current);
+    },
+    [],
+  );
 
   const check = useCallback(async () => {
     setChecking(true);
@@ -829,13 +843,17 @@ function UpdateSection() {
     setProgress({ received: 0, total: info.assetSize ?? null });
     try {
       const path = await api.updateDownload(info.assetUrl, info.assetSize ?? null);
+      setInstaller(path);
+      // 界面快照先落盘：接下来应用会**被安装器关掉**（Restart Manager，
+      // 可能是强制终止），没有第二次机会保存。
+      await useApp.getState().saveUiState();
       setPhase("installing");
       await api.updateRun(path);
       toast("info", "安装程序已启动，应用即将关闭并在安装完成后自动重启");
-      // 给 toast 一点显示时间，再让安装器接管（它自己会处理「应用还在运行」）
-      setTimeout(() => {
-        void getCurrentWindow().close();
-      }, 1500);
+      // 这里不再自己关窗口：安装器起来后第一件事就是关掉本应用（见 updater.rs）。
+      // 关不掉它就静默放弃安装——所以下面备一条「卡住」的提示，别让用户干等。
+      setStuck(false);
+      stuckTimer.current = window.setTimeout(() => setStuck(true), 12000);
     } catch (e) {
       setPhase("idle");
       toast("error", errText(e));
@@ -890,8 +908,46 @@ function UpdateSection() {
               </div>
             )}
             {phase === "installing" && (
-              <div className="muted" style={{ fontSize: 12 }}>
-                正在启动安装程序…
+              <div className="col" style={{ gap: 6 }}>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  正在启动安装程序…
+                </div>
+                {stuck && (
+                  <>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      应用本该在这时候自动关闭。它没有关闭，通常意味着安装程序没能接管
+                      （最常见的原因是安装包被安全软件拦下了）。安装包已经下载好：
+                    </div>
+                    <div className="mono muted" style={{ fontSize: 11.5, wordBreak: "break-all" }}>
+                      {installer}
+                    </div>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      可以退出本应用后直接双击它安装；也可以先「重新启动安装程序」再试一次。
+                    </div>
+                    <div className="row" style={{ gap: 8 }}>
+                      <button
+                        className="btn sm"
+                        onClick={() => {
+                          if (stuckTimer.current !== null) window.clearTimeout(stuckTimer.current);
+                          setStuck(false);
+                          void (async () => {
+                            try {
+                              await api.updateRun(installer!);
+                              stuckTimer.current = window.setTimeout(() => setStuck(true), 12000);
+                            } catch (e) {
+                              toast("error", errText(e));
+                            }
+                          })();
+                        }}
+                      >
+                        <Icon name="refresh" size={13} /> 重新启动安装程序
+                      </button>
+                      <button className="btn sm" onClick={() => setPhase("idle")}>
+                        稍后再说
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
             {phase === "idle" && (

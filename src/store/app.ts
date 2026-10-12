@@ -9,7 +9,8 @@
 
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
-import { registerRemoteRenderer } from "../lib/remoterender";
+import { registerRemoteInvoker } from "../lib/remoteinvoke";
+import { isRemote } from "../lib/remote";
 import { currentMonitor, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 import { fitOuter } from "../lib/winfit";
 import { api, errText } from "../lib/api";
@@ -148,6 +149,12 @@ interface AppStore {
   pendingTopicTab: "chat" | "workbench" | null;
   /** 专注/全屏模式（F11）：窗口真全屏，界面上只留当前内容（见 App.tsx 与 .app-shell.zen） */
   zen: boolean;
+  /**
+   * 窄屏（手机）下侧栏是抽屉：这个开关控制它展开没有。
+   * 桌面上恒为 false——那边的侧栏是常显的（宽度由 sidebarWidth 决定）。
+   */
+  sidebarOpen: boolean;
+  setSidebarOpen: (open: boolean) => void;
   paletteOpen: boolean;
   toasts: Toast[];
   inspectorOpen: boolean;
@@ -337,6 +344,7 @@ export const useApp = create<AppStore>((set, get) => ({
   topicTab: "chat",
   pendingTopicTab: null,
   zen: false,
+  sidebarOpen: false,
   paletteOpen: false,
   toasts: [],
   inspectorOpen: false,
@@ -410,6 +418,13 @@ export const useApp = create<AppStore>((set, get) => ({
   // ============================================================ 主题
 
   setView(v) {
+    // 手机上不给进「设置」和「工坊」：那两页整个都是「改配置 / 造技能」，
+    // 远程接口一条都不放行（见 remote/bridge.rs 的白名单）。让用户点进去
+    // 看一页全是点不动的开关，不如直接说清为什么。
+    if (isRemote() && (v === "settings" || v === "studio")) {
+      get().toast("info", "设置与工坊只能在电脑上改（远程是拿来用的）");
+      return;
+    }
     set({ view: v });
     if (v !== "topic") {
       void api.viewerSetVisible(get().viewer.visible);
@@ -421,6 +436,10 @@ export const useApp = create<AppStore>((set, get) => ({
     // 窗口几何在 applyZenWindow 里自己管（见那里的说明：多显示器时系统的全屏会挑错屏）。
     // 失败只记一行：样式那边已经切好了，功能不会因此断掉。
     void applyZenWindow(on);
+  },
+
+  setSidebarOpen(open) {
+    set({ sidebarOpen: open });
   },
 
   async openTopic(slug) {
@@ -598,6 +617,11 @@ export const useApp = create<AppStore>((set, get) => ({
    * 并续上最近一条工坊对话——和 `openTopic` 的行为对齐。
    */
   async openStudio() {
+    // 工坊是「坐在电脑前造东西」的场景（写技能文件、改 MCP 定义都只在本地放行）
+    if (isRemote()) {
+      get().toast("info", "工坊只能在电脑上开");
+      return;
+    }
     set({ view: "studio", topic: null, cards: [], tasks: [], activities: [], streaming: null, chatError: null, usage: null });
     void get().loadStudioChats();
     void get().loadStudio();
@@ -1331,49 +1355,79 @@ async function bootstrapStore(
       set((s) => ({ memoryTick: s.memoryTick + 1 }));
     });
 
-    // 替手机页面渲染图（Mermaid）：远程服务把请求发到 hub://remote，
-    // 这里画完把 SVG 交回去。手机端不装 mermaid——渲染必须收口在这一处。
-    void registerRemoteRenderer();
+    // 替手机执行命令（桌面端这一侧；手机上不需要——它自己就是发请求的那头）
+    if (!isRemote()) void registerRemoteInvoker();
 
     // 「工作区模样」的持久化（视图/主题/对话/浏览器标签/宽度/zen），下次启动原样恢复。
     //
     // 为什么不只在关窗时存：JS 的 onCloseRequested 与窗口销毁是竞态——Rust 侧
     // 不会等 JS 处理完再关，实测会整份丢失。改成**状态变化后防抖落盘**，
     // 关窗钩子只是兜底（多存一次不吃亏）。快照就几 KB，写入走原子替换。
-    const uiSaveFields = (s: AppStore) =>
-      [s.view, s.topic?.slug, s.chatId, s.topicTab, s.sidebarWidth, s.viewerWidth, s.zen, s.viewer] as const;
-    let lastUiSaveKey = "";
-    let uiSaveTimer: ReturnType<typeof setTimeout> | null = null;
-    useApp.subscribe((s) => {
-      const key = JSON.stringify(uiSaveFields(s));
-      if (key === lastUiSaveKey) return;
-      lastUiSaveKey = key;
-      if (uiSaveTimer) clearTimeout(uiSaveTimer);
-      // 先等主题详情（openTopic 的多次 set）稳定下来再存，避免存到中间态
-      uiSaveTimer = setTimeout(() => void get().saveUiState(), 900);
-    });
-    const unlistenClose = await getCurrentWindow().onCloseRequested(async () => {
-      if (uiSaveTimer) clearTimeout(uiSaveTimer);
-      await get().saveUiState();
-    });
-    void unlistenClose; // 窗口生命周期 = 应用生命周期，不退订
+    //
+    // 远程模式下这两件事都不做：手机上不该覆盖电脑的界面快照（接口层也拒了），
+    // 关窗钩子更没有意义——手机上的「窗口」是浏览器标签页。
+    if (!isRemote()) {
+      const uiSaveFields = (s: AppStore) =>
+        [s.view, s.topic?.slug, s.chatId, s.topicTab, s.sidebarWidth, s.viewerWidth, s.zen, s.viewer] as const;
+      let lastUiSaveKey = "";
+      let uiSaveTimer: ReturnType<typeof setTimeout> | null = null;
+      useApp.subscribe((s) => {
+        const key = JSON.stringify(uiSaveFields(s));
+        if (key === lastUiSaveKey) return;
+        lastUiSaveKey = key;
+        if (uiSaveTimer) clearTimeout(uiSaveTimer);
+        // 先等主题详情（openTopic 的多次 set）稳定下来再存，避免存到中间态
+        uiSaveTimer = setTimeout(() => void get().saveUiState(), 900);
+      });
+      const unlistenClose = await getCurrentWindow().onCloseRequested(async () => {
+        if (uiSaveTimer) clearTimeout(uiSaveTimer);
+        await get().saveUiState();
+      });
+      void unlistenClose; // 窗口生命周期 = 应用生命周期，不退订
+    } else {
+      // 手机息屏 / 切网之后 SSE 会自己重连，但**中间那几帧是真的丢了**
+      // （可能正好是一轮回复的结尾）。重连时重拉一次当前状态，
+      // 免得界面停在一个再也不更新的半截上。
+      await listen("hub://reconnect", () => {
+        void get().refreshTopics();
+        void get().refreshBrief();
+        scheduleTopicRefresh();
+        const id = get().chatId;
+        if (id && !get().streaming) void get().loadChat(id);
+      });
+
+      // 手机上点了侧栏里的东西就把抽屉收起来。放在这里（而不是每个点击处）：
+      // 「换了主题 / 换了对话 / 换了视图」是导航的收口点，侧栏里每一个入口
+      // 最后都会落到这几个字段上——一处管住，将来加新入口也不会漏。
+      useApp.subscribe((s, prev) => {
+        if (!s.sidebarOpen) return;
+        if (s.view !== prev.view || s.chatId !== prev.chatId || s.topic?.slug !== prev.topic?.slug) {
+          useApp.setState({ sidebarOpen: false });
+        }
+      });
+    }
 
     void get().refreshBrief();
     void get().refreshAgenda();
 
     // 回到上次关闭时的模样。快照优先于 last_topic（后者只是浏览器标签恢复
     // 之外的兜底：快照缺失/损坏时至少还回得到上次的主题）。
+    //
+    // 手机上**只取「看到哪」这一半**（视图 / 主题 / 对话 / 半区），
+    // 宽度和 zen 都是窗口几何，跟着电脑上那份走反而会让手机上的界面变形。
     let restored = false;
     try {
       const text = await api.uiStateGet();
       const ui = text ? (JSON.parse(text) as SavedUiState) : null;
       if (ui) {
-        if (typeof ui.sidebarWidth === "number" && ui.sidebarWidth >= 200 && ui.sidebarWidth <= 420) {
-          set({ sidebarWidth: ui.sidebarWidth });
-          localStorage.setItem("hub.sidebarWidth", String(ui.sidebarWidth));
-        }
-        if (typeof ui.viewerWidth === "number" && ui.viewerWidth >= 280) {
-          set({ viewerWidth: ui.viewerWidth });
+        if (!isRemote()) {
+          if (typeof ui.sidebarWidth === "number" && ui.sidebarWidth >= 200 && ui.sidebarWidth <= 420) {
+            set({ sidebarWidth: ui.sidebarWidth });
+            localStorage.setItem("hub.sidebarWidth", String(ui.sidebarWidth));
+          }
+          if (typeof ui.viewerWidth === "number" && ui.viewerWidth >= 280) {
+            set({ viewerWidth: ui.viewerWidth });
+          }
         }
         if (ui.topicTab === "workbench" || ui.topicTab === "chat") {
           set({ pendingTopicTab: ui.topicTab });
@@ -1398,7 +1452,7 @@ async function bootstrapStore(
         restored = true;
       }
       // 关在专注模式里就原样回专注模式（几何由 applyZenWindow 自己摆）
-      if (ui?.zen) {
+      if (ui?.zen && !isRemote()) {
         set({ zen: true });
         void applyZenWindow(true);
       }
@@ -1448,6 +1502,9 @@ let zenGeometry: { x: number; y: number; w: number; h: number } | null = null;
  * 否则它会在系统刚铺好全屏之后把窗口缩成工作区大小。
  */
 async function applyZenWindow(on: boolean): Promise<void> {
+  // 远程（手机浏览器）里没有「窗口」这回事：样式上的 zen 照常生效，
+  // 几何一律不动——`getCurrentWindow()` 那边根本没有可操作的窗口。
+  if (isRemote()) return;
   const win = getCurrentWindow();
   try {
     if (!on) {

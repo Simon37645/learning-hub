@@ -6,6 +6,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/app";
+import { isRemote } from "../lib/remote";
 import { STAGE_LABEL, THEME_LABEL, type AgentMode, type StudyStage, type TopicSummary } from "../lib/types";
 import { hotkey, relTime } from "../lib/format";
 import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, useOverlay } from "./ui";
@@ -62,6 +63,10 @@ export function Sidebar() {
   const toast = useApp((s) => s.toast);
   /** 记忆变化时 +1：角标上的条数要跟着刷新 */
   const memoryTick = useApp((s) => s.memoryTick);
+  // 窄屏（手机）下侧栏是抽屉：展开状态在 store 里（标题栏的 ☰ 要开关它）。
+  const remote = isRemote();
+  const sidebarOpen = useApp((s) => s.sidebarOpen);
+  const setSidebarOpen = useApp((s) => s.setSidebarOpen);
 
   const [newOpen, setNewOpen] = useState(false);
   const [newParent, setNewParent] = useState<{ slug: string; name: string } | null>(null);
@@ -261,7 +266,24 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="sidebar">
+    <>
+      {/* 窄屏（手机）里侧栏是抽屉：点外面那层半透明幕布收起来。
+          桌面上这个元素不存在（isRemote() 为假），也不会有任何样式副作用。 */}
+      {remote && sidebarOpen && (
+        <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />
+      )}
+      <aside
+        className={"sidebar" + (remote && sidebarOpen ? " open" : "")}
+        // 手机上点侧栏里的东西就收起抽屉：**包括点当前这个主题**
+        // （「收起抽屉、回到我正看的东西」是最常见的一次点击，那种情况
+        // 状态根本没变，光靠「导航后收起」兜不住）。
+        // 折叠箭头 / 行内的小按钮自己 stopPropagation，不会误收。
+        onClick={(e) => {
+          if (!remote) return;
+          const el = e.target as HTMLElement | null;
+          if (el?.closest(".topic-row, .chat-row, .side-item")) setSidebarOpen(false);
+        }}
+      >
       <div className="sidebar-top">
         <button className="side-item primary" onClick={() => openNew()}>
           <Icon name="plus" />
@@ -289,15 +311,19 @@ export function Sidebar() {
           <span className="grow">记忆</span>
           {memoryCount > 0 && <span className="side-kbd">{memoryCount}</span>}
         </button>
-        <button
-          className="side-item"
-          title="在手机 / 平板上远程控制这台电脑上的 agent"
-          onClick={() => setRemoteOpen(true)}
-        >
-          <Icon name="phone" />
-          <span className="grow">远程控制</span>
-          {remoteClients > 0 && <span className="side-kbd">{remoteClients}</span>}
-        </button>
+        {/* 远程控制面板只在电脑上开（令牌、端口、一键装中继都在这儿）——
+            手机上再显示一个点不开的入口只会让人困惑 */}
+        {!remote && (
+          <button
+            className="side-item"
+            title="在手机 / 平板上远程控制这台电脑上的 agent"
+            onClick={() => setRemoteOpen(true)}
+          >
+            <Icon name="phone" />
+            <span className="grow">远程控制</span>
+            {remoteClients > 0 && <span className="side-kbd">{remoteClients}</span>}
+          </button>
+        )}
 
         <div className="menu-sep" style={{ margin: "6px 8px" }} />
 
@@ -512,7 +538,8 @@ export function Sidebar() {
           </Field>
         </Modal>
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
 

@@ -341,20 +341,22 @@ mod tests {
 
     #[tokio::test]
     async fn parses_get_with_query_and_headers() {
-        let req = parse(b"GET /api/transcript?topic=%E7%BA%BF%E6%80%A7%E4%BB%A3%E6%95%B0&chat=abc HTTP/1.1\r\nHost: x\r\nX-Remote-Token: tok\r\n\r\n")
-            .await
-            .unwrap();
+        let req = parse(
+            b"GET /api/invoke?cmd=topic_list&topic=%E7%BA%BF%E6%80%A7%E4%BB%A3%E6%95%B0 HTTP/1.1\r\nHost: x\r\nX-Remote-Token: tok\r\n\r\n",
+        )
+        .await
+        .unwrap();
         assert_eq!(req.method, "GET");
-        assert_eq!(req.path, "/api/transcript");
+        assert_eq!(req.path, "/api/invoke");
+        assert_eq!(req.query_get("cmd"), Some("topic_list"));
         // 中文主题名（目录名就是中文）要能原样解出来
         assert_eq!(req.query_get("topic"), Some("线性代数"));
-        assert_eq!(req.query_get("chat"), Some("abc"));
         assert_eq!(req.token(), Some("tok"));
     }
 
     #[tokio::test]
     async fn parses_body_by_content_length() {
-        let req = parse(b"POST /api/send HTTP/1.1\r\nContent-Length: 13\r\n\r\n{\"text\":\"hi\"}").await.unwrap();
+        let req = parse(b"POST /api/invoke HTTP/1.1\r\nContent-Length: 13\r\n\r\n{\"text\":\"hi\"}").await.unwrap();
         assert_eq!(req.method, "POST");
         assert_eq!(req.body, b"{\"text\":\"hi\"}");
         let v: serde_json::Value = req.json().unwrap();
@@ -363,9 +365,9 @@ mod tests {
 
     #[tokio::test]
     async fn token_from_bearer_and_query() {
-        let req = parse(b"GET /api/state HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n").await.unwrap();
+        let req = parse(b"GET /api/ping HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n").await.unwrap();
         assert_eq!(req.token(), Some("abc123"));
-        let req = parse(b"GET /api/state?t=q1 HTTP/1.1\r\n\r\n").await.unwrap();
+        let req = parse(b"GET /api/ping?t=q1 HTTP/1.1\r\n\r\n").await.unwrap();
         assert_eq!(req.token(), Some("q1"));
     }
 
@@ -386,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_huge_declared_body() {
-        let raw = format!("POST /api/send HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY_BYTES + 1);
+        let raw = format!("POST /api/invoke HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY_BYTES + 1);
         let err = parse(raw.as_bytes()).await.unwrap_err();
         assert_eq!(err.status, 413);
     }

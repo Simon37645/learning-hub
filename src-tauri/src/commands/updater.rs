@@ -30,7 +30,13 @@ pub async fn update_download(
 }
 
 /// 分离启动安装器（静默安装 + 装完自动重启）。启动成功即返回，不等安装结束。
+///
+/// 先把攒着的记忆统计落盘再启动：安装器会立刻用 Restart Manager 关掉本应用，
+/// 那一下可能是**强制终止**（`RmForceShutdown`），进程说没就没，
+/// 没有机会再写盘。
 #[tauri::command]
-pub async fn update_run(path: String) -> AppResult<()> {
+pub async fn update_run(state: State<'_, AppState>, path: String) -> AppResult<()> {
+    let core = state.0.clone();
+    core.memory_flush();
     updater::run_installer(&path)
 }

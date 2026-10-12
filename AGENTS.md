@@ -153,6 +153,17 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   （`core:window:allow-minimize`、`allow-toggle-maximize`、`allow-close`、`allow-is-maximized` 等；
   漏了会在运行时报权限错误，typecheck 查不出来）；拖拽靠 `data-tauri-drag-region`
   （需要 `core:window:allow-start-dragging`），按钮上别加这个属性，否则点不灵。
+- **`core:window:allow-destroy` 少不得，而且它连着两个用户可见的 bug**（都踩过）：
+  JS 侧一旦注册了 `onCloseRequested`，Tauri 就会 `prevent_close()`（见 tauri
+  `manager/window.rs`），**关窗口只能由 JS 调 `destroy()` 完成**。这个权限漏掉的症状是
+  「右上角关闭点了没反应」——而且异常落在事件回调里没人接，界面上一点提示都没有；
+  更糟的是**一键更新也一起卡死**（见下面 updater 那条）。`lib.rs` 里有个单测盯着这张
+  权限清单，删一条会红。
+- **`element.click()` 在自绘标题栏里不一定灵**：非可信的合成 click 事件，
+  标题栏里那几个按钮**有时**收不到 React 的 `onClick`（同一个按钮，同一次会话里
+  时灵时不灵；`dispatchEvent(new MouseEvent(...))` 和真实鼠标事件都正常）。
+  写自动化脚本要验标题栏上的按钮（尤其是关闭），**用 CDP 的 `Input.dispatchMouseEvent`
+  发真实鼠标事件**（`scripts/restore-check.mjs` 就是这么做的），别用 `.click()`。
 - **页面被滚走 = 自绘标题栏整个消失**（用户报的「上面的三个图标和 logo 都不见了」）：
   `body { overflow: hidden }` 会传给视口，视口**滚轮滚不动，但 `scrollIntoView` / `focus()`
   仍然滚得动**。壳（`.app-shell`）里只要有个元素越出下沿（绝对定位的浮层最容易；`.app-main`
@@ -309,26 +320,40 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
     依赖树里的版本一致**（0.62 不是 0.61，差一个 minor HSTRING 就是两个类型）。
 - **远程控制是「手写的迷你 HTTP + SSE」，别顺手换成框架**：`remote/http.rs` 只实现
   需要的那一小块（定长正文、定长响应、SSE 分块），每个上限都有单测兜着。
-  几个连带约定：**静态页面不需要令牌、`/api/*` 一律要**（分界就在 `api::route` 开头）；
-  手机端页面用 `include_str!` 编进二进制，改完必须重新编译（不是热更新）；
-  事件扇出只在 `state.rs` 的 `emit_agent` / `emit_topics` / `toast` 三处，
-  **别在对话循环里塞远程逻辑**（`receiver_count() == 0` 时连克隆都省了）。
-- **远程的能力边界要守住**：只能读主题/对话、发消息、审批、取消、读工作区内的文件。
-  别为了「方便」把 config_patch / 文件写 / 删主题开给远程——那是一台陌生浏览器
-  （可能只是别人借你手机）能做的事，而设置页是坐在电脑前才该动的。
+  几个连带约定：**静态资源不需要令牌、`/api/*` 一律要**（分界就在 `api::route` 开头）；
+  shim 用 `include_str!` 编进二进制，改完必须重新编译（不是热更新）；
+  所有事件都从 `AppCore::emit_event` 出去（本地一份 + 远程一份），
+  **别在对话循环里塞远程逻辑**（`receiver_count() == 0` 时连序列化都省了），
+  也别绕开它直接 `app.emit` ——那样新事件会静默地不推给手机。
+- **手机上的界面就是桌面端那份产物，别再写第二套**：远程服务把 `dist/`
+  （`AssetResolver::get`，dev 模式下从磁盘读）直接送出去，注入 `remote/web/shim.js`
+  把 `window.__TAURI_INTERNALS__` 换成 HTTP/SSE 版。加功能不用管手机——**除非**它在
+  手机上根本做不了（窗口控制、系统文件框、原生子 WebView、拖放）：那就在
+  `src/lib/remote.ts` 的 `isRemote()` 上收起来或换成浏览器做法，窄屏样式挂在
+  `html[data-remote]` 上。前端改完要 `npm run build`（送出去的是编译产物）。
+- **远程的能力边界在 `remote/bridge.rs` 的一张表里**（`ALLOWED` / `DENIED` 带原因），
+  而且**每个命令都必须被分类**——底下那个单测直接解析 `lib.rs` 的命令表，漏一个就红。
+  界线：**「让 agent 代劳 + 点一下允许」能做到的，远程也放开**（读、聊、审批、复习打分、
+  写笔记、建卡片/任务/测验、整理对话、记忆增删改）；**改应用配置与密钥、改工作区结构、
+  批量导入/重建、直接删文件、更新应用、技能与 MCP 的开关、桌面外壳**一律拒。
+  `config_patch` 只放行 `activeProfileId` / `theme` 两个字段——**权限分级（`permissionMode`）
+  明确不放**，从一台可能只是借来的手机上打开「完全访问」等于关掉审批。
   同理：附件路径必须走 `paths::resolve_in_root`，令牌比较必须是常量时间的
   （`http::token_matches`），新增接口记得在 `route` 里放在鉴权之后。
+- **手机上的一切都经电脑上那个前端执行**（`hub://remote-invoke` → `lib/remoteinvoke.ts`
+  → 同一个 `invoke` → `remote_report_invoke`）。两条铁律：**两端都要回话**（失败也要回，
+  否则手机等满 30 秒），以及**等待要有上限**。二进制结果（`viewer_load_bytes`）不走这条桥，
+  改走 `/api/tab-bytes` 直接流字节——别往 JSON 事件里塞 base64。
 - **`TcpListener::from_std` 必须在 tokio 运行时里调**：在 `setup()` / 命令线程里直接调
   会 panic（`there is no reactor running`），而且是在**启动路径**上——整个应用起不来，
   报错看着像 Tauri 的锅。现在的写法：同步 `std::net::TcpListener::bind`（这样「端口被占用」
   能立刻回报给面板）→ 把监听器交给 `tauri::async_runtime::spawn` 里再 `from_std`。
-- **手机页面里的 `[hidden]` 要自己兜住**：UA 的 `[hidden]{display:none}` 优先级不如
-  作者样式表里的 `.viewer{display:grid}`，于是「藏起来」的浮层照样显示（实测症状：
-  大图浮层的关闭按钮浮在顶栏上、发送/停止两个按钮同时出现）。`remote/web/app.css`
-  开头有一行 `[hidden] { display: none !important; }`，别删。
-- **给手机送 SVG 时不能删 `foreignObject`**：mermaid 的节点文字默认是 HTML，装在
-  `foreignObject` 里。净化脚本里删掉它，图会变成「一排彩色方块、没有字」。
-  只删能执行/能外联的东西（script / iframe / on* / javascript:）。
+- **远程的窄屏样式里，靠 hover 才出现的操作必须常显**：`.chat-actions` / `.row-actions` /
+  `.mini-btn` / `.mermaid-tools` 平时是 `opacity: 0` 或 `display: none`，触摸设备上
+  根本没有 hover——漏掉的症状是「按钮明明在那儿就是点不到」，而且没有任何报错。
+  这一段的收口是 `app.css` 末尾 `html[data-remote]` 那一块（桌面端一行都不受影响）。
+  另外手机上浮层显隐要控制 `display` 或加 `!important`：UA 的 `[hidden]{display:none}`
+  优先级不如作者样式表里的 `.viewer{display:grid}`（历史坑，症状是「藏起来的浮层照样显示」）。
 - **一键装中继的脚本要当「用户输入」对待**：`remote/deploy.rs` 的 `build_script` 把端口、
   口令、SSH 密码拼进一段 shell 脚本。密码走 `sh_quote`（有单测，`'; rm -rf /` 这种也要对），
   脚本本身走 SSH 的 **stdin**（`bash -s`）——走命令行的话服务器上 `ps` 就能看见密码。
@@ -358,9 +383,17 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   轮询；`/releases` 列表里 draft 要跳过、prerelease 要算（semver 原生支持
   `0.3.2-beta.1 < 0.3.2`）；asset 名字必须与 `scripts/package.mjs` 产出的
   `LearningHub-<版本>-x64-setup.exe` 对齐（没有安装包的版本跳过、退而取次新的）；
-  安装是分离启动 NSIS 安装器 `/S /R`（静默 + 装完自动重启，应用还在运行由安装器
-  处理），`creation_flags` 里的 `CREATE_BREAKAWAY_FROM_JOB` 失败要去掉它**降级重试**——
-  有的宿主不让脱离 job，硬失败会让「下载成功却装不上」。
+  安装是分离启动 NSIS 安装器 `/S /R`（静默 + 装完自动重启），`creation_flags` 里的
+  `CREATE_BREAKAWAY_FROM_JOB` 失败要去掉它**降级重试**——有的宿主不让脱离 job，
+  硬失败会让「下载成功却装不上」。
+- **安装器要靠「关得掉本应用」才能干活，这是更新链路上最脆的一环**：NSIS 静默安装
+  起来第一件事是拿 Restart Manager 关掉正占着 exe 的那个进程，**关不掉它就往自己
+  那个（分离进程看不见的）控制台写一行然后 `Abort`**——界面上的表现是「卡在『正在启动
+  安装程序…』、什么都没发生、也没有任何报错」。所以：`allow-destroy` 那条权限是
+  更新链路的一部分（见上面自绘标题栏那条）；前端在 `update_run` 前先
+  `saveUiState()`（之后可能是强制终止，没有第二次机会）；`update_run` 里先
+  `memory_flush()`。界面上备了一条 12 秒的「卡住」提示，会给出安装包路径和重试按钮——
+  **别删**，那是这条链路唯一能看见失败的地方。
 
 ## 当前状态（v1）
 
@@ -399,12 +432,11 @@ PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看—
 移动端远程控制（侧栏「远程控制」：手机/平板浏览器里操作这台电脑的 agent——
   **一键装中继**：给服务器 IP + SSH 用户名 + 密码，应用自己 SSH 上去装好、起常驻服务、
   填好配置（密码不落盘、公钥指纹 TOFU；默认端口 54713、默认不反代）；
-  回复里的渲染与桌面端一致（Markdown / 表格 / 思考过程 / 工具卡片 / 演示卡片 /
-  **Mermaid 图由桌面端画好送过来**，见 docs/ARCHITECTURE.md 第 18 节）；
+  **手机上打开的就是电脑上那个界面**：远程服务把同一份 `dist/` 送出去 + 注入 shim，
+  所有命令交给电脑上的前端用同一个 invoke 执行（白名单在 `remote/bridge.rs`）；
   同一 WiFi 直接扫码；在外面用就填「中继服务器」（`server/relay.mjs` 跑在自己的
   VPS 上，应用主动连出去建隧道，家里不用开端口）或填「对外地址」走现成的反代；
-  手机端能读主题/对话、发消息（含拍照贴图）、审批工具、中止当前轮，
-  竖屏抽屉 / 横屏双栏，可「添加到主屏幕」；默认关闭，令牌分访问/中继两把，
+  竖屏抽屉 / 横屏侧栏常显，可「添加到主屏幕」；默认关闭，令牌分访问/中继两把，
   详见 docs/REMOTE.md）。
 
 已知待办（按价值排序）：

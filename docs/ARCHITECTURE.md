@@ -567,26 +567,38 @@ PDF 的文字层里只有字——插图、示意图、公式图、扫描页、�
 本机 agent 执行，事件也是从桌面端同一套 `AgentEvent` 转出去的——不是「把画面推出去」，
 而是「把控制权交出去」。
 
+**手机上跑的就是电脑上那个界面**：远程服务把编译进二进制的同一份前端产物（`dist/`）
+直接送出去，再注入一个 `shim.js` 把 `window.__TAURI_INTERNALS__` 换成「HTTP + SSE」
+的版本。所以手机上点「发送」走的是同一个 `agent_send`，看到的是同一份 jsonl、
+同一套组件与 CSS——**没有第二套界面，也就不会随时间漂移**。
+
 ```
 手机浏览器 ──HTTP/SSE──→ remote::http（手写迷你 HTTP/1.1）
                               │
-                              ├─ remote::api ──→ 复用桌面端同一批函数
-                              │     （start_turn / respond_approval / chats::collect …）
-                              └─ SSE 扇出 ←── RemoteService::push_*
+                              ├─ GET  /            → dist/index.html + shim.js
+                              ├─ GET  /assets/*    → 同一份产物（内容哈希，可长缓存）
+                              ├─ POST /api/invoke  → remote::bridge（白名单）
+                              │                        │ hub://remote-invoke
+                              │                        ↓
+                              │                    电脑上的前端：用同一个 invoke 执行
+                              │                        │ remote_report_invoke
+                              │                        ↓ 等待位（oneshot，30s 上限）
+                              └─ SSE 扇出 ←── RemoteService::push_event
                                                   ▲
-桌面端 AppCore ── emit_agent / emit_topics / toast ──┘（一处转发，不在对话循环里塞远程逻辑）
+桌面端 AppCore ── emit_event（唯一出口：本地一份 + 远程一份）
 ```
 
 | 文件 | 干什么 |
 | --- | --- |
 | `remote/http.rs` | 请求解析 / 响应 / SSE 分块 / 常量时间比较令牌（每处上限都有单测） |
-| `remote/api.rs` | 路由与鉴权、`/api/state` `/api/chats` `/api/transcript` `/api/send` `/api/approve` `/api/cancel` `/api/file` `/api/events` |
+| `remote/api.rs` | 路由与鉴权、页面与产物、`/api/invoke` `/api/file` `/api/tab-bytes` `/api/events` |
+| `remote/bridge.rs` | IPC 桥：能力边界（`ALLOWED` / `DENIED`，每条带原因）+ 等待位 |
+| `remote/web/shim.js` | 注入到产物里的桥：`__TAURI_INTERNALS__` → HTTP/SSE（`include_str!`） |
 | `remote/mod.rs` | `RemoteService`：起停、事件扇出、状态与链接、局域网 IP 探测 |
 | `remote/tunnel.rs` | 反向隧道客户端（自己有公网服务器时主动连出去） |
-| `remote/web/` | 手机页面（`include_str!` 编进二进制，磁盘上没有会被改坏的副本） |
 | `server/relay.mjs` | 中继：跑在用户自己的公网服务器上，零依赖，只做字节搬运 |
 | `remote/deploy.rs` | 一键把中继装到用户的服务器上（SSH：写脚本 → 备 Node → 起服务 → 验证） |
-| `commands/remote.rs` | 面板用的四个命令：状态 / 开关 / 改配置 / 换令牌 |
+| `commands/remote.rs` | 面板用的命令：状态 / 开关 / 改配置 / 换令牌 / 回话 |
 
 几个刻意的决定：
 
@@ -595,34 +607,31 @@ PDF 的文字层里只有字——插图、示意图、公式图、扫描页、�
   扛脏输入，所以头/正文都有硬上限并且各有一条单测。
 - **用 SSE 而不是 WebSocket**：事件是单向的（服务器 → 手机），上行全是普通 POST。
   省掉自己实现帧协议与握手摘要，断线重连也是 `EventSource` 自带的。
-- **手机端有自己的「当前对话」**：存在 localStorage，不抢桌面端正在看哪条。
-  两边写的是同一份 jsonl，所以「在电脑上接着聊」不会错位。
+- **不写第二套接口**：手机上要的每个动作都交给**电脑上的前端**用同一个 `invoke` 执行
+  （`remote::bridge`）。手抄一张 Rust 分派表意味着两套实现、两处参数名，以及
+  「加了新命令忘了加表」的静默失效。代价是手机上的一切都依赖电脑那边的窗口活着——
+  它本来就是同一个进程里的东西，30 秒没回话就报错（有上限、有文案）。
+- **白名单是正面清单，而且有测试盯着**：`bridge::check` 决定哪些命令能远程执行，
+  底下那个单测直接解析 `lib.rs` 的命令表，**每个命令都必须被分类**（`ALLOWED` 或
+  `DENIED` 带原因）。新加一个命令却忘了想「远程能不能用」，测试会红——默认放行等于
+  悄悄把新能力开给一台可能只是借来的手机。
 - **默认关闭**：这是一条能从别的设备操作本机的通道，不打开就不监听端口。
-- **远程改不了配置**：能读、能发消息、能审批，不能改设置 / 开关技能 / 删主题 /
-  写任意文件。附件读取也限制在工作区内（`resolve_in_root`）。
-- **一处转发**：`emit_agent` / `emit_topics` / `toast` 顺手往 `RemoteService` 推一份，
-  对话循环里一行远程逻辑都没有。没人听的时候连事件克隆都省掉（`receiver_count`）。
+- **一处转发**：所有给界面的事件都从 `AppCore::emit_event` 出去（本地一份 + 远程一份）。
+  散在各模块里各写一遍的话，新加的事件迟早漏掉手机那份，而且那种漏是静默的。
+  没人听的时候连序列化都省掉（`receiver_count`）。
+- **二进制不进事件通道**：`viewer_load_bytes` 回的是原始字节（上限 160MB），
+  塞不进 JSON 事件，所以手机上走 `/api/tab-bytes` 直接流；两边共用
+  `ViewerService::load_bytes`，读的一定是同一个文件。
 
-### 图由桌面端渲染（`remote/render.rs`）
+### 手机上天生没有的东西
 
-手机页面里没有 mermaid——那是 3.5MB 的库，再塞一份既重复又会跟桌面端版本漂移，
-而且 AGENTS.md 里有一条硬规矩：**Mermaid 的渲染必须收口到一处**（唯一 id + 串行队列 +
-`suppressErrorRendering`）。所以走一条请求-响应短桥：
+窗口控制（三个按钮）、系统文件选择框、原生子 WebView、拖放导入——这些在远程模式下
+要么收起来、要么换成浏览器自己的做法（剪贴板 / 选图 / 新标签页）。判定只有一处
+（`src/lib/remote.ts` 的 `isRemote()`，看 shim 挂的 `window.__LH_REMOTE__`）；
+窄屏布局（抽屉侧栏、整屏内置浏览器）挂在 `html[data-remote]` 上，桌面端一行都不受影响。
 
-```text
-手机 POST /api/render {lang, source}
-  → RenderBridge 登记等待位（oneshot）
-  → 发 hub://remote 给桌面端前端（那里有渲染器）
-  → 前端 renderDiagram() 画成 SVG，调 remote_report_render(id, ok, svg)
-  → 等待位被填上 → HTTP 响应带 SVG 回去
-```
-
-与 `pdf_screenshot` 同一套路（那边是「前端渲染 PDF 页交回 Rust」），只是方向相反。
-两条共同的铁律：**两端都要回话**（失败也要回，否则对面等到超时），以及**等待要有上限**（10 秒）。
-
-手机页面拿到 SVG 后**只删危险标签**（script / iframe / on* / javascript:），
-**不能删 `foreignObject`**——mermaid 的节点文字默认装在它里面，删了就是「一排彩色方块，
-没有字」（实测踩过）。
+远端网页在手机上会退回「阅读模式」：正文是**电脑上那个内置浏览器**提取好的
+（`viewer_get_content`），因为网站会拒绝被手机页面嵌进去。这不是 bug，是唯一可行的路径。
 
 ### 一键安装：把「配置服务器」这件事也吃掉
 
@@ -684,5 +693,6 @@ PDF 的文字层里只有字——插图、示意图、公式图、扫描页、�
 | 换一套手机界面 | `remote/web/`（三个文件，编进二进制；改完要重新编译，不是热更新） |
 | 另一种「怎么连进来」 | `RemoteConfig` 加字段 + `RemoteService::status` 里拼链接 + 面板显示 |
 | 服务器上要装别的东西 | `remote/deploy.rs` 的 `build_script`（脚本有单测盯着端口/口令/不碰反代） |
-| 手机上多渲染一种东西 | 能在前端画就在 `remote/web/app.js` 里画（演示卡片、表格）；需要重库的照 `render.rs` 那条桥加一个 lang |
+| 手机上要多一个能力 | 什么都别做——手机上跑的就是桌面端那份界面，命令能通就自动有了。只有在 Rust 白名单里补一条（`bridge.rs` 的 `ALLOWED`，别忘了写理由） |
+| 手机上某个能力要收起来 | `src/lib/remote.ts` 的 `isRemote()` 判一下（藏按钮 / 换浏览器做法），或在 `bridge.rs` 的 `DENIED` 里写明原因 |
 | 局域网地址探测不准 | `remote::rank_addresses` 的排序规则（家用网段优先，VPN/CGNAT 靠后） |

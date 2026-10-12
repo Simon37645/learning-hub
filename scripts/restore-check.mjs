@@ -44,7 +44,22 @@ if (phase === "arrange") {
   })()`);
   console.log(r);
 } else if (phase === "setup") {
-  await c.eval(`document.querySelector('.tb-btn.close')?.click(); 'close-clicked'`);
+  // 用 **CDP 的真实鼠标事件**点关闭按钮，别用 element.click()：
+  // 自绘标题栏里那个按钮对「非可信的合成 click」不响应（React 的 onClick 收不到，
+  // 实测过；同一条标题栏里的最大化按钮却响应——原因没查到底）。
+  // 真实鼠标事件才是用户做的事，这里要验的就是「用户点关闭能不能关掉」。
+  const box = JSON.parse(
+    await c.eval(`(() => {
+      const b = document.querySelector('.tb-btn.close');
+      if (!b) return 'null';
+      const r = b.getBoundingClientRect();
+      return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+    })()`),
+  );
+  if (!box) throw new Error("找不到关闭按钮（界面还没起来？）");
+  await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y, button: "none" });
+  await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
   console.log("已点真实关闭按钮（走 onCloseRequested → saveUiState → 退出）…");
 } else {
   const s = JSON.parse(state);

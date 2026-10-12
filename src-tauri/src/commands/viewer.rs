@@ -17,8 +17,9 @@ fn tab_rel(core: &std::sync::Arc<crate::state::AppCore>, slug: &str, rel: &str) 
     }
 }
 
-/// 单次送进前端的文件大小上限（防止把内存吃爆）。
-const MAX_INLINE_BYTES: u64 = 160 * 1024 * 1024;
+/// 单次送进前端的文件大小上限（防止把内存吃爆）。定义在 viewer 服务层：
+/// 远程的 `/api/tab-bytes` 也要认同一个上限。
+const MAX_INLINE_BYTES: u64 = crate::viewer::MAX_INLINE_BYTES;
 
 #[tauri::command]
 pub async fn viewer_snapshot(state: State<'_, AppState>) -> AppResult<ViewerSnapshot> {
@@ -238,37 +239,17 @@ pub async fn viewer_load_text(state: State<'_, AppState>, tab_id: String) -> App
 }
 
 /// 读取标签页对应的二进制内容（PDF / 图片），原样交给前端渲染。
+///
+/// 解析与读取都在 `ViewerService::load_bytes`（远程的 `/api/tab-bytes` 走同一份，
+/// 保证手机上打开的和电脑上打开的是同一个文件）。
 #[tauri::command]
 pub async fn viewer_load_bytes(state: State<'_, AppState>, tab_id: String) -> AppResult<Response> {
     let core = state.0.clone();
-    let tab = core
+    let ws = core.workspace();
+    let (bytes, _mime) = core
         .viewer
-        .find(&tab_id)
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("标签页不存在：{tab_id}")))?;
-    let slug = tab
-        .topic_slug
-        .clone()
-        .ok_or_else(|| AppError::invalid("这个标签页不是本地文件"))?;
-    let rel = tab
-        .path
-        .clone()
-        .ok_or_else(|| AppError::invalid("标签页缺少文件路径"))?;
-    let topic = core.workspace().resolve(&slug)?;
-    let abs = crate::paths::resolve_in_root(&topic.dir, &tab_rel(&core, &slug, &rel))?;
-    if !abs.exists() {
-        return Err(AppError::NotFound(format!("文件不存在：{rel}")));
-    }
-    let meta = std::fs::metadata(&abs)?;
-    if meta.len() > MAX_INLINE_BYTES {
-        return Err(AppError::invalid(format!(
-            "文件太大（{}），请用系统程序打开",
-            crate::paths::human_size(meta.len())
-        )));
-    }
-    let bytes = tokio::fs::read(&abs)
-        .await
-        .map_err(|e| AppError::Io(std::io::Error::new(e.kind(), format!("{rel} — {e}"))))?;
+        .load_bytes(&tab_id, |slug| ws.resolve(slug).map(|t| t.dir))
+        .await?;
     Ok(Response::new(bytes))
 }
 

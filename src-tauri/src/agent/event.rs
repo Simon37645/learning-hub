@@ -193,16 +193,10 @@ pub const EVENT_TOAST: &str = "hub://toast";
 /// 顶级主题列表未必需要跟着刷新，但「记忆」面板一定要。
 pub const EVENT_MEMORY: &str = "hub://memory";
 
-/// 远程页面请求桌面端帮忙渲染一张图（目前只有 Mermaid）。
-///
-/// 为什么绕一圈：渲染器在桌面端前端（mermaid 那一份 3.5MB 的库不该再塞进
-/// 手机页面里），见 `remote::render` 的说明。前端渲染完用
-/// `remote_report_render` 把 SVG 交回去。
-pub const EVENT_REMOTE: &str = "hub://remote";
-
 /// 一键装中继的实时输出（面板上那几行「正在下载 Node…」）。
-/// 单独开一个频道而不是塞进 `hub://remote`：渲染请求是请求-响应，
-/// 这个是单向进度流，混在一起两边都要多写一层判断。
+///
+/// 只发给桌面端：装中继是「坐在电脑前」的事（手机上根本不开这一块），
+/// 所以它不走 `AppCore::emit_event` 那条会顺手扇给远程的路。
 pub const EVENT_REMOTE_DEPLOY: &str = "hub://remote-deploy";
 
 /// 一行安装进度。`stage`：running / done / failed。
@@ -211,17 +205,6 @@ pub const EVENT_REMOTE_DEPLOY: &str = "hub://remote-deploy";
 pub struct RemoteDeployEvent {
     pub stage: String,
     pub line: String,
-}
-
-/// 一次「帮我画一张图」的请求。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteRenderRequest {
-    /// 回话时要带上的 id（Rust 侧靠它找等待位）
-    pub id: String,
-    /// 代码块的语言：目前只发 mermaid
-    pub lang: String,
-    pub source: String,
 }
 
 /// 记忆变化事件：前端收到就重拉一次记忆总览。

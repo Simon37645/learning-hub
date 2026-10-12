@@ -141,15 +141,24 @@ impl AppCore {
 
     // ---------------------------------------------------------- 事件
 
-    pub fn emit_agent(&self, ev: &AgentEvent) {
-        let _ = self.app.emit(EVENT_AGENT, ev);
-        // 顺手扇给连着的手机：**一处转发**，别在对话循环里到处塞远程逻辑。
+    /// **所有**给界面的事件都从这里出去：本地 webview 一份，连着的手机一份。
+    ///
+    /// 为什么收成一处：远程的手机页面跑的是桌面端同一份前端（见 `remote/mod.rs`），
+    /// 它认的事件名和桌面端完全一样，所以「发事件」和「扇给远程」本来就是同一件事。
+    /// 散在各个业务模块里各写一遍的话，新加的事件迟早会漏掉手机那一份，
+    /// 而且那种漏是**静默**的（手机上就是不更新，没有任何报错）。
+    pub fn emit_event<T: serde::Serialize + Clone>(&self, name: &str, payload: T) {
+        let _ = self.app.emit(name, payload.clone());
         // 没有订阅者时 broadcast::send 只做一个原子读就返回，桌面端不吃亏。
-        self.remote.push_agent(ev);
+        self.remote.push_event(name, &payload);
+    }
+
+    pub fn emit_agent(&self, ev: &AgentEvent) {
+        self.emit_event(EVENT_AGENT, ev.clone());
     }
 
     pub fn emit_viewer(&self, ev: ViewerEvent) {
-        let _ = self.app.emit(EVENT_VIEWER, ev);
+        self.emit_event(EVENT_VIEWER, ev);
     }
 
     /// 查看器状态有变化（开/关/切标签）时，把全量状态推给前端。
@@ -159,8 +168,7 @@ impl AppCore {
     }
 
     pub fn emit_topics(&self, ev: TopicsEvent) {
-        let _ = self.app.emit(EVENT_TOPICS, &ev);
-        self.remote.push_topics(&ev);
+        self.emit_event(EVENT_TOPICS, ev);
     }
 
     pub fn emit_topics_created(&self, topic: &Topic) {
@@ -176,11 +184,10 @@ impl AppCore {
 
     pub fn toast(&self, level: &str, message: impl Into<String>) {
         let message = message.into();
-        let _ = self.app.emit(
+        self.emit_event(
             EVENT_TOAST,
-            serde_json::json!({ "level": level, "message": message.clone() }),
+            serde_json::json!({ "level": level, "message": message }),
         );
-        self.remote.push_toast(level, &message);
     }
 
     /// 给窗口设置标题（带当前主题名）。
@@ -416,7 +423,7 @@ impl AppCore {
 
     /// 记忆被改动后通知前端刷新面板。
     pub fn emit_memory_changed(&self, scope: &str) {
-        let _ = self.app.emit(
+        self.emit_event(
             crate::agent::event::EVENT_MEMORY,
             crate::agent::event::MemoryEvent {
                 scope: scope.to_string(),

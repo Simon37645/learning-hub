@@ -3571,3 +3571,185 @@ pre[data-mermaid="failed"] {
 .deploy-log .err {
   color: var(--danger);
 }
+
+/* ============================================================ 远程（手机 / 平板浏览器）
+ *
+ * 手机浏览器里跑的是**桌面端同一份界面**（见 src/lib/remote.ts 与
+ * src-tauri/src/remote/web/shim.js），所以这一段只做两件事：
+ *
+ * 1. **补上触摸设备的差异**：没有 hover、没有精确指针、视口高度会随地址栏变。
+ *    这类差异漏掉的症状都很迷惑人——「按钮明明在那儿就是点不到」。
+ * 2. **窄屏把三栏收成手机能用的样子**：侧栏变抽屉、内置浏览器变整屏浮层。
+ *
+ * 全部挂在 `html[data-remote]` 上（由 shim 设上）：桌面端一行都不受影响。
+ * 不要用 `@media (hover: none)` 之类去猜——同一台机器上用桌面浏览器开远程页面
+ * 也该是这一套（它本来就不是电脑上的那个应用）。
+ */
+
+/* ---- 触摸设备没有 hover：靠悬停才出现的操作必须常显 ---- */
+/* 漏掉任何一条，对应功能在手机上就是「看不见、点不到」，而且没有任何报错。 */
+html[data-remote] .side-section .mini-btn,
+html[data-remote] .chat-row .chat-actions,
+html[data-remote] .topic-row .row-actions {
+  opacity: 1;
+  display: flex;
+}
+html[data-remote] .chat-row .chat-time {
+  visibility: visible;
+}
+/* 悬停时才显示时间、并给操作按钮让位的那套在触摸上没有意义：
+   常显操作按钮，时间就让它挤一点（它本来也只是辅助信息）。 */
+html[data-remote] .chat-row .chat-actions {
+  background: var(--bg-side);
+}
+/* Mermaid 的缩放按钮同理（平时靠 hover 出现） */
+html[data-remote] .mermaid-tools {
+  opacity: 1;
+}
+
+/* ---- 视口高度：手机地址栏收起/展开会让 100% 跳一下 ---- */
+html[data-remote],
+html[data-remote] body,
+html[data-remote] #root {
+  height: 100dvh;
+}
+
+/* ---- 手指要够得着：主要交互目标放大到 ~36px ---- */
+html[data-remote] .titlebar {
+  height: 40px;
+}
+html[data-remote] .titlebar .tb-btn {
+  width: 44px;
+  height: 39px;
+}
+html[data-remote] .side-item {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+html[data-remote] .chat-row,
+html[data-remote] .topic-row {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+html[data-remote] .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+html[data-remote] .btn {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+html[data-remote] .composer textarea,
+html[data-remote] .composer .input {
+  font-size: 15px; /* iOS 上小于 16px 会「聚焦时自动放大页面」，15px 配合 viewport 已够用 */
+}
+
+/* 标题栏上的 ☰（只有远程 + 窄屏才出现；宽屏上侧栏是常显的，用不着它） */
+.titlebar .tb-menu {
+  display: none;
+}
+html[data-remote] .titlebar .tb-remote {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 10px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+html[data-remote] .titlebar .tb-remote .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-faint);
+}
+html[data-remote] .titlebar .tb-remote .dot.on {
+  background: var(--ok);
+}
+/* 抽屉展开时点外面那层幕布：只在远程 + 窄屏出现 */
+.sidebar-scrim {
+  display: none;
+}
+
+/* ---- 窄屏：侧栏 = 抽屉，内置浏览器 = 整屏浮层 ---- */
+@media (max-width: 900px) {
+  html[data-remote] .titlebar .tb-menu {
+    display: grid;
+  }
+
+  html[data-remote] .sidebar {
+    position: fixed;
+    top: 40px;
+    bottom: 0;
+    left: 0;
+    z-index: 60;
+    /* 覆盖 JS 设的 --sidebar-w（那是桌面上的拖动宽度，手机上没意义） */
+    width: min(320px, 86vw) !important;
+    border-right: 1px solid var(--border-strong);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+    transform: translateX(-102%);
+    transition: transform var(--speed) ease-out;
+    /* 抽屉在屏幕外时不接收点击（不然左边的空白会挡住正文） */
+    visibility: hidden;
+  }
+  html[data-remote] .sidebar.open {
+    transform: none;
+    visibility: visible;
+  }
+  html[data-remote] .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 40px 0 0 0;
+    z-index: 55;
+    background: rgba(0, 0, 0, 0.4);
+  }
+  /* 分界线在手机上没意义（没有可拖的余地，手指还容易误触） */
+  html[data-remote] .sidebar-resizer,
+  html[data-remote] .viewer-resizer {
+    display: none;
+  }
+
+  /* 内置浏览器：手机上整屏盖住正文，顶部那行标签照旧 */
+  html[data-remote] .viewer {
+    position: fixed;
+    top: 40px;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+    width: auto !important;
+    border-left: none;
+  }
+
+  /* 主题视图顶部那排（对话/工作台 + 阶段 + 待复习）：允许换行，别把内容挤没 */
+  html[data-remote] .chat-head {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 34px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    gap: 6px;
+  }
+  /* 工作台里的多列排布在窄屏上堆成一列（这几处的列数都是写死的） */
+  html[data-remote] .grid-2,
+  html[data-remote] .brief-grid,
+  html[data-remote] .grade-row,
+  html[data-remote] .remote-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  /* 消息区左右留白收窄：手机上每一像素都算数 */
+  html[data-remote] .messages {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  html[data-remote] .composer {
+    /* 底部安全区（iPhone 的横条）：不然发送按钮会被系统手势条压住 */
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  /* 表格是内容的硬宽度，允许横向滚动而不是撑破页面 */
+  html[data-remote] .md table,
+  html[data-remote] .viewer-scroll table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+}

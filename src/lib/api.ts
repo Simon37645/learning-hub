@@ -2,6 +2,7 @@
 // 方便将来替换传输层（例如换成本地 HTTP 服务）。
 
 import { invoke } from "@tauri-apps/api/core";
+import { isRemote, withToken } from "./remote";
 import type {
   Bootstrap,
   Card,
@@ -71,6 +72,21 @@ export function errText(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+/**
+ * 标签页对应文件的原始字节（PDF / 图片）。
+ *
+ * 桌面端走 IPC（Tauri 的响应本身就能带原始字节），**远程走 HTTP**：
+ * 那个命令回的东西有 160MB 上限，塞不进 JSON 事件通道（IPC 桥是 JSON 的）。
+ * 路径解析两边共用 `ViewerService::load_bytes`，所以拿到的一定是同一个文件。
+ */
+function loadTabBytes(tabId: string): Promise<ArrayBuffer> {
+  if (!isRemote()) return invoke<ArrayBuffer>("viewer_load_bytes", { tabId });
+  return fetch(withToken(`/api/tab-bytes?tab=${encodeURIComponent(tabId)}`)).then((res) => {
+    if (!res.ok) throw `读不到这个文件（${res.status}）`;
+    return res.arrayBuffer();
+  });
 }
 
 export const api = {
@@ -238,7 +254,7 @@ export const api = {
       height: payload.height ?? null,
       error: payload.error ?? null,
     }),
-  viewerLoadBytes: (tabId: string) => invoke<ArrayBuffer>("viewer_load_bytes", { tabId }),
+  viewerLoadBytes: (tabId: string) => loadTabBytes(tabId),
   viewerGetContent: (tabId: string) => invoke<string>("viewer_get_content", { tabId }),
   viewerReload: (tabId: string) => invoke<void>("viewer_reload", { tabId }),
   viewerOpenHome: () => invoke<TabView>("viewer_open_home"),
@@ -408,9 +424,9 @@ export const api = {
     invoke<DeployReport>("remote_deploy_relay", { host, user, password, sshPort: sshPort ?? null }),
   /** 忘掉记住的服务器公钥指纹（换机器 / 重装系统时用） */
   remoteForgetHostKey: () => invoke<void>("remote_forget_host_key"),
-  /** 替手机页面渲染完一张图之后回话（失败也要回，否则手机那边要等超时） */
-  remoteReportRender: (id: string, ok: boolean, payload: string) =>
-    invoke<boolean>("remote_report_render", { id, ok, payload }),
+  /** 替手机执行完一条命令之后回话（失败也要回，否则手机那边要等 30 秒超时） */
+  remoteReportInvoke: (id: string, ok: boolean, payload: unknown) =>
+    invoke<boolean>("remote_report_invoke", { id, ok, payload }),
 
   themeSetActive: (id: string | null) =>
     invoke<PublicConfig>("theme_set_active", { id: id ?? null }),

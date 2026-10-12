@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { api, errText } from "../lib/api";
+import { isRemote } from "../lib/remote";
 import type { TabView, ViewerKind } from "../lib/types";
 import { useApp } from "../store/app";
 import { Empty, Icon, Spinner } from "./ui";import { Markdown } from "./Chat";
@@ -19,6 +20,9 @@ export function ViewerPanel() {
   const activateTab = useApp((s) => s.activateTab);
   const closeTab = useApp((s) => s.closeTab);
   const goto = useApp((s) => s.goto);
+  // 手机上这块面板是**整屏浮层**（窄屏放不下第二栏），宽度由 CSS 说了算，
+  // 分界线也没有意义——没有可拖的余地，而且手指拖着走容易误触。
+  const remote = isRemote();
 
   const handle = useRef<HTMLDivElement>(null);
   // pointer capture 而不是只听 window 的 mouseup：松开时指针在原生子 WebView
@@ -57,23 +61,25 @@ export function ViewerPanel() {
           头部以下那段永远抓不到（用户报的「分界线只有上面能拉」）。
           现在整条贴在面板左侧、压在第二栏上（right 由面板宽度给出），
           原生层从面板内容区才开始画，盖不到它。 */}
-      <div
-        ref={handle}
-        className="viewer-resizer"
-        style={{ right: width }}
-        title="拖动调整内置浏览器宽度"
-        onPointerDown={(e) => {
-          try {
-            e.currentTarget.setPointerCapture(e.pointerId);
-          } catch {
-            /* 合成事件下会抛 */
-          }
-          document.body.style.cursor = "col-resize";
-          document.body.style.userSelect = "none";
-        }}
-      />
+      {!remote && (
+        <div
+          ref={handle}
+          className="viewer-resizer"
+          style={{ right: width }}
+          title="拖动调整内置浏览器宽度"
+          onPointerDown={(e) => {
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              /* 合成事件下会抛 */
+            }
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+      )}
 
-      <aside className="viewer" style={{ width }}>
+      <aside className="viewer" style={remote ? undefined : { width }}>
 
       <div className="viewer-head">
         <div className="viewer-tabs">
@@ -138,17 +144,21 @@ export function ViewerPanel() {
                 >
                   <Icon name="refresh" size={13} />
                 </button>
-                <button
-                  className="icon-btn"
-                  title="用系统程序打开"
-                  onClick={() =>
-                    void api
-                      .openWithSystem(active.topicSlug ?? "", active.path ?? "")
-                      .catch((e) => useApp.getState().toast("error", errText(e)))
-                  }
-                >
-                  <Icon name="external" size={13} />
-                </button>
+                {/* 「用系统程序打开」是电脑上的动作（远程接口明确拒了），
+                    手机上看不到这个按钮比看到一个点了报错的按钮好 */}
+                {!remote && (
+                  <button
+                    className="icon-btn"
+                    title="用系统程序打开"
+                    onClick={() =>
+                      void api
+                        .openWithSystem(active.topicSlug ?? "", active.path ?? "")
+                        .catch((e) => useApp.getState().toast("error", errText(e)))
+                    }
+                  >
+                    <Icon name="external" size={13} />
+                  </button>
+                )}
               </>
             )}
           </>
@@ -463,13 +473,17 @@ function WebTab({
   /** 原生视图创建失败 → 退回 iframe 兜底（本标签内不再重试） */
   const [nativeFailed, setNativeFailed] = useState(false);
   const isLocal = !!tab.path;
+  // 手机浏览器里没有原生子 WebView（那是挂在电脑窗口上的东西）：
+  // 直接走 iframe 兜底那条路——站点拒绝内嵌时会自动切到阅读模式，
+  // 正文是**电脑上那个内置浏览器**提取好的，手机上照样读得到。
+  const remote = isRemote();
   const zen = useApp((s) => s.zen);
   const overlayCount = useApp((s) => s.overlayCount);
   const setNativeWebviewUp = useApp((s) => s.setNativeWebviewUp);
   const reloadSeq = useApp((s) => s.reloadSeq[tab.id] ?? 0);
   const hostRef = useRef<HTMLDivElement>(null);
 
-  const useNative = !isLocal && !nativeFailed;
+  const useNative = !isLocal && !nativeFailed && !remote;
   const canShow = useNative && !readerMode && !zen && overlayCount === 0;
   // ensure 是异步的：期间条件可能已经翻转（比如刚弹出浮层），完成时要按最新状态收场
   const canShowRef = useRef(canShow);

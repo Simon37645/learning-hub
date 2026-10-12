@@ -5,6 +5,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../lib/api";
+import { isRemote } from "../lib/remote";
 import { dueLabel, fmtDate, fmtDateTime, humanBytes, relTime } from "../lib/format";
 import {
   CARD_KIND_LABEL,
@@ -454,6 +455,11 @@ function MaterialsPane() {
   }, [topic.materials]);
 
   async function importFiles() {
+    // 导入资料＝把电脑上的文件搬进工作区，手机上做不了：说清替代办法
+    if (isRemote()) {
+      toast("info", "导入资料要在电脑上选文件。手机上可以让 agent 把内容写进 materials/（它会请求你确认）。");
+      return;
+    }
     try {
       const picked = await openDialog({ multiple: true, title: "选择资料（会复制到 materials/）" });
       if (!picked) return;

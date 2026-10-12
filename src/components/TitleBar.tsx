@@ -15,18 +15,26 @@
 // - 整条是拖拽区（data-tauri-drag-region），按钮上不要加，否则拖不动窗口
 // - 双击标题栏 = 最大化/还原
 // - 需要 tauri.conf.json 里 `decorations: false`，以及 capabilities 里的窗口权限
+//   （**漏一项就是静默失效**，`lib.rs` 里有个测试盯着这张清单）
+//
+// 远程（手机浏览器）里这条的作用完全不同：没有窗口可控制，它变成
+// 「品牌 + 当前主题 + 连接状态 + ☰（窄屏展开侧栏）」的一行。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { fitOuter } from "../lib/winfit";
+import { isRemote, remoteBridge } from "../lib/remote";
 import { useApp } from "../store/app";
 import { AppMark, Icon } from "./ui";
 
 export function TitleBar() {
   const topicName = useApp((s) => s.topic?.meta.name ?? null);
+  const sidebarOpen = useApp((s) => s.sidebarOpen);
+  const setSidebarOpen = useApp((s) => s.setSidebarOpen);
   const [filled, setFilled] = useState(false);
   const restore = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
-  const win = getCurrentWindow();
+  const remote = isRemote();
+  const win = remote ? null : getCurrentWindow();
 
   /** 当前显示器的工作区（物理像素，已排除任务栏） */
   const workArea = useCallback(async () => {
@@ -36,6 +44,7 @@ export function TitleBar() {
 
   /** 窗口超出工作区就拉回来——不管它是怎么变大的（贴靠、系统快捷键、上次遗留） */
   const clampToWorkArea = useCallback(async () => {
+    if (!win) return;
     // 专注模式（F11）期间不插手：系统刚把窗口铺满整块屏，这里再按「工作区」拉一下
     // 会把它缩成工作区大小（任务栏露出来），多显示器时还可能摆到别的屏上。
     if (useApp.getState().zen) return;
@@ -61,6 +70,7 @@ export function TitleBar() {
   }, [win, workArea]);
 
   useEffect(() => {
+    if (!win) return;
     void clampToWorkArea();
     let timer: number | null = null;
     let unlisten: (() => void) | null = null;
@@ -81,6 +91,7 @@ export function TitleBar() {
 
   /** 最大化 = 填满工作区（不是系统 maximize，见文件头注释） */
   async function toggleFill() {
+    if (!win) return;
     const wa = await workArea();
     if (!wa) return;
     if (!filled) {
@@ -96,7 +107,20 @@ export function TitleBar() {
   }
 
   return (
-    <div className="titlebar" data-tauri-drag-region onDoubleClick={() => void toggleFill()}>
+    <div
+      className="titlebar"
+      data-tauri-drag-region={remote ? undefined : true}
+      onDoubleClick={() => void toggleFill()}
+    >
+      {remote && (
+        <button
+          className="tb-btn tb-menu"
+          title={sidebarOpen ? "收起列表" : "展开列表"}
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+        >
+          <Icon name="list" size={14} />
+        </button>
+      )}
       <span className="tb-brand" data-tauri-drag-region>
         <AppMark size={14} color="var(--accent)" />
         学习中枢
@@ -107,29 +131,57 @@ export function TitleBar() {
         </span>
       )}
       <span className="grow" data-tauri-drag-region />
-      <button className="tb-btn" title="最小化" onClick={() => void win.minimize()}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
-          <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
-        </svg>
-      </button>
-      <button className="tb-btn" title={filled ? "还原" : "最大化"} onClick={() => void toggleFill()}>
-        {filled ? (
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
-            <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" />
-            <path d="M2.5 2.5V0.5h7v7h-2" fill="none" stroke="currentColor" strokeWidth="1" />
-          </svg>
-        ) : (
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
-            <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1" />
-          </svg>
-        )}
-      </button>
-      <button className="tb-btn close" title="关闭" onClick={() => void win.close()}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
-          <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" />
-        </svg>
-      </button>
+      {remote ? (
+        <RemoteBadge />
+      ) : (
+        <>
+          <button className="tb-btn" title="最小化" onClick={() => void win?.minimize()}>
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+              <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          </button>
+          <button className="tb-btn" title={filled ? "还原" : "最大化"} onClick={() => void toggleFill()}>
+            {filled ? (
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+                <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" />
+                <path d="M2.5 2.5V0.5h7v7h-2" fill="none" stroke="currentColor" strokeWidth="1" />
+              </svg>
+            ) : (
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+                <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1" />
+              </svg>
+            )}
+          </button>
+          <button className="tb-btn close" title="关闭" onClick={() => void win?.close()}>
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+              <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          </button>
+        </>
+      )}
     </div>
+  );
+}
+
+/**
+ * 远程模式下右上角那一点：绿=事件流连着，灰=断了（浏览器自己会重连）。
+ *
+ * 为什么要在界面上留这个：手机上最难受的故障是「看着像好的、其实已经不更新了」，
+ * 有个一眼能看出来的指示器，用户就知道该下拉刷新还是去检查电脑那边。
+ */
+function RemoteBadge() {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    const tick = () => setOn(remoteBridge()?.connected !== false);
+    tick();
+    const t = window.setInterval(tick, 2000);
+    return () => window.clearInterval(t);
+  }, []);
+  return (
+    <span className="tb-remote" title={on ? "已连上电脑（远程控制）" : "连接断了，正在重连…"}>
+      <span className={"dot" + (on ? " on" : "")} />
+      远程
+    </span>
   );
 }
 

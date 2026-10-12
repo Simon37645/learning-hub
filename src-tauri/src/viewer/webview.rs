@@ -248,8 +248,8 @@ impl WebviewManager {
                                 // open() 已把新标签置为激活；发 Sync 让前端整体覆盖，
                                 // 新标签的 WebTab 挂载后自己会建原生子 WebView
                                 let snapshot = service.snapshot().await;
-                                let _ = app.emit(
-                                    crate::agent::event::EVENT_VIEWER,
+                                emit_viewer(
+                                    &app,
                                     crate::agent::event::ViewerEvent::Sync { snapshot },
                                 );
                             }
@@ -526,6 +526,23 @@ fn label_of(tab_id: &str) -> String {
     format!("web-{tab_id}")
 }
 
+/// 发一条 viewer 事件给界面。
+///
+/// 为什么不直接 `app.emit`：**远程的手机页面也要收到**，而事件只有一个出口
+/// （`AppCore::emit_viewer`）。绕开它直接发，手机上就会静默地不更新
+/// （标签标题、网页里点出来的新标签都看不见）。
+///
+/// 为什么从 managed state 里取 core 而不是捕获 `Arc<AppCore>`：本模块被 AppCore
+/// 持有，捕获它就是引用环（见文件头）。
+fn emit_viewer(app: &AppHandle, ev: crate::agent::event::ViewerEvent) {
+    match app.try_state::<crate::state::AppState>() {
+        Some(state) => state.0.emit_viewer(ev),
+        None => {
+            let _ = app.emit(crate::agent::event::EVENT_VIEWER, ev);
+        }
+    }
+}
+
 /// 回调线程 → 异步任务：改 ViewerService 状态，有变化就发 Updated 事件给前端。
 ///
 /// Updated 是现有事件，前端 handleViewerEvent 的 updated 分支会把新 TabView 写进
@@ -540,10 +557,7 @@ fn spawn_state_update(
 ) {
     tauri::async_runtime::spawn(async move {
         if let Some(tab) = service.apply_web_state(&tab_id, url, title, loading).await {
-            let _ = app.emit(
-                crate::agent::event::EVENT_VIEWER,
-                crate::agent::event::ViewerEvent::Updated { tab },
-            );
+            emit_viewer(&app, crate::agent::event::ViewerEvent::Updated { tab });
         }
     });
 }

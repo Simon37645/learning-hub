@@ -5,6 +5,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useApp, type ToolActivity } from "../store/app";
 import { api, errText } from "../lib/api";
+import { isRemote, pickFilesInBrowser } from "../lib/remote";
 import { highlightWithin, linkifyCitations, renderDemoBlocksIn, renderMarkdown, renderMermaidIn } from "../lib/markdown";
 import { clampText, fmtClock, fmtTokens, hotkey } from "../lib/format";
 import { imageFilesFrom, prepareImage } from "../lib/images";
@@ -769,6 +770,13 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
   }
 
   async function pickImages() {
+    // 手机上用浏览器自己的选择器：系统对话框选的是**电脑上**的文件，
+    // 弹出来的窗口在电脑屏幕上，人在手机这边什么也看不见。
+    if (isRemote()) {
+      const files = await pickFilesInBrowser("image/*");
+      if (files.length > 0) await addImages(files);
+      return;
+    }
     try {
       const picked = await openDialog({
         multiple: true,
@@ -797,6 +805,15 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
   async function pickFiles() {
     if (!topic) {
       toast("warn", "先在左侧选一个主题，资料会导入到它的 materials/ 目录");
+      return;
+    }
+    // 导入资料＝把**电脑上**的文件搬进工作区，手机上做不了这件事：
+    // 说清楚该怎么办（让 agent 放进去，或者坐到电脑前），别只报一句权限不足。
+    if (isRemote()) {
+      toast(
+        "info",
+        "导入资料要在电脑上选文件。手机上可以让 agent 直接把内容写进 materials/（它会请求你确认）。",
+      );
       return;
     }
     try {

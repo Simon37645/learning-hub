@@ -600,6 +600,7 @@ impl AgentService {
             append_transcript(&core, topic.as_ref(), &req.chat_id, &assistant)?;
             core.emit_agent(&AgentEvent::Message {
                 turn_id: turn_id.clone(),
+                chat_id: req.chat_id.clone(),
                 message: assistant,
             });
 

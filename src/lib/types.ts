@@ -644,7 +644,7 @@ export type ApprovalRequest =
 export type AgentEvent =
   | { kind: "turn_started"; turn_id: string; chat_id: string; topic_slug: string | null; message_id: string; mode: PermissionMode }
   | { kind: "delta"; turn_id: string; message_id: string; text: string; thinking: boolean }
-  | { kind: "message"; turn_id: string; message: ChatMessage }
+  | { kind: "message"; turn_id: string; chat_id: string; message: ChatMessage }
   | { kind: "stream_reset"; turn_id: string }
   | { kind: "iteration"; turn_id: string; index: number; max: number }
   | { kind: "tool_approval"; turn_id: string; call: PendingCall }

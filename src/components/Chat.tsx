@@ -155,11 +155,14 @@ function ToolCard({
 
 function MessageView({
   msg,
+  first = true,
   results,
   onLink,
   onImage,
 }: {
   msg: ChatMessage;
+  /** 这一轮的首条消息（决定画不画头像：一轮只画一次） */
+  first?: boolean;
   results: Map<string, ToolResultView>;
   onLink: (href: string) => void;
   onImage: (img: LightboxImage) => void;
@@ -181,7 +184,9 @@ function MessageView({
 
   return (
     <div className={"msg " + (user ? "user" : "agent")}>
-      <div className={"msg-avatar" + (user ? "" : " agent")}>
+      {/* 一轮里模型的回复分几条消息到达（工具调用之间各一条），但视觉上是一轮：
+          头像只画一次，后面的用占位撑住左边距（`.cont` 只是隐藏，不塌陷布局） */}
+      <div className={"msg-avatar" + (user ? "" : " agent") + (first ? "" : " cont")}>
         {user ? userName.slice(0, 1) : <Icon name="sparkle" size={13} />}
       </div>
       <div className="msg-col">
@@ -420,6 +425,19 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
     if (pinned.current) el.scrollTop = el.scrollHeight;
   }, [messages, streaming?.text, streaming?.thinking, activities.length]);
 
+  // 一轮里模型会分几次回复（每轮工具调用之间各一条 assistant 消息），但**视觉上是一轮**：
+  // 头像只在这一轮的开头出现一次，后面的接着往下排——否则一次循环就冒一个头像，
+  // 一轮下来满屏头像（用户报的「不要一次循环就出现一次头像」）。
+  // 判据：前一条不是 assistant（工具消息不参与渲染，见 visible）。
+  const isTurnStart = (i: number) => {
+    const prev = visible[i - 1];
+    return !prev || prev.role !== "assistant";
+  };
+  const runningActs = liveActivities.filter((a) => a.running);
+  const lastShown = visible[visible.length - 1];
+  // 这一轮已经在上面画过头像了吗（用于活动卡片 / 流式气泡）
+  const turnAvatarShown = !!lastShown && lastShown.role !== "user";
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -441,33 +459,33 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
           welcome ?? (topic?.meta.name ? <TopicWelcome topicName={topic.meta.name} /> : <Welcome topicName={null} />)
         ) : (
           <div className="msg-wrap">
-            {visible.map((m) => (
+            {visible.map((m, i) => (
               <MessageView
                 key={m.id}
                 msg={m}
+                first={isTurnStart(i)}
                 results={results}
                 onLink={onLink}
                 onImage={setLightbox}
               />
             ))}
 
-            {/* 本轮工具活动（尚未落进消息的） */}
-            {liveActivities
-              .filter((a) => a.running)
-              .map((a) => (
-                  <div className="msg agent" key={"live-" + a.callId}>
-                    <div className="msg-avatar agent">
-                      <Icon name="sparkle" size={13} />
-                    </div>
-                    <div className="msg-col">
-                      <ToolCardForActivity a={a} onImage={setLightbox} />
-                    </div>
-                  </div>
-                ))}
+            {/* 本轮工具活动（尚未落进消息的）：一轮里可能有好几张，
+                头像只在第一张上画一次 */}
+            {runningActs.map((a, i) => (
+              <div className="msg agent" key={"live-" + a.callId}>
+                <div className={"msg-avatar agent" + (i === 0 && !turnAvatarShown ? "" : " cont")}>
+                  <Icon name="sparkle" size={13} />
+                </div>
+                <div className="msg-col">
+                  <ToolCardForActivity a={a} onImage={setLightbox} />
+                </div>
+              </div>
+            ))}
 
             {streaming && (
               <div className="msg agent">
-                <div className="msg-avatar agent">
+                <div className={"msg-avatar agent" + (turnAvatarShown || runningActs.length > 0 ? " cont" : "")}>
                   <Icon name="sparkle" size={13} />
                 </div>
                 <div className="msg-col">

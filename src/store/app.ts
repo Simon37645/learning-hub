@@ -202,6 +202,8 @@ interface AppStore {
 
   newChat: () => Promise<void>;
   loadChat: (chatId: string) => Promise<void>;
+  /** 把盘上、界面上还没有的消息补到尾部（只追加、不覆盖，见实现处的说明） */
+  syncChatTail: (chatId: string) => Promise<void>;
   /** 读某个主题的对话清单（不传就是当前主题）；侧栏树展开时按需调用 */
   loadChats: (slug?: string | null, mode?: AgentMode) => Promise<void>;
   /** 重拉**已经缓存过**的对话清单（另一个窗口改了对话时用，见实现处的说明） */
@@ -587,6 +589,33 @@ export const useApp = create<AppStore>((set, get) => ({
       if (seq !== chatSwitchSeq) return;
       set({ chatId, messages: [], usage: null });
       console.warn("读取对话失败", e);
+    }
+  },
+
+  /**
+   * 把「盘上有、界面上还没有」的消息补到尾部。**只追加，不覆盖**。
+   *
+   * 用途：一轮结束时的兜底（见 `handleAgentEvent` 的 finished 分支）。之所以不直接
+   * `loadChat` 重读一遍：万一用户紧接着又发了一条，重读会把新一轮刚追加的消息覆盖掉
+   * （`loadChat` 认的是「切对话」的竞态序号，不认新一轮）。只追加就天然没有这个竞态。
+   */
+  async syncChatTail(chatId) {
+    const slug = get().topic?.slug ?? null;
+    try {
+      const onDisk = await api.agentTranscript(chatId, slug);
+      if (get().chatId !== chatId) return; // 期间切走了：别把补的内容塞进别的对话
+      set((s) => {
+        if (s.chatId !== chatId || s.messages.length === 0) return {};
+        // 从「界面上最后一条」开始对：它后面的都要补。对不上就什么都不做（保守）
+        const last = s.messages[s.messages.length - 1];
+        const at = onDisk.findIndex((m) => m.id === last.id);
+        if (at < 0) return {};
+        const tail = onDisk.slice(at + 1);
+        if (tail.length === 0) return {};
+        return { messages: [...s.messages, ...tail] };
+      });
+    } catch (e) {
+      console.warn("补对话尾巴失败", e);
     }
   },
 
@@ -1579,6 +1608,10 @@ function isCurrentTurn(s: AppStore, turnId: string): boolean {
   return s.streaming?.turnId === turnId && s.streaming.chatId === s.chatId;
 }
 
+/** 最近一轮是「哪条对话的哪一轮」：`finished` 靠它判断该不该去盘上补一次尾巴
+ *  （`Finished` 事件只有 turn_id，没有 chat_id）。 */
+let lastTurn: { turnId: string; chatId: string } | null = null;
+
 function handleAgentEvent(
   ev: AgentEvent,
   set: (p: Partial<AppStore> | ((s: AppStore) => Partial<AppStore>)) => void,
@@ -1586,6 +1619,7 @@ function handleAgentEvent(
 ): void {
   switch (ev.kind) {
     case "turn_started":
+      lastTurn = { turnId: ev.turn_id, chatId: ev.chat_id };
       set({ streaming: { turnId: ev.turn_id, chatId: ev.chat_id, text: "", thinking: "" }, activities: [], iteration: null, chatError: null });
       break;
     case "delta":
@@ -1600,9 +1634,16 @@ function handleAgentEvent(
       break;
     case "message":
       set((s) => {
-        // 别的对话（或上一轮）的消息不追加进来；它们落在本对话的 jsonl 里，
-        // 切回去时 loadChat 会从盘上读
-        if (!isCurrentTurn(s, ev.turn_id)) return {};
+        // 只认「当前正在看的就是这条对话」的消息（事件带 chat_id）。别的对话的消息
+        // 不追加进来——它们落在各自的 jsonl 里，切回去时 loadChat 会从盘上读。
+        //
+        // 这里**不能**再看 `streaming` 还在不在：用户中途切走一下（切对话/切主题都会
+        // 把 streaming 清掉）之后，这一轮剩下的回复就整条进不了界面了——模型生成了、
+        // jsonl 里也写了、下一轮它自己还引用得到，界面上却永远是断的
+        //（用户报的「模型认为它输出了讲解和提问，我却没读到」）。判据改成 chat_id。
+        if (ev.chat_id !== s.chatId) return {};
+        // 重连/重试会把同一条消息再推一次：按 id 去重，别渲染两遍
+        if (s.messages.some((m) => m.id === ev.message.id)) return {};
         return {
           messages: [...s.messages, ev.message],
           // 一轮里模型可能回复多次（工具调用之间），每次都从空缓冲重新开始
@@ -1700,6 +1741,11 @@ function handleAgentEvent(
       void get().refreshBrief();
       // 侧栏的对话清单：标题取自第一句话，所以第一轮结束后要刷一次才会出现
       void get().loadChats();
+      // 兜底：这一轮如果就是当前这条对话的，结束后跟盘上对一次尾巴——
+      // 中途切走 / 掉过事件时丢掉的回复都能补回来（只追加不覆盖，见 syncChatTail）
+      if (lastTurn?.turnId === ev.turn_id && lastTurn.chatId === get().chatId) {
+        void get().syncChatTail(lastTurn.chatId);
+      }
       break;
     case "failed":
       set((s) => {

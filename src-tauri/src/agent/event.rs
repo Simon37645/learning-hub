@@ -93,8 +93,15 @@ pub enum AgentEvent {
         thinking: bool,
     },
     /// 一条完整消息落库（助手回复或工具结果）
+    ///
+    /// `chat_id` 少不得：前端只认「当前正在看的就是这条对话」的消息
+    /// （靠它把别的对话的消息挡在外面）。早先只有 turn_id，前端只能拿
+    /// `streaming` 还在不在来猜——**中途切走一下 `streaming` 就没了，这一轮
+    /// 剩下的回复会整条丢掉**：模型生成了、jsonl 里也写了，界面上就是不出
+    /// （用户报的「模型认为它输出了讲解和提问，我却没读到」）。
     Message {
         turn_id: String,
+        chat_id: String,
         message: ChatMessage,
     },
     /// 清空正在流式的缓冲区。自动重连时用：断线前已经吐到界面上的半截话

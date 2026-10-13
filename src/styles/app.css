@@ -1136,6 +1136,12 @@ body.dragging-chat {
   border: 1px solid var(--accent-border);
 }
 
+/* 同一轮里后续的消息：头像位置留空（不塌陷），但不画东西——
+   一轮只出现一次头像，否则一次工具循环就冒一个（见 Chat.tsx 的 isTurnStart） */
+.msg-avatar.cont {
+  visibility: hidden;
+}
+
 .msg-col {
   min-width: 0;
   flex: 1;

@@ -204,6 +204,8 @@ interface AppStore {
   loadChat: (chatId: string) => Promise<void>;
   /** 读某个主题的对话清单（不传就是当前主题）；侧栏树展开时按需调用 */
   loadChats: (slug?: string | null, mode?: AgentMode) => Promise<void>;
+  /** 重拉**已经缓存过**的对话清单（另一个窗口改了对话时用，见实现处的说明） */
+  refreshChatLists: () => Promise<void>;
   /** 读工坊的对话清单 */
   loadStudioChats: () => Promise<void>;
   /** 打开工坊：切到工坊视图并续上最近一条对话 */
@@ -601,6 +603,29 @@ export const useApp = create<AppStore>((set, get) => ({
     } catch (e) {
       console.warn("读取对话清单失败", e);
     }
+  },
+
+  /**
+   * 重拉**已经缓存过**的对话清单。
+   *
+   * `chatIndex` 是按需缓存的：侧栏展开某个主题才读一次，读过就不再读第二次
+   * （见 Sidebar 里那个 lazy effect）。所以**另一个窗口**（手机上打开的同一个界面、
+   * 或另一个桌面窗口）删掉 / 搬走 / 改名一条对话时，这边的列表会一直停在旧内容上
+   * ——用户报的「移动端网页会显示已经删除的对话」就是它。
+   *
+   * 只在收到 `hub://topics` 的 Refresh 时调用（那几个 chat_* 命令改完都会发）。
+   * 只重拉缓存过的那些，不顺手把所有主题都扫一遍。
+   */
+  async refreshChatLists() {
+    const st = get();
+    const jobs = Object.keys(st.chatIndex).map((key) =>
+      // 空串那个键是「工作区级」那份（首页/日常问答）；主题清单一律 study 模式，
+      // 不显式传的话工坊视图下会被 loadChats 当成 studio 转发掉
+      st.loadChats(key === "" ? null : key, "study"),
+    );
+    // 工坊那份是单独的字段，拉过就跟着刷
+    if (st.studioChats.length > 0 || st.view === "studio") jobs.push(st.loadStudioChats());
+    await Promise.all(jobs);
   },
 
   async loadStudioChats() {
@@ -1338,6 +1363,10 @@ async function bootstrapStore(
     // 工作台里的笔记/资料/统计也要跟着刷——否则 agent 新建的笔记在界面上看不到。
     await listen<TopicsEvent>("hub://topics", (e) => {
       void get().refreshTopics();
+      // 对话的增删改也走这个事件（chat_delete / chat_move / chat_rename … 改完都会发）：
+      // 对话清单是「读过就缓存」的，不在这里跟着重拉，另一个窗口就会一直显示
+      // 已经删掉的对话（用户报的「移动端网页会显示已经删除的对话」）。
+      void get().refreshChatLists();
       const cur = get().topic?.slug;
       if (!cur) return;
       const affected =
@@ -1391,6 +1420,8 @@ async function bootstrapStore(
       await listen("hub://reconnect", () => {
         void get().refreshTopics();
         void get().refreshBrief();
+        // 断线期间另一个窗口改过的对话（删掉/搬走）也要跟着对齐
+        void get().refreshChatLists();
         scheduleTopicRefresh();
         const id = get().chatId;
         if (id && !get().streaming) void get().loadChat(id);

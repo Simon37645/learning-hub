@@ -355,6 +355,9 @@ a:hover {
   margin-left: -4px;
   cursor: col-resize;
   z-index: 20;
+  /* 触摸设备上不写这个，浏览器会把手指的移动当成「滚动/平移」手势接管掉，
+     发一个 pointercancel 就没下文了——手柄看起来「拉不动」（鼠标没事）。 */
+  touch-action: none;
 }
 
 .sidebar-resizer:hover,
@@ -1988,6 +1991,9 @@ body.dragging-chat {
   width: 7px;
   cursor: col-resize;
   z-index: 30;
+  /* 触摸设备上不写这个，手指一拖就被浏览器当成滚动手势接管（发 pointercancel），
+     手柄看起来「拉不动」——鼠标下看不出问题，所以这条只有触屏用户会碰到。 */
+  touch-action: none;
 }
 
 .viewer-resizer:hover,

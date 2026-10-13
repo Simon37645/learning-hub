@@ -210,11 +210,27 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   **光标就永远停在 `col-resize`**。现在统一走 `src/lib/dragcursor.ts` 的 `useDragCursor()`：
   「是不是我的拖动」看自己的 pointerId，「还光标」无条件做，而且 pointerup / pointercancel /
   lostpointercapture / 窗口失焦 / 组件卸载五条路都做（有回归网 `dragcursor.test.tsx`）。
-  另外 `Viewer` 那条 effect 的依赖要带上 `viewer.visible`——手柄是条件渲染的，
-  不带的话面板收起再打开就再也拖不动了。
+- **手柄元素要用 state（回调 ref）而不是 `useRef` + 依赖数组**（用户报的「分界线不可拉动」）：
+  两个手柄都是**条件渲染**的（内置浏览器收起时不存在），用 `useRef` 时 effect 只会在
+  挂载那一刻看一次 `ref.current`——那一刻手柄不在就是 null，之后手柄出现了**监听也没接上**，
+  于是「面板打开之后分界线再也拖不动」。这个坑踩了两次（第一次只补了依赖数组，漏一个还会再犯）。
+  现在两边都写 `const [handle, setHandle] = useState<HTMLDivElement | null>(null)` +
+  `ref={setHandle}`，effect 依赖 `[handle, …]`：手柄一出现就跑，结构上不会再漏。
+  另外两个手柄都加了 `touch-action: none`——不写的话触摸设备上手指一拖会被浏览器当成
+  滚动手势接管（发 pointercancel），鼠标下完全看不出来。
+- **对话清单是「按需缓存」的，别的窗口改了必须跟着刷**（用户报的「移动端网页会显示已经删除的对话」）：
+  `chatIndex[slug]` 只在侧栏展开某个主题时读一次，读过就再也不会自动重读（Sidebar 里那个
+  lazy effect 还会 `if (chatIndex[t.slug]) continue` 跳过）。所以手机（＝同一个前端、另一头）
+  删掉一条对话时，桌面这边会一直显示它——反过来也一样。
+  现在 `hub://topics` 的 Refresh 处理里会调 `store.refreshChatLists()`：**只重拉缓存过的那些键**
+  （外加拉过的工坊清单），不把所有主题扫一遍。Rust 那边不用动：几个 `chat_*` 改命令本来就会发
+  Refresh（`overview_after_change` / `chat_move` / `chat_delete` / `chat_fork`），
+  而 `chat_overview` 这个**读**命令不发（读命令发事件会让「收到事件就重拉」自激）。
 - **对话可以在主题之间搬**（`chat_move` 动 `.hub/chats/<id>.jsonl` **和**同名的 `.meta.json`）：
   搬的是文件，聊天记录里已有的相对引用不会跟着重算——所以这是「整理」语义。
   正在看的那条被搬走后，前端会给源主题新开一条，免得接着聊又写回旧主题。
+  它发的是 `TopicsEvent::Updated`（两个主题各一条），不是 `Refresh`——**测「别的窗口会不会刷新」
+  时别只看标题在不在**：搬走之后标题会出现在目标主题下面，得按「每个主题挂着的对话行」分组看。
 - **技能 / MCP 一律「只给开着的」**：判断只看开关（全局 + 本主题 + 父主题的禁用并集，
   `skills::effective` 是唯一的规则入口，面板与系统提示词都走它，别在别处再写一套过滤）。
   **不要按名字或目录写特例**——用户会自己往任意目录加技能，规则必须对以后新增的也成立。

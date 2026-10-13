@@ -25,33 +25,33 @@ export function ViewerPanel() {
   // 分界线也没有意义——没有可拖的余地，而且手指拖着走容易误触。
   const remote = isRemote();
 
-  const handle = useRef<HTMLDivElement>(null);
+  // 手柄元素存成 state（而不是 useRef）：手柄是条件渲染的（面板收起、手机上都没有），
+  // 用 useRef + 依赖数组时漏一个依赖就变成「面板打开之后再也拖不动」——**这个坑真踩过**
+  // （原来那条 effect 只依赖 setWidth，面板收起再打开后手柄的监听就没接上，
+  // 用户报的「分界线不可拉动」）。存成 state，元素一出现 effect 就重新跑。
+  const [handle, setHandle] = useState<HTMLDivElement | null>(null);
   const { begin, end, isDragging } = useDragCursor();
   // pointer capture 而不是只听 window 的 mouseup：松开时指针在原生子 WebView
   // 上（它是独立原生窗口）或窗口外时 mouseup 会丢，之后不按键也改宽度。
   // 光标与选区的接管走 lib/dragcursor.ts（任何一条收尾路径都会还回去）。
-  //
-  // 依赖里带上 viewer.visible / remote：手柄是条件渲染的（面板收起、手机上都没有），
-  // 不带的话这条 effect 只在挂载时跑过一次、拿到的是 null，面板再打开就拖不动了。
   useEffect(() => {
-    const el = handle.current;
-    if (!el) return;
+    if (!handle) return;
     const onMove = (e: PointerEvent) => {
       if (!isDragging(e)) return;
       setWidth(window.innerWidth - e.clientX);
     };
     const onUp = (e: PointerEvent) => end(e);
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onUp);
-    el.addEventListener("pointercancel", onUp);
-    el.addEventListener("lostpointercapture", onUp);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+    handle.addEventListener("lostpointercapture", onUp);
     return () => {
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onUp);
-      el.removeEventListener("pointercancel", onUp);
-      el.removeEventListener("lostpointercapture", onUp);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      handle.removeEventListener("lostpointercapture", onUp);
     };
-  }, [setWidth, end, isDragging, viewer.visible, remote]);
+  }, [handle, setWidth, end, isDragging]);
 
   if (!viewer.visible) return null;
 
@@ -66,7 +66,7 @@ export function ViewerPanel() {
           原生层从面板内容区才开始画，盖不到它。 */}
       {!remote && (
         <div
-          ref={handle}
+          ref={setHandle}
           className="viewer-resizer"
           style={{ right: width }}
           title="拖动调整内置浏览器宽度"

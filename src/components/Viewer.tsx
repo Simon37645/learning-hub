@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { api, errText } from "../lib/api";
+import { useDragCursor } from "../lib/dragcursor";
 import { isRemote } from "../lib/remote";
 import type { TabView, ViewerKind } from "../lib/types";
 import { useApp } from "../store/app";
@@ -25,30 +26,32 @@ export function ViewerPanel() {
   const remote = isRemote();
 
   const handle = useRef<HTMLDivElement>(null);
+  const { begin, end, isDragging } = useDragCursor();
   // pointer capture 而不是只听 window 的 mouseup：松开时指针在原生子 WebView
-  // 上（它是独立原生窗口）或窗口外时 mouseup 会丢，之后不按键也改宽度
+  // 上（它是独立原生窗口）或窗口外时 mouseup 会丢，之后不按键也改宽度。
+  // 光标与选区的接管走 lib/dragcursor.ts（任何一条收尾路径都会还回去）。
+  //
+  // 依赖里带上 viewer.visible / remote：手柄是条件渲染的（面板收起、手机上都没有），
+  // 不带的话这条 effect 只在挂载时跑过一次、拿到的是 null，面板再打开就拖不动了。
   useEffect(() => {
     const el = handle.current;
     if (!el) return;
     const onMove = (e: PointerEvent) => {
-      if (!el.hasPointerCapture(e.pointerId)) return;
+      if (!isDragging(e)) return;
       setWidth(window.innerWidth - e.clientX);
     };
-    const end = (e: PointerEvent) => {
-      if (!el.hasPointerCapture(e.pointerId)) return;
-      el.releasePointerCapture(e.pointerId);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
+    const onUp = (e: PointerEvent) => end(e);
     el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+    el.addEventListener("lostpointercapture", onUp);
     return () => {
       el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", end);
-      el.removeEventListener("pointercancel", end);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      el.removeEventListener("lostpointercapture", onUp);
     };
-  }, [setWidth]);
+  }, [setWidth, end, isDragging, viewer.visible, remote]);
 
   if (!viewer.visible) return null;
 
@@ -71,10 +74,9 @@ export function ViewerPanel() {
             try {
               e.currentTarget.setPointerCapture(e.pointerId);
             } catch {
-              /* 合成事件下会抛 */
+              /* 合成事件下会抛；拖动与光标都不依赖它（见 lib/dragcursor.ts） */
             }
-            document.body.style.cursor = "col-resize";
-            document.body.style.userSelect = "none";
+            begin(e);
           }}
         />
       )}

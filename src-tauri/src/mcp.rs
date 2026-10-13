@@ -81,8 +81,10 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // Windows 下别弹控制台窗口
             .kill_on_drop(true);
+        // 别弹黑框控制台：MCP 服务器多是 npx / uvx / python 这类控制台程序，
+        // 从 GUI 进程直接 spawn 会真的弹出一个窗口（kill_on_drop 管不着这个）
+        crate::proc::no_console(cmd.as_std_mut());
         if let Some(cwd) = &cfg.cwd {
             cmd.current_dir(cwd);
         }

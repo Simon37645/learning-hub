@@ -479,14 +479,17 @@ fn local_ipv4_candidates() -> Vec<LanCandidate> {
 fn enumerate_ipv4() -> Vec<LanCandidate> {
     use std::process::Command;
     // -NoProfile：别让用户的 PowerShell 配置拖慢或干扰这一段
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object { \"$($_.IPAddress)|$($_.InterfaceAlias)\" }",
-        ])
-        .output();
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object { \"$($_.IPAddress)|$($_.InterfaceAlias)\" }",
+    ]);
+    // 不加这个就会闪一个黑框：powershell 是控制台程序，从 GUI 进程起它会拿到
+    // 一个新控制台窗口（缓存 60 秒，所以是「每分钟闪一下」这种很迷惑的症状）
+    crate::proc::no_console(&mut cmd);
+    let out = cmd.output();
     let Ok(out) = out else { return Vec::new() };
     if !out.status.success() {
         return Vec::new();

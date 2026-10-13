@@ -85,6 +85,14 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **别在持锁时 await**：`parking_lot::RwLock` 的 guard 不能跨 await，配置读取用 `config_read()` 拿克隆。
 - **改 `AgentEvent` / 命令签名要同步改前端**：`lib/types.ts` + `store/app.ts` + `lib/api.ts`。
 - **Windows 路径**：目录名可能含中文（本项目根目录就是 `E:\学习中枢`），不要假设 ASCII。
+- **从 GUI 进程起控制台程序会弹一个黑框**（用户报的「运行一些命令的时候会出现黑框」）：
+  Windows 会给子进程**分配一个新的控制台窗口**，`powershell` / `cmd` / MCP 服务器
+  （`npx` / `uvx` / `python`）都是控制台程序，一 spawn 就闪一下黑框。必须加
+  `CREATE_NO_WINDOW`——统一走 `src-tauri/src/proc.rs` 的 `no_console()`（`tokio::process`
+  的命令用 `cmd.as_std_mut()` 转过去）。踩过三处：MCP 服务器连接、远程面板枚举网卡的
+  PowerShell（缓存 60 秒，所以症状是「每分钟闪一下」）、用默认程序打开文件的 `cmd /C start`。
+  **新加起进程的地方都要过 `no_console`**；唯一例外是更新器启动 NSIS 安装器
+  （那边要的是 `DETACHED_PROCESS`，自己设 flags）。
 - **第一次 `tauri dev` 很慢**：Rust 首次编译要几分钟，别以为卡住了。
 - **图标变了要重跑**：`npm run icon`（缺 `src-tauri/icons/icon.ico` 会让 build script 直接失败）。
 - **改完 Rust 不用手动重启**：`tauri dev` 会监听 `src-tauri` 自动重编译并重启应用。
@@ -103,6 +111,10 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   （Mermaid 错误框、`pre[data-mermaid=failed]`），有就直接报错。文档里的图必须来自干净状态。
 - **主题走 `html[data-theme]`，不是媒体查询**：用户要能强制明亮。
   新写样式如果要区分深浅色，用 `html[data-theme="dark"]` 选择器，别用 `@media (prefers-color-scheme)`。
+- **选中色不能用 `--accent-soft`**（用户报的「夜晚模式选中了还是黑的」）：它在深色下是
+  `#2c1e17`，压在 `#1a1a19` 的底色上等于没选中。全局 `::selection` 用半透明的强调色
+  （`color-mix(in srgb, var(--accent) 30%, transparent)`，和编辑器里的 `--selection` 一个路子）：
+  半透明在任何底色上都看得见，也不用为深浅两套配色各写一遍。
 - **vite 不能监视 `workspace/`**：Windows 上被监视的目录会一直被握着句柄，开发模式下
   「删除主题」「改主题目录名」这类 `rename` 会直接失败（`EPERM 拒绝访问`），
   但打包版没这个问题——排查时很容易怀疑到应用自己头上。`vite.config.ts` 里已经
@@ -170,16 +182,36 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   没有 overflow，它的绝对定位子元素能直接顶到页面外），一次 `scrollIntoView`（`Viewer.tsx`
   的引用跳转、`PdfView.tsx` 的翻页都会调）就把**页面**滚了上去，32px 的标题栏滑出可视区：
   logo 与最小化/最大化/关闭三个按钮全没了，而且滚不回来，只能重启应用。
-  所以 `.app-shell` 上必须留着 `overflow: clip`——**别改成 `hidden`**（hidden 会让壳自己变成
-  可滚动容器，同一个坑往上挪一层），`.titlebar` 上再留一道 `position: sticky; top: 0` 兜底。
+  **现在有三道锁，都别拆**：`html, body { overflow: clip }`（clip = 连程序化滚动都不行；
+  写成 `hidden` 就还是「可滚动容器」，只是滚轮滚不动）、`.app-shell` 上的 `overflow: clip`、
+  `.titlebar` 的 `position: sticky; top: 0`。
+  这个 bug 的**引子**是 2026-10 才查清的：**pdf.js 的 TextLayer 会往 `document.body` 上挂一个
+  `<canvas class="hiddenCanvasElement">` 量字体宽度**，它不占尺寸但仍是行内元素，于是给页面
+  撑出一个约 **21.33px** 的行框——页面从此「可滚动」，翻一页 PDF 就把整个界面顶上去：
+  标题栏以下的 chat-head / 内置浏览器标签条被自己的 overflow 裁掉上半截，露出来的那半截压在
+  侧栏与正文的文字上（用户报的「遮挡正常文字」）。`app.css` 里
+  `canvas.hiddenCanvasElement { display: none }` 就是治它的（`display: none` 不影响
+  `measureText`，已 A/B 验过文字层宽度与 scaleX 完全一致）。**往 `document.body` 上加东西时
+  先想一下它占不占位置**——`#root` 之外的任何行内/块级元素都会加进页面的可滚动量。
   排查这类问题时**别信 `documentElement.scrollHeight`**（它会被 `overflow: hidden` 骗成视口高）：
-  用 `window.scrollTo(0, 99999)` 再看读回来的 `scrollY`，那才是页面真正的可滚动量。
+  用 `window.scrollTo(0, 99999)` 再看读回来的 `scrollY`，那才是页面真正的可滚动量；
+  想找出是谁撑高的，用「把子树一个个藏起来看高度掉不掉」——但注意 `.app` 是 flex，
+  藏一个孩子会让别的孩子重排，逐个隐藏会漏，要反过来「全藏起来、一次放一个」。
 - **侧栏拖拽用自己的指针事件实现**（`Sidebar.tsx` 的 `ChatRow`）：Tauri 在 Windows 上
   `dragDropEnabled: true` 会接管文件拖放（资料导入要用），HTML5 的 `dragstart`/`drop`
   **根本不会触发**——想加「拖动某个元素到另一处」的交互时别再试 HTML5 拖放。
   现在的做法：pointerdown 记住起点 → 移动超过 5px 才算拖拽（否则仍是点击）→
   跟随一个 body 上的幽灵小卡片 → `elementFromPoint` 找落点（主题行带 `data-slug`）→
   pointerup 调命令。`setPointerCapture` 要包 try/catch，合成事件下会抛。
+- **分界线的光标接管别和 `hasPointerCapture` 绑在一起**（用户报的「拖动分界线后光标回不来」）：
+  两个手柄（`SidebarResizer`、`Viewer` 的 `.viewer-resizer`）原来写的是
+  `if (!el.hasPointerCapture(id)) return;` 之后才 `document.body.style.cursor = ""`，
+  而 `setPointerCapture` 是会失败的（合成事件、指针已失效、元素中途卸载），一旦失败
+  **光标就永远停在 `col-resize`**。现在统一走 `src/lib/dragcursor.ts` 的 `useDragCursor()`：
+  「是不是我的拖动」看自己的 pointerId，「还光标」无条件做，而且 pointerup / pointercancel /
+  lostpointercapture / 窗口失焦 / 组件卸载五条路都做（有回归网 `dragcursor.test.tsx`）。
+  另外 `Viewer` 那条 effect 的依赖要带上 `viewer.visible`——手柄是条件渲染的，
+  不带的话面板收起再打开就再也拖不动了。
 - **对话可以在主题之间搬**（`chat_move` 动 `.hub/chats/<id>.jsonl` **和**同名的 `.meta.json`）：
   搬的是文件，聊天记录里已有的相对引用不会跟着重算——所以这是「整理」语义。
   正在看的那条被搬走后，前端会给源主题新开一条，免得接着聊又写回旧主题。

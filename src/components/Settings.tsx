@@ -1,4 +1,12 @@
-// 设置页：用户 / 外观（含自定义主题）/ 工作区 / 模型档案 / Agent 行为 / 内置浏览器 / 版本与更新 / 关于。
+// 设置页：左边菜单，右边面板。
+//
+// v0.6.1 起改成两栏：原来是一条长页（用户 / 外观 / 工作区 / 模型档案 / Agent 行为 /
+// 内置浏览器 / 沙箱 / 长期记忆 / 技能与 MCP / 版本与更新 / 关于 一路往下排），
+// 想改一个字段得先滚半天，也看不出到底有哪些设置。现在按「基础设置 / Agent 能力 / 其它」
+// 分三组列在左边，右边一次只显示一节，标题在顶上。
+//
+// 约定：每一节是一个组件，**只返回卡片**，页标题与说明由下面的 NAV 表提供——
+// 别在组件里再写一遍 <h2>，那会和页头重复。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -15,7 +23,7 @@ import {
   type UpdateProgressEvent,
 } from "../lib/types";
 import { useApp } from "../store/app";
-import { Field, Icon, Modal, Segmented, Spinner, Switch } from "./ui";
+import { Field, FieldRow, Icon, Modal, Segmented, Spinner, Switch, type IconName } from "./ui";
 
 /** 本地草稿输入框：失焦 / 回车才提交。
  *
@@ -61,361 +69,467 @@ function DraftTextarea({
   );
 }
 
+// ---------------------------------------------------------------- 菜单
+
+type SectionId =
+  | "general"
+  | "appearance"
+  | "models"
+  | "viewer"
+  | "agent"
+  | "sandbox"
+  | "memory"
+  | "skills"
+  | "update"
+  | "about";
+
+interface NavItem {
+  id: SectionId;
+  label: string;
+  icon: IconName;
+  /** 右侧页头的大标题与说明（菜单上放不下，所以写在这里） */
+  title: string;
+  sub: string;
+}
+
+const NAV: { group: string; items: NavItem[] }[] = [
+  {
+    group: "基础设置",
+    items: [
+      { id: "general", label: "常规", icon: "user", title: "常规", sub: "你的名字与工作区根目录" },
+      {
+        id: "appearance",
+        label: "外观",
+        icon: "palette",
+        title: "外观",
+        sub: "明亮 / 深色 / 跟随系统，或者自己写一套配色",
+      },
+      { id: "models", label: "模型设置", icon: "hub", title: "模型设置", sub: "可以有多个档案，随时切换" },
+      {
+        id: "viewer",
+        label: "浏览器控制",
+        icon: "globe",
+        title: "浏览器控制",
+        sub: "agent 和你共用同一个浏览窗口",
+      },
+    ],
+  },
+  {
+    group: "Agent 能力",
+    items: [
+      {
+        id: "agent",
+        label: "Agent 行为",
+        icon: "sparkle",
+        title: "Agent 行为",
+        sub: "决定它多主动、能碰什么",
+      },
+      {
+        id: "sandbox",
+        label: "工作区沙箱",
+        icon: "shield",
+        title: "工作区沙箱",
+        sub: "agent 默认只能碰工作区里的文件",
+      },
+      {
+        id: "memory",
+        label: "长期记忆",
+        icon: "book",
+        title: "长期记忆",
+        sub: "记住你的特点与「以后要注意的地方」",
+      },
+      {
+        id: "skills",
+        label: "技能与 MCP",
+        icon: "puzzle",
+        title: "技能与 MCP",
+        sub: "开关在侧栏，造新的去工坊",
+      },
+    ],
+  },
+  {
+    group: "其它",
+    items: [
+      {
+        id: "update",
+        label: "版本与更新",
+        icon: "download",
+        title: "版本与更新",
+        sub: "新版本发布在 GitHub，应用内直接装",
+      },
+      { id: "about", label: "关于", icon: "info", title: "关于", sub: "版本、工具清单、系统提示词" },
+    ],
+  },
+];
+
+const NAV_ITEMS: NavItem[] = NAV.flatMap((g) => g.items);
 
 export function Settings() {
-  const config = useApp((s) => s.config);
-  const patchConfig = useApp((s) => s.patchConfig);
   const setView = useApp((s) => s.setView);
-  const toast = useApp((s) => s.toast);
-  const tools = useApp((s) => s.tools);
-  const version = useApp((s) => s.version);
+  const [active, setActive] = useState<SectionId>("general");
+  const item = NAV_ITEMS.find((i) => i.id === active) ?? NAV_ITEMS[0];
 
+  return (
+    <div className="settings">
+      <nav className="settings-nav">
+        <button className="btn sm settings-back" onClick={() => setView("home")}>
+          <Icon name="arrow-left" size={13} /> 返回工作区
+        </button>
+        {NAV.map((g) => (
+          <div key={g.group} className="settings-nav-group">
+            <div className="settings-nav-label">{g.group}</div>
+            {g.items.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                className={"settings-nav-item" + (it.id === active ? " on" : "")}
+                onClick={() => setActive(it.id)}
+              >
+                <Icon name={it.icon} size={14} />
+                <span className="grow">{it.label}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </nav>
+
+      <div className="settings-body">
+        <div className="settings-inner">
+          <header className="settings-head">
+            <h1>{item.title}</h1>
+            <p>{item.sub}</p>
+          </header>
+
+          {active === "general" && <GeneralSection />}
+          {active === "appearance" && <AppearanceSection />}
+          {active === "models" && <ProfilesSection />}
+          {active === "viewer" && <ViewerSection />}
+          {active === "agent" && <AgentSection />}
+          {active === "sandbox" && <SandboxSection />}
+          {active === "memory" && <MemorySection />}
+          {active === "skills" && <SkillsSection />}
+          {active === "update" && <UpdateSection />}
+          {active === "about" && <AboutSection />}
+        </div>
+      </div>
+
+      <PromptPreviewModal />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 常规
+
+/** 名字与工作区根目录：两件「应用长什么样」的事，都很少改，所以合在一节。 */
+function GeneralSection() {
+  const config = useApp((s) => s.config)!;
+  const patchConfig = useApp((s) => s.patchConfig);
+  const toast = useApp((s) => s.toast);
   const [ws, setWs] = useState<{ root: string; topicCount: number; diskUsageText: string } | null>(null);
-  const [name, setName] = useState(config?.userName ?? "");
-  const [toolsOpen, setToolsOpen] = useState(false);
+  const [name, setName] = useState(config.userName ?? "");
 
   useEffect(() => {
     void api.workspaceInfo().then(setWs).catch(() => setWs(null));
   }, []);
 
-  if (!config) return null;
+  return (
+    <>
+      <div className="card-box">
+        <FieldRow label="你的名字" hint="主界面问候语里用（回车或点别处即保存）">
+          <input
+            className="input"
+            value={name}
+            placeholder="你的名字"
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => name.trim() && name !== config.userName && void patchConfig({ userName: name.trim() })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) void patchConfig({ userName: name.trim() });
+            }}
+          />
+          <button
+            className="btn sm"
+            disabled={!name.trim() || name === config.userName}
+            onClick={() => void patchConfig({ userName: name.trim() })}
+          >
+            保存
+          </button>
+        </FieldRow>
+      </div>
 
+      <div className="card-box">
+        <FieldRow label="工作区根目录" hint="所有主题目录的根；每个主题就是一个目录，里面是纯 Markdown / PDF / JSON，可以直接用编辑器改">
+          <DraftInput
+            className="input mono"
+            value={config.workspaceRoot}
+            onCommit={(v) => v.trim() && void patchConfig({ workspaceRoot: v.trim() })}
+          />
+          <button
+            className="btn sm"
+            onClick={async () => {
+              const { open } = await import("@tauri-apps/plugin-dialog");
+              const dir = await open({ directory: true, title: "选择工作区目录" });
+              if (typeof dir === "string") void patchConfig({ workspaceRoot: dir });
+            }}
+          >
+            <Icon name="folder" size={13} /> 选择
+          </button>
+          <button className="btn sm" onClick={() => void api.revealInExplorer().catch((e) => toast("error", errText(e)))}>
+            打开
+          </button>
+        </FieldRow>
+        {ws && (
+          <div className="hint">
+            当前：{ws.topicCount} 个主题 · 占用 {ws.diskUsageText}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- 内置浏览器
+
+function ViewerSection() {
+  const config = useApp((s) => s.config)!;
+  const patchConfig = useApp((s) => s.patchConfig);
+  return (
+    <div className="card-box">
+      <FieldRow label="主页" hint="内置浏览器新标签打开的那个页面">
+        <DraftInput className="input mono" value={config.viewer.homeUrl} onCommit={(v) => void patchConfig({ homeUrl: v })} />
+      </FieldRow>
+      <FieldRow label="联网搜索默认引擎">
+        <select
+          className="select"
+          value={config.viewer.searchEngine}
+          onChange={(e) => void patchConfig({ searchEngine: e.target.value })}
+        >
+          <option value="duckduckgo">DuckDuckGo</option>
+          <option value="bing">Bing</option>
+        </select>
+      </FieldRow>
+      <div className="hint">
+        PDF 用 pdf.js 渲染（agent 能读每一页的文字、能翻页）；网页用内嵌窗口打开，
+        遇到禁止嵌入的站点可以切「阅读模式」看提取后的正文。
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Agent 行为
+
+function AgentSection() {
+  const config = useApp((s) => s.config)!;
+  const patchConfig = useApp((s) => s.patchConfig);
   const agent = config.agent;
 
+  /** 数字字段统一走这里：只在是合法数字且不小于 min 时才写回配置 */
+  const commitNumber = (key: "maxIterations" | "requestTimeoutSecs" | "reconnectMaxAttempts" | "contextBudgetChars", min: number) => (
+    v: string,
+  ) => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= min) void patchConfig({ [key]: n });
+  };
+
   return (
-    <div className="settings">
-      <div className="settings-inner">
-        <div className="row">
-          <h2>
-            <Icon name="settings" size={16} /> 设置
-          </h2>
-          <div className="grow" />
-          <button className="btn sm" onClick={() => setView("home")}>
-            <Icon name="arrow-left" size={13} /> 返回
-          </button>
-        </div>
-
-        {/* ---------------- 用户 ---------------- */}
-        <section className="col">
-          <h2>
-            用户 <span className="sub">主界面问候语里的名字</span>
-          </h2>
-          <div className="card-box">
-            <div className="row">
-              <input
-                className="input"
-                value={name}
-                placeholder="你的名字"
-                onChange={(e) => setName(e.target.value)}
-                onBlur={() => name.trim() && name !== config.userName && void patchConfig({ userName: name.trim() })}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) void patchConfig({ userName: name.trim() });
-                }}
-              />
-              <button
-                className="btn"
-                disabled={!name.trim() || name === config.userName}
-                onClick={() => void patchConfig({ userName: name.trim() })}
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- 外观 ---------------- */}
-        <AppearanceSection />
-
-        {/* ---------------- 工作区 ---------------- */}
-        <section className="col">
-          <h2>
-            工作区 <span className="sub">所有主题目录的根</span>
-          </h2>
-          <div className="card-box">
-            <div className="row">
-              <DraftInput
-                className="input mono"
-                value={config.workspaceRoot}
-                onCommit={(v) => v.trim() && void patchConfig({ workspaceRoot: v.trim() })}
-              />
-              <button
-                className="btn"
-                onClick={async () => {
-                  const { open } = await import("@tauri-apps/plugin-dialog");
-                  const dir = await open({ directory: true, title: "选择工作区目录" });
-                  if (typeof dir === "string") void patchConfig({ workspaceRoot: dir });
-                }}
-              >
-                <Icon name="folder" size={13} /> 选择
-              </button>
-              <button
-                className="btn"
-                onClick={() => void api.revealInExplorer().catch((e) => toast("error", errText(e)))}
-              >
-                打开
-              </button>
-            </div>
-            {ws && (
-              <div className="muted" style={{ fontSize: 12 }}>
-                当前：{ws.topicCount} 个主题 · 占用 {ws.diskUsageText}
-                <br />
-                每个主题就是一个目录，里面是纯 Markdown / PDF / JSON，可以直接用编辑器改。
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* ---------------- 模型档案 ---------------- */}
-        <ProfilesSection />
-
-        {/* ---------------- Agent ---------------- */}
-        <section className="col">
-          <h2>
-            Agent 行为 <span className="sub">决定它多主动、能碰什么</span>
-          </h2>
-          <div className="card-box">
-            <Field label="工具权限" hint="读操作永远直接执行；这里调的是「写」和「删」的尺度">
-              <div className="row wrap">
-                {(["ask", "auto_edit", "full"] as PermissionMode[]).map((m) => (
-                  <button
-                    key={m}
-                    className={"chip" + (agent.permissionMode === m ? " primary" : "")}
-                    onClick={() => void patchConfig({ permissionMode: m })}
-                  >
-                    {PERMISSION_LABEL[m]}
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            <div className="grid-2">
-              <Field label="单轮最多工具往返次数" hint="防止 agent 反复调用工具停不下来">
-                <DraftInput
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={String(agent.maxIterations)}
-                  onCommit={(v) => {
-                    const n = Number(v);
-                    if (Number.isFinite(n) && n >= 1) void patchConfig({ maxIterations: n });
-                  }}
-                />
-              </Field>
-              <Field label="单次请求超时（秒）">
-                <DraftInput
-                  className="input"
-                  type="number"
-                  min={30}
-                  max={1800}
-                  value={String(agent.requestTimeoutSecs)}
-                  onCommit={(v) => {
-                    const n = Number(v);
-                    if (Number.isFinite(n) && n >= 30) void patchConfig({ requestTimeoutSecs: n });
-                  }}
-                />
-              </Field>
-            </div>
-
-            <Field
-              label="断线自动重连次数"
-              hint="模型连接中断（超时 / 限流 / 服务端过载）后自动重试的上限，0 = 不重连"
+    <div className="card-box">
+      <FieldRow label="工具权限" hint="读操作永远直接执行；这里调的是「写」和「删」的尺度">
+        <div className="row wrap" style={{ gap: 6 }}>
+          {(["ask", "auto_edit", "full"] as PermissionMode[]).map((m) => (
+            <button
+              key={m}
+              className={"chip" + (agent.permissionMode === m ? " primary" : "")}
+              onClick={() => void patchConfig({ permissionMode: m })}
             >
-              <DraftInput
-                className="input"
-                type="number"
-                min={0}
-                max={50}
-                value={String(agent.reconnectMaxAttempts)}
-                onCommit={(v) => {
-                  const n = Number(v);
-                  if (Number.isFinite(n) && n >= 0) void patchConfig({ reconnectMaxAttempts: n });
-                }}
-              />
-            </Field>
+              {PERMISSION_LABEL[m]}
+            </button>
+          ))}
+        </div>
+      </FieldRow>
 
-            <Field label="上下文预算（字符）" hint="发给模型的对话历史上限，超出会从最早的完整轮次开始丢弃">
-              <DraftInput
-                className="input"
-                type="number"
-                min={2000}
-                max={500000}
-                step={1000}
-                value={String(agent.contextBudgetChars)}
-                onCommit={(v) => {
-                  const n = Number(v);
-                  if (Number.isFinite(n) && n >= 2000) void patchConfig({ contextBudgetChars: n });
-                }}
-              />
-            </Field>
+      <FieldRow label="单轮最多工具往返次数" hint="防止 agent 反复调用工具停不下来">
+        <DraftInput
+          className="input num"
+          type="number"
+          min={1}
+          max={100}
+          value={String(agent.maxIterations)}
+          onCommit={commitNumber("maxIterations", 1)}
+        />
+      </FieldRow>
 
-            <Switch
-              checked={agent.allowWeb}
-              onChange={(v) => void patchConfig({ allowWeb: v })}
-              label="允许 agent 联网（web_fetch / web_search）"
-            />
+      <FieldRow label="单次请求超时（秒）">
+        <DraftInput
+          className="input num"
+          type="number"
+          min={30}
+          max={1800}
+          value={String(agent.requestTimeoutSecs)}
+          onCommit={commitNumber("requestTimeoutSecs", 30)}
+        />
+      </FieldRow>
 
-            <Field label="额外系统指令" hint="追加到系统提示词末尾，优先级最高（失焦后保存）。例如「多举数学例子」「解释时先用中文再给英文术语」">
-              <DraftTextarea
-                className="textarea"
-                rows={4}
-                value={agent.systemPromptExtra}
-                placeholder="想让 agent 怎么带你？写在这里。"
-                onCommit={(v) => void patchConfig({ systemPromptExtra: v })}
-              />
-            </Field>
+      <FieldRow label="断线自动重连次数" hint="模型连接中断（超时 / 限流 / 服务端过载）后自动重试的上限，0 = 不重连">
+        <DraftInput
+          className="input num"
+          type="number"
+          min={0}
+          max={50}
+          value={String(agent.reconnectMaxAttempts)}
+          onCommit={commitNumber("reconnectMaxAttempts", 0)}
+        />
+      </FieldRow>
+
+      <FieldRow label="上下文预算（字符）" hint="发给模型的对话历史上限，超出会从最早的完整轮次开始丢弃">
+        <DraftInput
+          className="input num"
+          type="number"
+          min={2000}
+          max={500000}
+          step={1000}
+          value={String(agent.contextBudgetChars)}
+          onCommit={commitNumber("contextBudgetChars", 2000)}
+        />
+      </FieldRow>
+
+      <FieldRow label="允许 agent 联网" hint="放开 web_fetch / web_search 两个工具">
+        <Switch checked={agent.allowWeb} onChange={(v) => void patchConfig({ allowWeb: v })} />
+      </FieldRow>
+
+      <FieldRow
+        label="额外系统指令"
+        hint="追加到系统提示词末尾，优先级最高（失焦后保存）。例如「多举数学例子」「解释时先用中文再给英文术语」"
+      >
+        <DraftTextarea
+          className="textarea"
+          rows={4}
+          value={agent.systemPromptExtra}
+          placeholder="想让 agent 怎么带你？写在这里。"
+          onCommit={(v) => void patchConfig({ systemPromptExtra: v })}
+        />
+      </FieldRow>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 沙箱
+
+function SandboxSection() {
+  const config = useApp((s) => s.config)!;
+  const patchConfig = useApp((s) => s.patchConfig);
+  const agent = config.agent;
+  return (
+    <div className="card-box">
+      <FieldRow
+        label="开启沙箱"
+        hint="访问工作区之外的文件前必须向你申请；关掉之后 agent 可以自由读写本机任意路径，只建议在完全信任的场景下使用"
+      >
+        <Switch checked={agent.sandbox} onChange={(v) => void patchConfig({ sandbox: v })} />
+      </FieldRow>
+
+      <div className="field">
+        <label>已授权的目录</label>
+        {agent.approvedRoots.length === 0 ? (
+          <div className="hint">
+            还没有。agent 想读工作区外的讲义时会弹窗申请，你同意后目录会出现在这里。
           </div>
-        </section>
-
-        {/* ---------------- 内置浏览器 ---------------- */}
-        <section className="col">
-          <h2>
-            内置浏览器 <span className="sub">agent 和你共用同一个浏览窗口</span>
-          </h2>
-          <div className="card-box">
-            <div className="grid-2">
-              <Field label="主页">
-                <DraftInput
-                  className="input"
-                  value={config.viewer.homeUrl}
-                  onCommit={(v) => void patchConfig({ homeUrl: v })}
-                />
-              </Field>
-              <Field label="联网搜索默认引擎">
-                <select
-                  className="select"
-                  value={config.viewer.searchEngine}
-                  onChange={(e) => void patchConfig({ searchEngine: e.target.value })}
-                >
-                  <option value="duckduckgo">DuckDuckGo</option>
-                  <option value="bing">Bing</option>
-                </select>
-              </Field>
-            </div>
-            <div className="muted" style={{ fontSize: 12 }}>
-              PDF 用 pdf.js 渲染（agent 能读每一页的文字、能翻页）；
-              网页用内嵌窗口打开，遇到禁止嵌入的站点可以切「阅读模式」看提取后的正文。
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- 沙箱 ---------------- */}
-        <section className="col">
-          <h2>
-            工作区沙箱 <span className="sub">agent 默认只能碰工作区里的文件</span>
-          </h2>
-          <div className="card-box">
-            <Switch
-              checked={agent.sandbox}
-              onChange={(v) => void patchConfig({ sandbox: v })}
-              label="开启沙箱：访问工作区之外的文件前必须向你申请"
-            />
-            <div className="muted" style={{ fontSize: 12 }}>
-              关掉之后 agent 可以自由读写本机任意路径，只建议在完全信任的场景下使用。
-            </div>
-            <div className="col" style={{ gap: 6 }}>
-              <div style={{ fontSize: 12.5, color: "var(--text-sub)" }}>已授权的目录</div>
-              {agent.approvedRoots.length === 0 ? (
-                <div className="muted" style={{ fontSize: 12 }}>
-                  还没有。agent 想读工作区外的讲义时会弹窗申请，你同意后目录会出现在这里。
-                </div>
-              ) : (
-                agent.approvedRoots.map((r) => (
-                  <div key={r} className="row" style={{ gap: 8 }}>
-                    <code className="mono grow" style={{ fontSize: 11.5 }}>
-                      {r}
-                    </code>
-                    <button className="btn sm" onClick={() => void patchConfig({ revokeRoot: r })}>
-                      撤销
-                    </button>
-                  </div>
-                ))
-              )}
-              {agent.approvedRoots.length > 0 && (
-                <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => void patchConfig({ clearApprovedRoots: true })}>
-                  全部撤销
-                </button>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- 长期记忆 ---------------- */}
-        <section className="col">
-          <h2>
-            长期记忆 <span className="sub">记住你的特点与「以后要注意的地方」</span>
-          </h2>
-          <div className="card-box">
-            <Switch
-              checked={agent.memoryEnabled}
-              onChange={(v) => void patchConfig({ memoryEnabled: v })}
-              label="启用长期记忆：每轮对话都把相关记忆交给 agent"
-            />
-            <div className="muted" style={{ fontSize: 12 }}>
-              agent 会在对话里主动记下值得长期保留的信息（你的基础、偏好、反复出错的点、还缺的前置），
-              记在 <code className="mono">.hub/memory/memories.jsonl</code> 里——
-              普通文本，可以直接用编辑器改。关掉开关只是不再注入提示词，已有记忆仍可查看。
-            </div>
-            <div className="row">
-              <span className="muted" style={{ fontSize: 12 }}>
-                查看、编辑、钉住或删除记忆：侧栏顶部的「记忆」。
-              </span>
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- 技能与 MCP 的入口 ---------------- */}
-        <section className="col">
-          <h2>
-            技能与 MCP <span className="sub">开关在侧栏，造新的去工坊</span>
-          </h2>
-          <div className="card-box">
-            <div className="sub" style={{ fontSize: 12.5 }}>
-              侧栏顶部的「技能」与「MCP 服务器」两个入口里，可以按**全局**或**本主题**分别开关。
-              全局的写进配置文件（所有主题可见），本主题的只影响当前主题。
-            </div>
-            <div className="row">
-              <button className="btn sm" onClick={() => void useApp.getState().openStudio()}>
-                <Icon name="hammer" size={13} /> 去工坊造一个技能 / MCP 服务器
+        ) : (
+          agent.approvedRoots.map((r) => (
+            <div key={r} className="row" style={{ gap: 8 }}>
+              <code className="mono grow" style={{ fontSize: 11.5 }}>
+                {r}
+              </code>
+              <button className="btn sm" onClick={() => void patchConfig({ revokeRoot: r })}>
+                撤销
               </button>
             </div>
-          </div>
-        </section>
+          ))
+        )}
+        {agent.approvedRoots.length > 0 && (
+          <button
+            className="btn sm"
+            style={{ alignSelf: "flex-start" }}
+            onClick={() => void patchConfig({ clearApprovedRoots: true })}
+          >
+            全部撤销
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
-        {/* ---------------- 版本与更新 ---------------- */}
-        <UpdateSection />
+// ---------------------------------------------------------------- 长期记忆
 
-        {/* ---------------- 关于 ---------------- */}
-        <section className="col">
-          <h2>
-            关于 <span className="sub">学习中枢 v{version}</span>
-          </h2>
-          <div className="card-box">
-            <div className="row">
-              <span className="sub" style={{ fontSize: 12.5 }}>
-                Tauri + Rust 后端，React 前端。数据全部在你自己的磁盘上，没有账号、没有云端。
-              </span>
-            </div>
-            <div className="row">
-              <button className="btn sm" onClick={() => setToolsOpen(true)}>
-                <Icon name="sparkle" size={13} /> 查看 agent 的 {tools.length} 个工具
-              </button>
-              <button
-                className="btn sm"
-                onClick={() =>
-                  void api
-                    .promptPreview(useApp.getState().topic?.slug ?? null)
-                    .then((t) => {
-                      setPromptTextForView(t);
-                    })
-                    .catch((e) => toast("error", errText(e)))
-                }
-              >
-                <Icon name="eye" size={13} /> 预览系统提示词
-              </button>
-            </div>
-          </div>
-        </section>
+function MemorySection() {
+  const config = useApp((s) => s.config)!;
+  const patchConfig = useApp((s) => s.patchConfig);
+  return (
+    <div className="card-box">
+      <FieldRow
+        label="启用长期记忆"
+        hint="每轮对话都把相关记忆交给 agent；关掉开关只是不再注入提示词，已有记忆仍可查看"
+      >
+        <Switch checked={config.agent.memoryEnabled} onChange={(v) => void patchConfig({ memoryEnabled: v })} />
+      </FieldRow>
+      <div className="hint">
+        agent 会在对话里主动记下值得长期保留的信息（你的基础、偏好、反复出错的点、还缺的前置），
+        记在 <code className="mono">.hub/memory/memories.jsonl</code> 里——普通文本，可以直接用编辑器改。
+        查看、编辑、钉住或删除记忆：侧栏顶部的「记忆」。
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 技能与 MCP
+
+function SkillsSection() {
+  return (
+    <div className="card-box">
+      <div className="hint">
+        侧栏顶部的「技能」与「MCP 服务器」两个入口里，可以按<b>全局</b>或<b>本主题</b>分别开关。
+        全局的写进配置文件（所有主题可见），本主题的只影响当前主题。
+      </div>
+      <FieldRow label="造一个新的" hint="工坊是一个独立于学习的 agent 模式：读规范 → 在练习目录里写 → 发布即重连">
+        <button className="btn sm" onClick={() => void useApp.getState().openStudio()}>
+          <Icon name="hammer" size={13} /> 去工坊
+        </button>
+      </FieldRow>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 关于
+
+function AboutSection() {
+  const tools = useApp((s) => s.tools);
+  const version = useApp((s) => s.version);
+  const toast = useApp((s) => s.toast);
+  const [toolsOpen, setToolsOpen] = useState(false);
+
+  return (
+    <>
+      <div className="card-box">
+        <FieldRow
+          label={`学习中枢 v${version || "…"}`}
+          hint="Tauri + Rust 后端，React 前端。数据全部在你自己的磁盘上，没有账号、没有云端。"
+        >
+          <button className="btn sm" onClick={() => setToolsOpen(true)}>
+            <Icon name="sparkle" size={13} /> {tools.length} 个内置工具
+          </button>
+          <button
+            className="btn sm"
+            onClick={() =>
+              void api
+                .promptPreview(useApp.getState().topic?.slug ?? null)
+                .then((t) => {
+                  setPromptTextForView(t);
+                })
+                .catch((e) => toast("error", errText(e)))
+            }
+          >
+            <Icon name="eye" size={13} /> 预览系统提示词
+          </button>
+        </FieldRow>
       </div>
 
       {toolsOpen && (
@@ -436,9 +550,7 @@ export function Settings() {
           </div>
         </Modal>
       )}
-
-      <PromptPreviewModal />
-    </div>
+    </>
   );
 }
 
@@ -518,12 +630,9 @@ function AppearanceSection() {
   };
 
   return (
-    <section className="col">
-      <h2>
-        外观 <span className="sub">明亮 / 深色 / 跟随系统，或者自己写一套配色</span>
-      </h2>
+    <>
       <div className="card-box">
-        <div className="row wrap">
+        <FieldRow label="配色" hint="强制明亮适合长时间读讲义；侧栏底部也有一个快捷切换按钮">
           <Segmented
             value={config.appearance.theme}
             onChange={(v) => void useApp.getState().setTheme(v)}
@@ -533,13 +642,10 @@ function AppearanceSection() {
               { id: "dark", label: "深色" },
             ]}
           />
-          <span className="muted" style={{ fontSize: 12 }}>
-            强制明亮适合长时间读讲义；侧栏底部也有一个快捷切换按钮
-          </span>
-        </div>
+        </FieldRow>
 
         {active && (
-          <div className="muted" style={{ fontSize: 12 }}>
+          <div className="hint">
             当前用的是自定义主题「{active.name}」（自带{active.base === "dark" ? "深色" : "明亮"}底色）。
             它没覆盖的颜色跟随内置的{active.base === "dark" ? "深色" : "明亮"}配色；点上面那三档会退回内置配色。
           </div>
@@ -552,7 +658,7 @@ function AppearanceSection() {
 
         <div className="theme-list">
           {list.length === 0 ? (
-            <div className="muted" style={{ fontSize: 12 }}>
+            <div className="hint">
               还没有自定义主题。可以「从当前配色新建一份」，也可以把自己写的 JSON 放进主题目录。
             </div>
           ) : (
@@ -635,7 +741,7 @@ function AppearanceSection() {
       </div>
 
       {editing !== null && <ThemeEditor initial={editing} onClose={() => setEditing(null)} />}
-    </section>
+    </>
   );
 }
 
@@ -864,10 +970,7 @@ function UpdateSection() {
   const pct = progress.total ? Math.min(100, (progress.received / progress.total) * 100) : null;
 
   return (
-    <section className="col">
-      <h2>
-        版本与更新 <span className="sub">新版本发布在 GitHub，应用内直接装</span>
-      </h2>
+    <>
       <div className="card-box">
         <div className="row">
           <span className="sub" style={{ fontSize: 12.5 }}>
@@ -998,7 +1101,7 @@ function UpdateSection() {
           </div>
         </Modal>
       )}
-    </section>
+    </>
   );
 }
 
@@ -1075,213 +1178,208 @@ function ProfilesSection() {
   }
 
   return (
-    <section className="col">
-      <h2>
-        模型档案 <span className="sub">可以有多个，随时切换</span>
-      </h2>
-      <div className="card-box">
-        <div className="col" style={{ gap: 6 }}>
-          {config.profiles.map((p) => (
-            <div
-              key={p.id}
-              className={"profile-row" + (p.id === config.activeProfileId ? " on" : "")}
-              onClick={() => setSelected(p.id === selected ? null : p.id)}
-            >
-              <Icon name={p.id === config.activeProfileId ? "check" : "hub"} size={14} />
-              <div className="grow">
-                <div style={{ fontWeight: 500 }}>{p.name}</div>
-                <div className="muted mono" style={{ fontSize: 11 }}>
-                  {p.kindLabel} · {p.model} · {p.baseUrl}
-                </div>
+    <div className="card-box">
+      <div className="col" style={{ gap: 6 }}>
+        {config.profiles.map((p) => (
+          <div
+            key={p.id}
+            className={"profile-row" + (p.id === config.activeProfileId ? " on" : "")}
+            onClick={() => setSelected(p.id === selected ? null : p.id)}
+          >
+            <Icon name={p.id === config.activeProfileId ? "check" : "hub"} size={14} />
+            <div className="grow">
+              <div style={{ fontWeight: 500 }}>{p.name}</div>
+              <div className="muted mono" style={{ fontSize: 11 }}>
+                {p.kindLabel} · {p.model} · {p.baseUrl}
               </div>
-              {!p.hasApiKey && <span className="tag">无 Key</span>}
-              <span className="muted mono" style={{ fontSize: 10.5 }}>
-                {p.keyHint}
-              </span>
-              <div className="row" style={{ gap: 4 }} onClick={(e) => e.stopPropagation()}>
-                {p.id !== config.activeProfileId && (
-                  <button className="btn sm" onClick={() => void patchConfig({ activeProfileId: p.id })}>
-                    设为当前
-                  </button>
-                )}
-                <button className="icon-btn" title="删除" onClick={() => void remove(p.id)}>
-                  <Icon name="trash" size={13} />
+            </div>
+            {!p.hasApiKey && <span className="tag">无 Key</span>}
+            <span className="muted mono" style={{ fontSize: 10.5 }}>
+              {p.keyHint}
+            </span>
+            <div className="row" style={{ gap: 4 }} onClick={(e) => e.stopPropagation()}>
+              {p.id !== config.activeProfileId && (
+                <button className="btn sm" onClick={() => void patchConfig({ activeProfileId: p.id })}>
+                  设为当前
                 </button>
-              </div>
+              )}
+              <button className="icon-btn" title="删除" onClick={() => void remove(p.id)}>
+                <Icon name="trash" size={13} />
+              </button>
             </div>
-          ))}
-        </div>
+          </div>
+        ))}
+      </div>
 
-        <div className="row">
-          <button className="btn" onClick={newProfile}>
-            <Icon name="plus" size={13} /> 添加模型档案
-          </button>
-          <span className="muted" style={{ fontSize: 11.5 }}>
-            支持任何 OpenAI 兼容接口（DeepSeek / Moonshot / 通义 / 硅基流动 / Ollama / vLLM）与 Anthropic
-          </span>
-        </div>
+      <div className="row">
+        <button className="btn" onClick={newProfile}>
+          <Icon name="plus" size={13} /> 添加模型档案
+        </button>
+        <span className="muted" style={{ fontSize: 11.5 }}>
+          支持任何 OpenAI 兼容接口（DeepSeek / Moonshot / 通义 / 硅基流动 / Ollama / vLLM）与 Anthropic
+        </span>
+      </div>
 
-        {form && (
-          <div className="card-box" style={{ background: "var(--bg-sub)" }}>
-            <div className="grid-2">
-              <Field label="显示名">
-                <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              </Field>
-              <Field label="协议">
-                <select
-                  className="select"
-                  value={form.kind}
-                  onChange={(e) => {
-                    const kind = e.target.value as ProviderKind;
-                    const preset = providerKinds.find((k) => k.id === kind);
-                    setForm({
-                      ...form,
-                      kind,
-                      baseUrl: preset?.defaultBaseUrl ?? form.baseUrl,
-                      model: preset?.defaultModel ?? form.model,
-                    });
-                  }}
-                >
-                  {providerKinds.map((k) => (
-                    <option key={k.id} value={k.id}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-
-            <Field label="接口地址" hint="OpenAI 兼容要带上 /v1；Anthropic 填到 /v1 即可，后面会自动补 /messages">
-              <input
-                className="input mono"
-                value={form.baseUrl}
-                onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-              />
+      {form && (
+        <div className="card-box" style={{ background: "var(--bg-sub)" }}>
+          <div className="grid-2">
+            <Field label="显示名">
+              <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </Field>
-
-            <div className="grid-2">
-              <Field label="模型名">
-                <input className="input mono" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
-              </Field>
-              <Field label="API Key" hint={current?.hasApiKey ? `已保存 ${current.keyHint}，留空表示不修改` : "明文存在本机配置里，不会上传"}>
-                <input
-                  className="input mono"
-                  type="password"
-                  value={apiKey}
-                  placeholder={current?.hasApiKey ? "••••••（不改就留空）" : "sk-…"}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-              </Field>
-            </div>
-
-            <div className="grid-2">
-              <Field label={`温度：${form.temperature.toFixed(2)}`} hint="越低越稳，学习讲解建议 0.3~0.7">
-                <input
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={0.05}
-                  value={form.temperature}
-                  onChange={(e) => setForm({ ...form, temperature: Number(e.target.value) })}
-                  style={{ width: "100%" }}
-                />
-              </Field>
-              <Field label="最大输出 tokens">
-                <input
-                  className="input"
-                  type="number"
-                  value={form.maxTokens}
-                  onChange={(e) => setForm({ ...form, maxTokens: Number(e.target.value) })}
-                />
-              </Field>
-            </div>
-
-            <Switch
-              checked={form.supportsTools}
-              onChange={(v) => setForm({ ...form, supportsTools: v })}
-              label="该模型支持原生工具调用（不支持时 agent 会降级成文字建议）"
-            />
-
-            <Switch
-              checked={form.supportsVision ?? true}
-              onChange={(v) => setForm({ ...form, supportsVision: v })}
-              label="该模型支持图片输入（关掉后贴的图不会发出去，会换成一行文字说明）"
-            />
-
-            <Field
-              label="思考强度参数的写法"
-              hint="对话栏里模型旁边那颗「思考」芯片调的是强度，这里决定用哪种写法发出去。有的服务商不认这些扩展，报错就选「不发」。"
-            >
+            <Field label="协议">
               <select
                 className="select"
-                value={form.reasoning?.style ?? "auto"}
-                onChange={(e) =>
+                value={form.kind}
+                onChange={(e) => {
+                  const kind = e.target.value as ProviderKind;
+                  const preset = providerKinds.find((k) => k.id === kind);
                   setForm({
                     ...form,
-                    reasoning: {
-                      effort: form.reasoning?.effort ?? "off",
-                      style: e.target.value as ReasoningStyle,
-                    },
-                  })
-                }
+                    kind,
+                    baseUrl: preset?.defaultBaseUrl ?? form.baseUrl,
+                    model: preset?.defaultModel ?? form.model,
+                  });
+                }}
               >
-                {(Object.keys(STYLE_LABEL) as ReasoningStyle[]).map((k) => (
-                  <option key={k} value={k}>
-                    {STYLE_LABEL[k]}
+                {providerKinds.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.label}
                   </option>
                 ))}
               </select>
             </Field>
+          </div>
 
-            <div className="row">
+          <Field label="接口地址" hint="OpenAI 兼容要带上 /v1；Anthropic 填到 /v1 即可，后面会自动补 /messages">
+            <input
+              className="input mono"
+              value={form.baseUrl}
+              onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
+            />
+          </Field>
+
+          <div className="grid-2">
+            <Field label="模型名">
+              <input className="input mono" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
+            </Field>
+            <Field label="API Key" hint={current?.hasApiKey ? `已保存 ${current.keyHint}，留空表示不修改` : "明文存在本机配置里，不会上传"}>
+              <input
+                className="input mono"
+                type="password"
+                value={apiKey}
+                placeholder={current?.hasApiKey ? "••••••（不改就留空）" : "sk-…"}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </Field>
+          </div>
+
+          <div className="grid-2">
+            <Field label={`温度：${form.temperature.toFixed(2)}`} hint="越低越稳，学习讲解建议 0.3~0.7">
+              <input
+                type="range"
+                min={0}
+                max={2}
+                step={0.05}
+                value={form.temperature}
+                onChange={(e) => setForm({ ...form, temperature: Number(e.target.value) })}
+                style={{ width: "100%" }}
+              />
+            </Field>
+            <Field label="最大输出 tokens">
+              <input
+                className="input"
+                type="number"
+                value={form.maxTokens}
+                onChange={(e) => setForm({ ...form, maxTokens: Number(e.target.value) })}
+              />
+            </Field>
+          </div>
+
+          <Switch
+            checked={form.supportsTools}
+            onChange={(v) => setForm({ ...form, supportsTools: v })}
+            label="该模型支持原生工具调用（不支持时 agent 会降级成文字建议）"
+          />
+
+          <Switch
+            checked={form.supportsVision ?? true}
+            onChange={(v) => setForm({ ...form, supportsVision: v })}
+            label="该模型支持图片输入（关掉后贴的图不会发出去，会换成一行文字说明）"
+          />
+
+          <Field
+            label="思考强度参数的写法"
+            hint="对话栏里模型旁边那颗「思考」芯片调的是强度，这里决定用哪种写法发出去。有的服务商不认这些扩展，报错就选「不发」。"
+          >
+            <select
+              className="select"
+              value={form.reasoning?.style ?? "auto"}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  reasoning: {
+                    effort: form.reasoning?.effort ?? "off",
+                    style: e.target.value as ReasoningStyle,
+                  },
+                })
+              }
+            >
+              {(Object.keys(STYLE_LABEL) as ReasoningStyle[]).map((k) => (
+                <option key={k} value={k}>
+                  {STYLE_LABEL[k]}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <div className="row">
+            <button
+              className="btn primary"
+              onClick={() => {
+                void upsert({ ...form, apiKey: apiKey ? apiKey : undefined });
+                setSelected(form.id ?? null);
+                setApiKey("");
+              }}
+            >
+              保存
+            </button>
+            {form.id && (
               <button
-                className="btn primary"
-                onClick={() => {
-                  void upsert({ ...form, apiKey: apiKey ? apiKey : undefined });
-                  setSelected(form.id ?? null);
-                  setApiKey("");
+                className="btn"
+                disabled={testing}
+                onClick={async () => {
+                  setTesting(true);
+                  setTestResult(null);
+                  try {
+                    const r = await api.profileTest(form.id!);
+                    setTestResult(r);
+                  } catch (e) {
+                    setTestResult({ ok: false, message: errText(e), latencyMs: 0 });
+                  } finally {
+                    setTesting(false);
+                  }
                 }}
               >
-                保存
+                {testing ? <Spinner /> : <Icon name="play" size={13} />} 测试连接
               </button>
-              {form.id && (
-                <button
-                  className="btn"
-                  disabled={testing}
-                  onClick={async () => {
-                    setTesting(true);
-                    setTestResult(null);
-                    try {
-                      const r = await api.profileTest(form.id!);
-                      setTestResult(r);
-                    } catch (e) {
-                      setTestResult({ ok: false, message: errText(e), latencyMs: 0 });
-                    } finally {
-                      setTesting(false);
-                    }
-                  }}
-                >
-                  {testing ? <Spinner /> : <Icon name="play" size={13} />} 测试连接
-                </button>
-              )}
-              {testResult && (
-                <span
-                  className="grow"
-                  style={{ fontSize: 12, color: testResult.ok ? "var(--ok)" : "var(--danger)" }}
-                >
-                  {testResult.message}
-                  {testResult.latencyMs > 0 && `（${testResult.latencyMs} ms）`}
-                </span>
-              )}
-              {form.id && !testResult && (
-                <span className="grow muted" style={{ fontSize: 11.5 }}>
-                  保存后可以点「测试连接」发一次 ping
-                </span>
-              )}
-            </div>
+            )}
+            {testResult && (
+              <span
+                className="grow"
+                style={{ fontSize: 12, color: testResult.ok ? "var(--ok)" : "var(--danger)" }}
+              >
+                {testResult.message}
+                {testResult.latencyMs > 0 && `（${testResult.latencyMs} ms）`}
+              </span>
+            )}
+            {form.id && !testResult && (
+              <span className="grow muted" style={{ fontSize: 11.5 }}>
+                保存后可以点「测试连接」发一次 ping
+              </span>
+            )}
           </div>
-        )}
-      </div>
-    </section>
+        </div>
+      )}
+    </div>
   );
 }

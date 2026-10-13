@@ -21,6 +21,7 @@ pub mod kb;
 pub mod mcp;
 pub mod net;
 pub mod paths;
+pub mod proc;
 pub mod remote;
 pub mod skills;
 pub mod state;

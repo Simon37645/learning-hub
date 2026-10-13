@@ -77,7 +77,12 @@ export type IconName =
   | "expand"
   | "collapse"
   | "phone"
-  | "box";
+  | "box"
+  // 设置页左侧菜单用（v0.6.1 改成两栏后每节都要一个图标）
+  | "user"
+  | "palette"
+  | "shield"
+  | "info";
 
 const PATHS: Record<IconName, ReactNode> = {
   plus: <path d="M8 3.5v9M3.5 8h9" />,
@@ -297,6 +302,33 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M9.6 2.4l3.9 3.9-1.6 1.6-1.1-1.1-5.4 5.4-1.7-1.7 5.4-5.4-1.1-1.1z" />
       <path d="M4.3 11.1l1.6 1.6-1.2 1.2a1.1 1.1 0 0 1-1.6-1.6z" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="8" cy="5.6" r="2.7" />
+      <path d="M3.4 13.4c0-2.3 2-3.9 4.6-3.9s4.6 1.6 4.6 3.9" />
+    </>
+  ),
+  // 调色盘：外观 / 配色
+  palette: (
+    <>
+      <path d="M8 2.2a5.8 5.8 0 0 0 0 11.6c.9 0 1.6-.6 1.6-1.3 0-.4-.2-.7-.4-1-.2-.3-.4-.6-.4-.9 0-.7.6-1.3 1.3-1.3h1c1.5 0 2.7-1.2 2.7-2.7C13.8 4.3 11.2 2.2 8 2.2Z" />
+      <circle cx="5.7" cy="6.6" r="1" />
+      <circle cx="9" cy="5.3" r="1" />
+    </>
+  ),
+  // 盾牌 + 勾：沙箱 / 权限
+  shield: (
+    <>
+      <path d="M8 2.2 13.2 4.1v3.8c0 3-2.1 5.2-5.2 6-3.1-.8-5.2-3-5.2-6V4.1z" />
+      <path d="M6 8l1.5 1.5L10.2 6.6" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="8" cy="8" r="5.8" />
+      <path d="M8 7.3v3.3M8 5.3v.1" />
     </>
   ),
 };
@@ -547,6 +579,31 @@ export function Field({
       <label>{label}</label>
       {children}
       {hint && <div className="hint">{hint}</div>}
+    </div>
+  );
+}
+
+/** 「左边标题 + 说明，右边控件」的一行。
+ *
+ *  和 [`Field`] 只差排布方向：Field 是竖排的表单字段（适合填长内容），
+ *  这个是一行一项（适合开关、下拉、短输入）——设置页里多数项都是后者，
+ *  竖排会让每一项都占三行，一屏放不下几项。 */
+export function FieldRow({
+  label,
+  hint,
+  children,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="field-row">
+      <div className="field-row-text">
+        <div className="field-row-label">{label}</div>
+        {hint && <div className="hint">{hint}</div>}
+      </div>
+      <div className="field-row-control">{children}</div>
     </div>
   );
 }

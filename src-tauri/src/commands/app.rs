@@ -551,15 +551,18 @@ pub async fn open_with_system(state: State<'_, AppState>, topic_slug: String, pa
 #[cfg(target_os = "windows")]
 pub(crate) fn open_in_os(path: &std::path::Path) -> AppResult<()> {
     if path.is_dir() {
-        std::process::Command::new("explorer")
-            .arg(path.as_os_str())
-            .spawn()
+        let mut cmd = std::process::Command::new("explorer");
+        cmd.arg(path.as_os_str());
+        crate::proc::no_console(&mut cmd);
+        cmd.spawn()
             .map_err(|e| AppError::other(format!("调用资源管理器失败：{e}")))?;
     } else {
-        // start 是 cmd 内建命令，第一个空引号是「窗口标题」占位参数
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &path.to_string_lossy()])
-            .spawn()
+        // start 是 cmd 内建命令，第一个空引号是「窗口标题」占位参数。
+        // cmd 是控制台程序：不加 no_console 就会**闪一个黑框**（用户报过）。
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", &path.to_string_lossy()]);
+        crate::proc::no_console(&mut cmd);
+        cmd.spawn()
             .map_err(|e| AppError::other(format!("调用默认程序失败：{e}")))?;
     }
     Ok(())

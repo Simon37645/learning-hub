@@ -111,6 +111,17 @@ body,
   margin: 0;
 }
 
+/* 页面本身**一格都不许滚**：滚动全在内部容器里（.chat-scroll / .viewer-scroll / .settings-body…）。
+   用 clip 而不是 hidden —— `overflow: hidden` 仍然是个「可滚动容器」，只是滚轮滚不动，
+   `scrollIntoView` / `focus()` 照样滚得动（实测能滚 21px）：一滚，整个界面就顶到自绘标题栏
+   底下去，标题栏以下的内容被裁掉半截、压在侧栏与正文的文字上（用户报的「遮挡正常文字」）。
+   clip = 连程序化滚动都不行，这一整类问题就没了。
+   （引子见下面 .hiddenCanvasElement 那条：pdf.js 往 body 上挂的行内 canvas。） */
+html,
+body {
+  overflow: clip;
+}
+
 body {
   font-family: var(--font);
   font-size: 13.5px;
@@ -118,7 +129,14 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+}
+
+/* pdf.js 的 TextLayer 会往 body 上挂一个 <canvas class="hiddenCanvasElement"> 量字体宽度。
+   它只用来 measureText，不该占任何布局位置——不写这条，它会以**行内元素**参与排版，
+   给页面撑出一个约 21px 的行框（页面因此变成「可滚动」，见上面 html/body 那条）。
+   display: none 不影响 measureText：画布不渲染也照样能量文字。 */
+canvas.hiddenCanvasElement {
+  display: none;
 }
 
 button,
@@ -156,7 +174,13 @@ a:hover {
 }
 
 ::selection {
-  background: var(--accent-soft);
+  /* 半透明的强调色，不是 --accent-soft：后者在深色下是 #2c1e17，压在 #1a1a19 的
+     底色上等于没选中——「夜晚模式选中了还是黑的」（用户报的）。半透明的好处是
+     在任何底色上都看得见，也不用为深浅两套配色各写一遍。
+     40% 是量出来的：深色下压完是 rgb(105,62,45)，与底色对比 2.0:1（30% 只有 1.5:1，
+     偏淡）；明亮下是浅橙，正文照旧可读。和编辑器里的 --selection（editor-tokens.css）
+     同一个路子，别改成实色。 */
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 :focus-visible {
@@ -2697,33 +2721,159 @@ mark.hit {
   color: #fff;
 }
 
-/* 设置 */
+/* 设置：左边菜单 + 右边面板。
+   原来是一条长页（十一节一路往下排），改一个字段要先滚半天，也看不出总共有哪些设置。
+   现在左边按组列菜单，右边一次只显示一节；两栏各自滚动（正文滚不影响菜单）。 */
 .settings {
   flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.settings-nav {
+  flex: none;
+  width: 214px;
+  overflow-y: auto;
+  padding: 14px 10px 24px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-sub);
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.settings-back {
+  justify-content: flex-start;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-nav-label {
+  padding: 0 10px 5px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-sub);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+}
+
+.settings-nav-item.on {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.settings-body {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
 }
 
 .settings-inner {
-  max-width: 760px;
+  max-width: 800px;
   margin: 0 auto;
-  padding: 24px 28px 60px;
+  padding: 26px 30px 70px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 16px;
 }
 
-.settings h2 {
-  font-size: 15px;
-  margin: 0;
+.settings-head {
   display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.settings-head h1 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.settings-head p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+/* 「左边标题 + 说明，右边控件」的一行（设置页里一项一行）。
+   用 flex-wrap 而不是 grid：窗口窄的时候（笔记本 1366 @150% 只有 911 CSS px）
+   两栏排不下，**控件自己换到下一行**。写成 `grid-template-columns: minmax(0,1fr) auto`
+   的话窄屏会把标题那一栏压成 0 宽——文字直接看不见（量出来是 `0px 246px`）。 */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.field-row-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.field-row-label {
+  font-size: 13px;
+}
+
+.field-row .hint {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.field-row-control {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.settings h2 .sub {
-  font-weight: 400;
-  font-size: 12px;
-  color: var(--text-faint);
+/* 控件在右边是「按内容宽」，所以这里要给宽度：.input 默认 width: 100%，
+   在按内容定宽的容器里会塌成 0。min-width: 0 让它在极窄时缩而不是溢出。 */
+.field-row-control .input {
+  width: 240px;
+  min-width: 0;
+}
+
+.field-row-control .input.num {
+  width: 120px;
+}
+
+.field-row-control .input.mono {
+  width: 300px;
+}
+
+.field-row-control .select {
+  width: 200px;
+}
+
+.field-row-control .textarea {
+  width: 340px;
 }
 
 .card-box {
@@ -3751,5 +3901,59 @@ html[data-remote] .titlebar .tb-remote .dot.on {
     display: block;
     overflow-x: auto;
     max-width: 100%;
+  }
+
+  /* 设置页的两栏在窄屏上叠起来：左边那列菜单变成顶上一条可横滑的按钮带。
+     竖着占 214px 会把正文挤成一条窄缝，而手机上正文才是要看的。 */
+  html[data-remote] .settings {
+    flex-direction: column;
+  }
+  html[data-remote] .settings-nav {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  /* 「基础设置 / Agent 能力 / 其它」这几个分组标题在横排里没有意义 */
+  html[data-remote] .settings-nav-label {
+    display: none;
+  }
+  html[data-remote] .settings-nav-group {
+    flex-direction: row;
+    gap: 6px;
+  }
+  html[data-remote] .settings-nav-item {
+    width: auto;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+    padding: 5px 10px;
+  }
+  /* 返回按钮跟着横滑会滑出屏幕，钉在最左边（它还是唯一的「离开设置」入口） */
+  html[data-remote] .settings-back {
+    position: sticky;
+    left: 0;
+    flex: none;
+    z-index: 1;
+    background: var(--bg-sub);
+  }
+  html[data-remote] .settings-inner {
+    padding: 16px 14px 60px;
+  }
+  /* 一行一项在窄屏上放不下左右两栏：标题与控件各占一整行 */
+  html[data-remote] .field-row-text,
+  html[data-remote] .field-row-control {
+    flex: 1 1 100%;
+  }
+  html[data-remote] .field-row-control .input,
+  html[data-remote] .field-row-control .input.num,
+  html[data-remote] .field-row-control .input.mono,
+  html[data-remote] .field-row-control .select,
+  html[data-remote] .field-row-control .textarea {
+    width: 100%;
   }
 }

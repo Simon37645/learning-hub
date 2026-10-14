@@ -47,7 +47,9 @@ impl Tool for PageCreate {
          页面怎么写好：① 自包含在一个目录里，入口是 index.html；② 页面里写清「这是什么、\
          怎么操作」（标题 + 一行说明 + 必要的图例），用户可能是隔几天回来看的；\
          ③ 深浅色都要看得清（背景用深色画布或按 prefers-color-scheme 适配）；\
-         ④ 画布铺满窗口、跟随窗口大小变化；⑤ 加 OrbitControls 之类的交互，能让用户自己转着看。\n\
+         ④ 画布铺满窗口、跟随窗口大小变化；⑤ 加 OrbitControls 之类的交互，能让用户自己转着看。\
+         注意：页面**不能联网取数据**（CSP 挡掉了 fetch/XHR 到外网；CDN 上的库仍可加载，\
+         那是脚本请求）——要用的数据（JSON / CSV / 贴图）先写进同一个目录，页面用相对路径读。\n\
          写完一定要自查：用 web_eval 跑几行 JS 确认关键对象建出来了（例如 renderer 的 \
          domElement 宽度、场景里有多少个物体）、再用 web_screenshot 看一眼画面；\
          改完代码再调一次 page_create（同一个 id 就是覆盖重写并自动刷新）。"

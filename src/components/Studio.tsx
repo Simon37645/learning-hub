@@ -16,6 +16,7 @@ import type { StudioInfo } from "../lib/types";
 export function Studio() {
   const studio = useApp((s) => s.studio);
   const loadStudio = useApp((s) => s.loadStudio);
+  const newStudioChat = useApp((s) => s.newStudioChat);
   const toast = useApp((s) => s.toast);
   /** 打开的浮层：规范文档或系统提示词 */
   const [sheet, setSheet] = useState<{ title: string; doc?: string; text?: string } | null>(null);
@@ -77,6 +78,16 @@ export function Studio() {
         <button className="pill-select" title="看看 agent 在这个模式下拿到了什么提示词与工具" onClick={previewPrompt}>
           {loading ? <Spinner /> : <Icon name="eye" size={13} />}
           <span className="ellip">提示词</span>
+        </button>
+        {/* 工坊也要能开新对话：这里没有主题对话框头那个 ＋，不补一个就只能靠
+            「切走再切回来」开新的（用户直接问过「工坊怎么新建对话」） */}
+        <button
+          className="pill-select"
+          title="新对话：换一件事造（当前这条会收进侧栏「工坊」下面）"
+          onClick={() => void newStudioChat()}
+        >
+          <Icon name="plus" size={13} />
+          <span className="ellip">新对话</span>
         </button>
       </div>
 

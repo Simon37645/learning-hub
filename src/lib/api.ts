@@ -36,12 +36,14 @@ import type {
   CardKind,
   ReasoningEffort,
   ReasoningStyle,
+  RunningTurn,
   DeployReport,
   RemoteStatus,
   SkillDirs,
   SkillsOverview,
   Scope,
   McpOverview,
+  McpProbeReport,
   McpStatusEntry,
   McpServerConfig,
   AgentsMcpCandidate,
@@ -159,6 +161,8 @@ export const api = {
     invoke<boolean>("agent_approve", { requestId, allow, always: always ?? false }),
   agentTranscript: (chatId: string, topicSlug?: string | null) =>
     invoke<ChatMessage[]>("agent_transcript", { chatId, topicSlug: topicSlug ?? null }),
+  /** 后端眼里正在跑的轮次：前端拿它对一次 streaming（漏了 finished 事件时能自愈） */
+  agentRunning: () => invoke<RunningTurn[]>("agent_running", {}),
   agentChats: (topicSlug?: string | null) =>
     invoke<string[]>("agent_chats", { topicSlug: topicSlug ?? null }),
   /** 对话清单。`mode` 决定要哪一份：工坊的对话和工作区级的日常问答共用同一个目录 */
@@ -383,6 +387,9 @@ export const api = {
   mcpOverview: (topicSlug?: string | null) =>
     invoke<McpOverview>("mcp_overview", { topicSlug: topicSlug ?? null }),
   mcpStatus: () => invoke<McpStatusEntry[]>("mcp_status"),
+  /** 试运行（起一次、握手、拉工具清单、关掉；不改配置也不重连） */
+  mcpProbe: (name: string, topicSlug?: string | null) =>
+    invoke<McpProbeReport>("mcp_probe", { name, topicSlug: topicSlug ?? null }),
   mcpReload: () => invoke<McpStatusEntry[]>("mcp_reload"),
   mcpUpsert: (server: McpServerConfig, scope: Scope, topicSlug?: string | null, originalName?: string) =>
     invoke<McpStatusEntry[]>("mcp_upsert", {

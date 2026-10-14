@@ -9,7 +9,7 @@ import { useApp } from "../store/app";
 import { isRemote } from "../lib/remote";
 import { STAGE_LABEL, THEME_LABEL, type AgentMode, type StudyStage, type TopicSummary } from "../lib/types";
 import { hotkey, relTime } from "../lib/format";
-import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, useOverlay } from "./ui";
+import { Dropdown, Empty, Field, Icon, MenuItem, MenuLabel, MenuSep, Modal, Spinner, useOverlay } from "./ui";
 import { McpDialog, SkillsDialog } from "./Extend";
 import { RemoteDialog } from "./Remote";
 import { MemoryPanel } from "./Memory";
@@ -53,6 +53,11 @@ export function Sidebar() {
   const activeChatId = useApp((s) => s.chatId);
   const chatIndex = useApp((s) => s.chatIndex);
   const studioChats = useApp((s) => s.studioChats);
+  /** 当前这条对话属于哪个模式：判断「刚开、还没落盘的工坊对话」要用 */
+  const chatMode = useApp((s) => s.chatMode);
+  // 哪条对话正在跑一轮（转圈的标识用它）：store 里那份是「最近一轮」，
+  // 每条对话行只在自己是它的时候显示
+  const runningChatId = useApp((s) => s.streaming?.chatId ?? null);
   const loadChat = useApp((s) => s.loadChat);
   const loadChats = useApp((s) => s.loadChats);
   const view = useApp((s) => s.view);
@@ -172,6 +177,10 @@ export function Sidebar() {
     setNewOpen(true);
   };
 
+  /** 工坊里刚点「新对话」、还没发第一条消息：盘上还没有这个文件，先在侧栏占一行 */
+  const studioPending =
+    view === "studio" && chatMode === "studio" && !!activeChatId && !studioChats.some((c) => c.id === activeChatId);
+
   /** 递归渲染主题树；子主题缩进一级，父主题可折叠 */
   const renderNode = (node: TopicTreeNode, depth: number) => {
     const t = node.topic;
@@ -191,7 +200,7 @@ export function Sidebar() {
     const openChat = (chatId: string) => {
       void (async () => {
         if (topic?.slug !== t.slug) await openTopic(t.slug);
-        await loadChat(chatId);
+        await loadChat(chatId, "study");
       })();
     };
 
@@ -231,11 +240,22 @@ export function Sidebar() {
                 active={c.id === activeChatId}
                 pinned={c.pinned}
                 customTitle={c.customTitle}
+                running={runningChatId === c.id}
                 onClick={() => openChat(c.id)}
               />
             ))}
             {pendingNew && (
-              <ChatRow topicSlug={t.slug} title="新对话" time={null} depth={depth + 1} active onClick={() => {}} />
+              <ChatRow
+                topicSlug={t.slug}
+                title="新对话"
+                time={null}
+                depth={depth + 1}
+                active
+                // 这一行还没有 chatId（文件都没建），但它就是当前那条——
+                // 刚开的新对话马上发消息时，转圈也得转在它身上
+                running={runningChatId === activeChatId}
+                onClick={() => {}}
+              />
             )}
             {archived.length > 0 && (
               <div className="chat-archived">
@@ -362,7 +382,7 @@ export function Sidebar() {
             只在工坊视图里展开：平时不占侧栏的地方。 */}
         {view === "studio" && (
           <div className="studio-chats">
-            {studioChats.filter((c) => !c.archived).length === 0 && (
+            {studioChats.filter((c) => !c.archived).length === 0 && !studioPending && (
               <div className="studio-chats-empty muted">还没有工坊对话</div>
             )}
             {studioChats
@@ -379,9 +399,22 @@ export function Sidebar() {
                   active={c.id === activeChatId}
                   pinned={c.pinned}
                   customTitle={c.customTitle}
-                  onClick={() => void loadChat(c.id)}
+                  running={runningChatId === c.id}
+                  onClick={() => void loadChat(c.id, "studio")}
                 />
               ))}
+            {studioPending && (
+              <ChatRow
+                mode="studio"
+                topicSlug=""
+                title="新对话"
+                time={null}
+                depth={1}
+                active
+                running={runningChatId === activeChatId}
+                onClick={() => {}}
+              />
+            )}
             {studioChats.some((c) => c.archived) && (
               <div className="chat-archived">
                 <div className="chat-archived-head">
@@ -402,7 +435,7 @@ export function Sidebar() {
                       active={c.id === activeChatId}
                       archived
                       customTitle={c.customTitle}
-                      onClick={() => void loadChat(c.id)}
+                      onClick={() => void loadChat(c.id, "studio")}
                     />
                   ))}
               </div>
@@ -569,6 +602,7 @@ function ChatRow({
   pinned,
   archived,
   customTitle,
+  running,
   onClick,
 }: {
   chatId?: string;
@@ -585,6 +619,8 @@ function ChatRow({
   archived?: boolean;
   /** 用户自己改过名（菜单里才给「恢复自动标题」） */
   customTitle?: boolean;
+  /** 这条对话正在跑一轮（侧栏上转个圈，一眼能看出是哪条在忙） */
+  running?: boolean;
   onClick: () => void;
 }) {
   const moveChat = useApp((s) => s.moveChat);
@@ -745,7 +781,14 @@ function ChatRow({
               <Icon name="target" size={11} className="chat-pin" />
             )}
             <span className="chat-title">{title || "新对话"}</span>
-            {time && <span className="chat-time">{relTime(time)}</span>}
+            {/* 正在跑这一轮：转个圈代替时间（用户报的「看不出哪条在忙」） */}
+            {running ? (
+              <span className="chat-running" title="正在运行">
+                <Spinner />
+              </span>
+            ) : (
+              time && <span className="chat-time">{relTime(time)}</span>
+            )}
             {/* 悬停才出现的「⋯」：重命名 / 置顶 / 分叉 / 归档 / 删除 */}
             {chatId && (
               <span className="row-actions chat-actions" onClick={(e) => e.stopPropagation()}>

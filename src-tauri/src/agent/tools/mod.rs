@@ -103,10 +103,14 @@ pub fn registry() -> ToolRegistry {
     r.register(Arc::new(web::WebFetch)).register(Arc::new(web::WebSearch));
 
     // --- 工坊（独立于学习：照着内置规范造技能与 MCP 服务器）---
-    // 它们改的是应用自己的能力与配置，学习模式里用不到，所以 scope 是 Studio
+    // 它们改的是应用自己的能力与配置，学习模式里用不到，所以 scope 是 Studio。
+    // `mcp_probe` / `run_command` 是「让工坊里的 agent 自己能试跑」的那两条：
+    // 工坊没有终端，没有它们就只能靠「发布 → 看状态」猜，而那个状态以前什么原因都不说。
     r.register(Arc::new(studio::SpecRead))
         .register(Arc::new(studio::SkillPublish))
-        .register(Arc::new(studio::McpPublish));
+        .register(Arc::new(studio::McpPublish))
+        .register(Arc::new(studio::McpProbe))
+        .register(Arc::new(studio::RunCommand));
 
     r
 }

@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, errText } from "../lib/api";
-import { SCOPE_LABEL, type AgentsMcpCandidate, type McpEntryView, type McpOverview, type Scope, type SkillEntry, type SkillDirs, type SkillsOverview } from "../lib/types";
+import { SCOPE_LABEL, type AgentsMcpCandidate, type McpEntryView, type McpOverview, type McpProbeReport, type Scope, type SkillEntry, type SkillDirs, type SkillsOverview } from "../lib/types";
 import { useApp } from "../store/app";
 import { Field, Icon, Modal, Segmented, Spinner, Switch } from "./ui";
 
@@ -709,6 +709,25 @@ function McpGroup({
   showGlobalToggle?: boolean;
 }) {
   const topicOpen = !!useApp((st) => st.topic);
+  const slug = useApp((st) => st.topic?.slug ?? null);
+  const toast = useApp((st) => st.toast);
+  /** 每台服务器最近一次「试运行」的结果（key = scope+name）；"…" 表示正在跑 */
+  const [probes, setProbes] = useState<Record<string, McpProbeReport | "…">>({});
+  const probe = async (s: McpEntryView) => {
+    const key = `${s.scope}-${s.name}`;
+    setProbes((p) => ({ ...p, [key]: "…" }));
+    try {
+      const r = await api.mcpProbe(s.name, slug);
+      setProbes((p) => ({ ...p, [key]: r }));
+    } catch (e) {
+      setProbes((p) => {
+        const next = { ...p };
+        delete next[key];
+        return next;
+      });
+      toast("error", errText(e));
+    }
+  };
   return (
     <div className="col" style={{ gap: 6 }}>
       <div className="row" style={{ gap: 8 }}>
@@ -764,6 +783,14 @@ function McpGroup({
                   onChange={(v) => onToggle(s, v, "topic")}
                 />
               )}
+              <button
+                className="btn sm"
+                title="试运行：起一次、握手、拉工具清单，然后关掉（不改配置、不重连）"
+                disabled={busy || probes[`${s.scope}-${s.name}`] === "…"}
+                onClick={() => void probe(s)}
+              >
+                {probes[`${s.scope}-${s.name}`] === "…" ? <Spinner /> : <Icon name="play" size={12} />} 试运行
+              </button>
               <button className="icon-btn" title="删除" disabled={busy} onClick={() => onDelete(s)}>
                 <Icon name="trash" size={13} />
               </button>
@@ -772,6 +799,56 @@ function McpGroup({
               {s.command}
             </div>
             {s.error && <div style={{ fontSize: 12, color: "var(--danger)" }}>{s.error}</div>}
+            {/* 它自己的输出：起不来的原因通常就在这几行里（以前只写进应用的控制台，看不到） */}
+            {!s.connected && s.log.length > 0 && (
+              <details className="mcp-log">
+                <summary>它自己的输出（{s.log.length} 行）</summary>
+                <pre>{s.log.join("\n")}</pre>
+              </details>
+            )}
+            {(() => {
+              const r = probes[`${s.scope}-${s.name}`];
+              if (!r) return null;
+              if (r === "…") {
+                return (
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    正在试运行…
+                  </div>
+                );
+              }
+              return (
+                <div className="col" style={{ gap: 4 }}>
+                  <div className="row" style={{ gap: 6 }}>
+                    <Icon
+                      name={r.ok ? "check" : "alert"}
+                      size={12}
+                      style={{ color: r.ok ? "var(--ok)" : "var(--danger)" }}
+                    />
+                    <span style={{ fontSize: 12 }}>{r.summary}</span>
+                    <span className="muted" style={{ fontSize: 11 }}>
+                      {r.elapsedMs} ms
+                    </span>
+                    <div className="grow" />
+                    <button
+                      className="icon-btn"
+                      title="收起"
+                      onClick={() =>
+                        setProbes((p) => {
+                          const next = { ...p };
+                          delete next[`${s.scope}-${s.name}`];
+                          return next;
+                        })
+                      }
+                    >
+                      <Icon name="close" size={11} />
+                    </button>
+                  </div>
+                  {r.log.length > 0 && (
+                    <pre className="mcp-log-pre">{r.log.join("\n")}</pre>
+                  )}
+                </div>
+              );
+            })()}
             {s.connected && s.tools.length > 0 && (
               <div className="row wrap" style={{ gap: 4 }}>
                 {s.tools.map((t) => (

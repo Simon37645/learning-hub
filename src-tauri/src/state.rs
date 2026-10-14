@@ -45,6 +45,9 @@ pub struct McpEntry {
     pub config: crate::mcp::McpServerConfig,
     pub client: Option<Arc<crate::mcp::McpClient>>,
     pub error: Option<String>,
+    /// 这个服务器「最近发生了什么」（stderr 尾巴 + 启动/退出事件）。
+    /// 连不上的服务器也有——那正是最需要看日志的时候。
+    pub log: crate::mcp::McpLog,
 }
 
 /// 给前端与工具看的 MCP 状态视图。
@@ -60,6 +63,8 @@ pub struct McpStatusEntry {
     pub tool_count: usize,
     pub tools: Vec<String>,
     pub error: Option<String>,
+    /// 排查用：这个服务器自己的日志尾巴（stderr 等）
+    pub log: Vec<String>,
 }
 
 fn entry_to_status(entry: &McpEntry) -> McpStatusEntry {
@@ -73,6 +78,7 @@ fn entry_to_status(entry: &McpEntry) -> McpStatusEntry {
         tool_count: entry.client.as_ref().map(|c| c.tools.len()).unwrap_or(0),
         tools: entry.client.as_ref().map(|c| c.tools.iter().map(|t| t.name.clone()).collect()).unwrap_or_default(),
         error: entry.error.clone(),
+        log: entry.log.tail(),
     }
 }
 
@@ -377,10 +383,13 @@ impl AppCore {
                     config: cfg,
                     client: None,
                     error: Some("已禁用".into()),
+                    log: crate::mcp::McpLog::new(),
                 });
                 continue;
             }
-            match crate::mcp::McpClient::connect(&cfg).await {
+            // 日志先建好再连：连不上也要把「为什么」留下来（stderr / 退出码 / 命令解析）
+            let log = crate::mcp::McpLog::new();
+            match crate::mcp::McpClient::connect(&cfg, log.clone()).await {
                 Ok(client) => {
                     match client.list_tools().await {
                         Ok(tools) => {
@@ -390,14 +399,29 @@ impl AppCore {
                                     t,
                                 )));
                             }
+                            entries.push(McpEntry {
+                                config: cfg.clone(),
+                                client: Some(client),
+                                error: None,
+                                log,
+                            });
                         }
-                        Err(e) => eprintln!("[mcp] {} 拉取工具列表失败：{e}", cfg.name),
+                        // 握手过了但工具清单拉不到 → 这个服务器没法用。
+                        // 以前这里只 eprintln 一句、服务器照样标成「已连接」，
+                        // 界面上就变成「连上了但 0 个工具」，谁都不知道为什么。
+                        Err(e) => {
+                            let why = format!("已连接，但 tools/list 失败：{e}");
+                            log.push(why.clone());
+                            eprintln!("[mcp] {} {why}", cfg.name);
+                            client.shutdown().await;
+                            entries.push(McpEntry {
+                                config: cfg.clone(),
+                                client: None,
+                                error: Some(why),
+                                log,
+                            });
+                        }
                     }
-                    entries.push(McpEntry {
-                        config: cfg.clone(),
-                        client: Some(client),
-                        error: None,
-                    });
                 }
                 Err(e) => {
                     eprintln!("[mcp] {} 连接失败：{e}", cfg.name);
@@ -405,6 +429,7 @@ impl AppCore {
                         config: cfg.clone(),
                         client: None,
                         error: Some(e.to_string()),
+                        log,
                     });
                 }
             }

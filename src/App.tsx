@@ -29,8 +29,12 @@ export default function App() {
   // 窗口回到前台：轻量重拉当前主题的文件清单。
   // 用户可能在资源管理器里往 materials/ 丢了讲义（或让别的工具生成了笔记），
   // 前端不会收到通知——不重拉的话「资料」面板要重开主题才更新。
+  // 顺带跟后端对一次「还有没有在跑的轮次」：漏过 finished 事件时清掉那个幽灵转圈。
   useEffect(() => {
-    const onFocus = () => void useApp.getState().refreshTopicFiles();
+    const onFocus = () => {
+      void useApp.getState().refreshTopicFiles();
+      void useApp.getState().reconcileRunning();
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);

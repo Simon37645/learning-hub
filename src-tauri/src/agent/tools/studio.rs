@@ -8,17 +8,31 @@
 //! 和学习内容无关，放进学习模式的工具表只会占上下文。
 
 use crate::agent::registry::{
-    arg_str, arg_str_array, arg_str_req, object_schema, str_array_prop, str_prop, Tool, ToolCtx,
-    ToolOutput, ToolScope,
+    arg_str, arg_str_array, arg_str_req, object_schema, str_array_prop, str_prop, Access, Tool,
+    ToolCtx, ToolOutput, ToolScope,
 };
 use crate::agent::event::Risk;
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::time::Duration;
 
 fn studio_of(ctx: &ToolCtx) -> crate::studio::Studio {
     crate::studio::Studio::new(ctx.core.config_read().workspace_root.clone())
+}
+
+/// 参数里这个值「像不像一个相对的文件名」：不含通配符与选项前缀，带扩展名或路径分隔符，
+/// 且不是绝对路径。用来决定「没给 cwd 时该不该默认到服务器目录」。
+fn looks_like_relative_file(arg: &str) -> bool {
+    let a = arg.trim();
+    if a.is_empty() || a.starts_with('-') || a.starts_with('~') {
+        return false;
+    }
+    if crate::paths::looks_absolute(a) {
+        return false;
+    }
+    a.contains('.') || a.contains('/') || a.contains('\\')
 }
 
 // ---------------------------------------------------------------- spec_read
@@ -161,10 +175,11 @@ impl Tool for McpPublish {
 
     fn description(&self) -> &'static str {
         "把一个 MCP 服务器登记进应用（写进配置的 agent.mcpServers），并**立刻重连**、\n\
-         返回连接状态与它暴露的工具名——这就是服务器唯一的测试手段。\n\
+         返回连接状态与它暴露的工具名。\n\
          服务器代码放练习目录 `mcp/<id>/` 里；传 `dir` 会把它搬进正式目录 `.hub/mcp/<id>/`\n\
          并把 args/cwd 里指向练习目录的路径自动改写过去。\n\
-         同名服务器会被覆盖（视为改配置）。连接失败时它会返回服务器的 stderr 摘要，照着改。\n\
+         同名服务器会被覆盖（视为改配置）。连接失败时它会返回子进程的 **stderr 与退出码**，照着改。\n\
+         更稳的顺序：先用 `mcp_probe` 试到通（不写配置），再 `mcp_publish` 登记。\n\
          参数怎么写、服务器要满足什么协议，先读 `spec_read`（mcp）。"
     }
 
@@ -252,6 +267,19 @@ impl Tool for McpPublish {
                 // 没给 cwd 时默认就在服务器自己的目录里跑（`python server.py` 才能找到脚本）
                 cwd = Some(dest.to_string_lossy().to_string());
             }
+        } else if cwd.is_none() {
+            // 没传 dir、也没给 cwd：如果 args 里有**相对的文件名**（`-File search.ps1`、
+            // `server.py` 这种），相对的是**应用的当前目录**，几乎必然找不到——那就默认
+            // 以「同名的正式目录」为工作目录（`workspace/.hub/mcp/<name>/`）。
+            // 这个坑真踩过：一次发布完，界面上只有「已退出」三个字。
+            let dir = studio.mcp_dir().join(&name);
+            if dir.is_dir() && args.iter().any(|a| looks_like_relative_file(a)) {
+                notes.push(format!(
+                    "没给 cwd，但参数里有相对文件名——默认以 {} 为工作目录",
+                    dir.display()
+                ));
+                cwd = Some(dir.to_string_lossy().to_string());
+            }
         }
         if let Some(c) = cwd.clone() {
             if !std::path::Path::new(&c).is_dir() {
@@ -311,11 +339,21 @@ impl Tool for McpPublish {
             Some(e) => {
                 out.push_str(&format!(
                     "- ✗ 连接失败：{}\n\
-                     排查顺序：① 命令能不能直接跑起来（python / node 是否在 PATH 上）；\
-                     ② 服务器有没有往 **stdout** 打非协议内容（日志必须走 stderr）；\
-                     ③ `initialize` 是否按规范回了结果。改完再 `mcp_publish` 一次即可。",
+                     改完再 mcp_publish 一次即可（也可以先用 `mcp_probe` 试，不必写配置）。\n",
                     e.error.clone().unwrap_or_else(|| "未知原因（没有返回错误详情）".into())
                 ));
+                // 子进程自己的输出：以前这些行只写进应用的控制台，而发布版没有控制台，
+                // 于是「起不来」永远只有一个词。现在照原样带回来。
+                if !e.log.is_empty() {
+                    out.push_str("\n它自己的输出（stderr / 启动事件，最近的在后面）：\n```\n");
+                    out.push_str(&e.log.join("\n"));
+                    out.push_str("\n```\n");
+                }
+                out.push_str(
+                    "常见三类原因：① 命令没解析到（看日志里的「启动：」与「起不来」）；\
+                     ② 服务器往 **stdout** 打了非协议内容（MCP stdio 一行一个 JSON-RPC，日志走 stderr）；\
+                     ③ 脚本自己抛错或直接退出（看 stderr 尾巴与退出码）。",
+                );
             }
             None => {
                 out.push_str("- ✗ 重连后没有它的状态记录，通常是配置没写进去（可以看 `mcp_status`）。\n");
@@ -324,4 +362,240 @@ impl Tool for McpPublish {
         out.push_str("\n用户可以在侧栏「MCP 服务器」面板里查看、开关或删除它。");
         Ok(ToolOutput::ok(out))
     }
+}
+
+// ---------------------------------------------------------------- mcp_probe
+
+/// 试运行一个 MCP 服务器：起一次、握手、拉一次工具清单、关掉。**不写配置、不重连**。
+///
+/// 为什么必须有：`mcp_publish` 会直接改配置——没有它的时候，agent 只能靠
+/// 「发布 → 看状态」猜，猜错一次就污染一次配置（而且状态里没有任何原因：
+/// 子进程的 stderr 以前只写进应用自己的控制台，发布版根本没有控制台）。
+pub struct McpProbe;
+
+#[async_trait]
+impl Tool for McpProbe {
+    fn name(&self) -> &'static str {
+        "mcp_probe"
+    }
+
+    fn description(&self) -> &'static str {
+        "试运行一个 MCP 服务器：按你给的命令起一次、握手、拉一次工具清单，然后关掉。\n\
+         **不写配置、不重连**——发布（`mcp_publish`）之前先用它自测，改完再试，试通了再发布。\n\
+         失败时会返回子进程 stderr 的尾巴、退出码，以及命令解析到哪个文件，照着改就行。\n\
+         服务器代码放练习目录 `mcp/<id>/` 里；相对路径按 cwd 解析，不给 cwd 就用练习目录。"
+    }
+
+    fn schema(&self) -> Value {
+        object_schema(
+            json!({
+                "name": str_prop("服务器名（只用于回报里显示，给个英文短名即可）"),
+                "command": str_prop("可执行文件：node / python / npx，或 .exe 的完整路径"),
+                "args": str_array_prop("命令行参数，例如 [\"server.js\"]"),
+                "env": json!({
+                    "type": "object",
+                    "description": "额外环境变量，例如 {\"TAVILY_API_KEY\":\"tvly-…\"}",
+                    "additionalProperties": { "type": "string" }
+                }),
+                "cwd": str_prop("可选：工作目录（相对练习目录）。不传就是练习目录"),
+            }),
+            &["name", "command"],
+        )
+    }
+
+    fn risk(&self) -> Risk {
+        Risk::Write
+    }
+
+    fn summarize(&self, input: &Value) -> String {
+        format!(
+            "试运行 MCP：{} {}",
+            arg_str(input, "command").unwrap_or_default(),
+            arg_str_array(input, "args").join(" ")
+        )
+    }
+
+    fn scope(&self) -> ToolScope {
+        ToolScope::Studio
+    }
+
+    async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
+        let cwd_arg = arg_str(&input, "cwd").unwrap_or_default();
+        let cwd = if cwd_arg.trim().is_empty() {
+            ctx.root.clone()
+        } else {
+            ctx.resolve_path(cwd_arg.trim(), None, Access::Read, "试运行 MCP 服务器的工作目录")
+                .await?
+        };
+        let cfg = crate::mcp::McpServerConfig {
+            name: arg_str(&input, "name").unwrap_or_else(|| "probe".into()),
+            command: arg_str_req(&input, "command")?,
+            args: arg_str_array(&input, "args"),
+            env: input
+                .get("env")
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            cwd: Some(cwd.to_string_lossy().to_string()),
+            enabled: true,
+        };
+        let report = crate::mcp::probe(&cfg).await;
+        let mut out = format!("试运行结果（{} ms）：\n- {}\n", report.elapsed_ms, report.summary);
+        if report.ok && !report.tools.is_empty() {
+            out.push_str("- 工具清单就是上面那串；发布后它们的名字是 `mcp__<服务器名>__<工具名>`。\n");
+        }
+        if !report.log.is_empty() {
+            out.push_str("\n它自己的输出（stderr / 启动事件，最近的在后面）：\n```\n");
+            out.push_str(&report.log.join("\n"));
+            out.push_str("\n```\n");
+        }
+        if !report.ok {
+            out.push_str(
+                "\n常见的三类原因：① 命令没解析到（看「启动：」那行与「起不来」）；\
+                 ② 服务器往 **stdout** 打了非协议内容（MCP stdio 里一行一个 JSON-RPC，\
+                 日志一律走 stderr）；③ 脚本自己抛错/直接退出（看 stderr 尾巴与退出码）。",
+            );
+        }
+        Ok(ToolOutput::ok(out))
+    }
+}
+
+// ---------------------------------------------------------------- run_command
+
+/// 跑一条命令。工坊里唯一的「真试跑」手段（agent 没有终端）。
+///
+/// 风险等级给到 `Destructive`：这是真的在本机执行、能改任何东西，
+/// 「每次确认」模式下要用户点头；用户选了完全访问才会一路绿灯。
+pub struct RunCommand;
+
+#[async_trait]
+impl Tool for RunCommand {
+    fn name(&self) -> &'static str {
+        "run_command"
+    }
+
+    fn description(&self) -> &'static str {
+        "在这台电脑上跑一条命令，把 stdout / stderr / 退出码拿回来。\n\
+         默认工作目录是练习目录（工坊）；Windows 上交给 `cmd /C`，macOS / Linux 交给 `sh -c`。\n\
+         装依赖、编译、试跑服务器、复现报错都用它——**别让用户自己动手**。\n\
+         注意：① 这是真的在本机执行，不是沙箱；② 长驻进程（等 stdin 的服务器）会一直跑到超时，\
+         用 `timeout_secs` 控制，或者干脆用 `mcp_probe` 去测服务器。"
+    }
+
+    fn schema(&self) -> Value {
+        object_schema(
+            json!({
+                "command": str_prop("命令行，例如 \"node --version\"、\"npm install\"、\"python -m pytest -q\""),
+                "cwd": str_prop("可选：工作目录（相对练习目录）。不传就是练习目录"),
+                "timeout_secs": json!({
+                    "type": "integer",
+                    "description": "超时秒数（默认 60，最长 600）；到点就把进程放掉"
+                }),
+            }),
+            &["command"],
+        )
+    }
+
+    fn risk(&self) -> Risk {
+        Risk::Destructive
+    }
+
+    fn summarize(&self, input: &Value) -> String {
+        format!("运行命令：{}", arg_str(input, "command").unwrap_or_default())
+    }
+
+    fn scope(&self) -> ToolScope {
+        ToolScope::Studio
+    }
+
+    async fn run(&self, ctx: &ToolCtx, input: Value) -> AppResult<ToolOutput> {
+        let line = arg_str_req(&input, "command")?;
+        let cwd_arg = arg_str(&input, "cwd").unwrap_or_default();
+        let cwd = if cwd_arg.trim().is_empty() {
+            ctx.root.clone()
+        } else {
+            ctx.resolve_path(cwd_arg.trim(), None, Access::Read, "命令的工作目录").await?
+        };
+        let timeout = input
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60)
+            .clamp(1, 600);
+
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe", vec!["/C".to_string(), line.clone()]);
+        #[cfg(not(windows))]
+        let (program, args) = ("sh", vec!["-c".to_string(), line.clone()]);
+
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(&args)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            // 超时/出错时别留孤儿进程
+            .kill_on_drop(true);
+        crate::proc::no_console(cmd.as_std_mut());
+
+        let outcome = tokio::time::timeout(Duration::from_secs(timeout), cmd.output()).await;
+        let output = match outcome {
+            Err(_) => {
+                return Ok(ToolOutput::ok(format!(
+                    "命令超过 {timeout} 秒还没结束，已经把它放掉了（要跑长任务就调大 `timeout_secs`；\
+                     如果是「启动一个等 stdin 的服务器」这类长驻进程，请改用 `mcp_probe` 去试）。\n\
+                     命令：{line}"
+                )));
+            }
+            Ok(Err(e)) => {
+                return Ok(ToolOutput::ok(format!(
+                    "起不来：{e}\n（在 {cwd:?} 下执行：{line}）",
+                    cwd = cwd.display()
+                )));
+            }
+            Ok(Ok(o)) => o,
+        };
+
+        let code = output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "（被信号终止）".into());
+        let mut text = format!("命令：{line}\n退出码：{code}\n");
+        // 按本地代码页兜底解码：cmd / PowerShell 5.1 的中文输出不是 UTF-8（见 proc::decode_output）
+        let stdout = crate::proc::decode_output(&output.stdout);
+        let stderr = crate::proc::decode_output(&output.stderr);
+        if !stdout.trim().is_empty() {
+            text.push_str("\n[stdout]\n");
+            text.push_str(&clamp_tail(&stdout, 12000));
+        }
+        if !stderr.trim().is_empty() {
+            text.push_str("\n[stderr]\n");
+            text.push_str(&clamp_tail(&stderr, 8000));
+        }
+        if stdout.trim().is_empty() && stderr.trim().is_empty() {
+            text.push_str("\n（没有任何输出）");
+        }
+        Ok(ToolOutput::ok(text))
+    }
+}
+
+/// 太长的输出留头也留尾：**报错通常在最后几行**。
+fn clamp_tail(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.trim_end().to_string();
+    }
+    let head: String = s.chars().take(max / 3).collect();
+    let tail: String = s
+        .chars()
+        .rev()
+        .take(max - max / 3)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{head}\n…（中间省略）…\n{tail}")
 }

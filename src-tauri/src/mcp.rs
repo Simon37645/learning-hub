@@ -29,6 +29,43 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// 握手超时（服务器起不来不该拖住启动）
 const INIT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// 每个服务器一份「最近发生了什么」的环形日志：stderr 的尾巴 + 启动/退出这类事件。
+///
+/// 为什么必须有：子进程的 stderr 原来只 `eprintln!`，而发布版是
+/// `windows_subsystem = "windows"`——**根本没有控制台**，那些行等于写进黑洞；
+/// 界面上（以及 agent 眼里）只剩一句「已退出」，写服务器的人只能瞎猜。
+/// 现在这份尾巴会随状态一起回给面板与 `mcp_status` / `mcp_publish`。
+///
+/// 连接**失败**的服务器也留着它——那正是最需要看日志的时候，所以由调用方先建好、
+/// 再传进来（见 [`probe`] 与 `AppCore::mcp_reload`）。
+#[derive(Clone, Default)]
+pub struct McpLog(Arc<parking_lot::Mutex<std::collections::VecDeque<String>>>);
+
+/// 最多留多少行（够看清一次启动失败，又不会把面板刷爆）
+const LOG_CAP: usize = 60;
+
+impl McpLog {
+    pub fn new() -> Self {
+        Self(Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())))
+    }
+
+    pub fn push(&self, line: impl Into<String>) {
+        let mut g = self.0.lock();
+        // 一次写进来多行（比如一段 traceback）也按行拆开，方便界面上逐行看
+        for l in line.into().lines() {
+            g.push_back(l.trim_end().to_string());
+            while g.len() > LOG_CAP {
+                g.pop_front();
+            }
+        }
+    }
+
+    /// 最近这些行（老的在前）。
+    pub fn tail(&self) -> Vec<String> {
+        self.0.lock().iter().cloned().collect()
+    }
+}
+
 /// 配置里描述的一个 MCP 服务器。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,17 +104,35 @@ pub struct McpClient {
     pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
     next_id: AtomicI64,
     /// 子进程句柄，Drop 时会被 kill（放在 Mutex 里以便显式关闭）
-    child: AsyncMutex<Option<Child>>,
+    child: Arc<AsyncMutex<Option<Child>>>,
     pub tools: Vec<McpToolInfo>,
     /// 服务器自己的名字与版本（握手后填一次），界面上显示用
     server_info: std::sync::OnceLock<String>,
+    log: McpLog,
+}
+
+impl McpClient {
+    /// 这个服务器的日志尾巴（stderr + 启动/退出事件）。出问题时界面与 agent 都看它。
+    pub fn log_tail(&self) -> Vec<String> {
+        self.log.tail()
+    }
 }
 
 impl McpClient {
     /// 启动并完成握手。
-    pub async fn connect(cfg: &McpServerConfig) -> AppResult<Arc<McpClient>> {
-        let mut cmd = Command::new(&cfg.command);
-        cmd.args(&cfg.args)
+    ///
+    /// `log` 由调用方建好再传进来：连接失败时也要能把「为什么」带回去
+    /// （子进程的 stderr、命令解析到哪、退出码）。
+    pub async fn connect(cfg: &McpServerConfig, log: McpLog) -> AppResult<Arc<McpClient>> {
+        // `npx` / `npm` / `uvx` 这类是 .cmd shim，CreateProcess 不认 PATHEXT——
+        // 先解析成真能起起来的东西（见 proc::resolve_command）
+        let (command, args) = crate::proc::resolve_command(&cfg.command, &cfg.args);
+        log.push(format!("启动：{command} {}", args.join(" ")).trim_end());
+        if let Some(cwd) = &cfg.cwd {
+            log.push(format!("工作目录：{cwd}"));
+        }
+        let mut cmd = Command::new(&command);
+        cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -93,9 +148,16 @@ impl McpClient {
         }
 
         let mut child = cmd.spawn().map_err(|e| {
+            // 「起不来」最常见的原因就三类：没装、不在应用的 PATH 上、路径写错。
+            // 把解析结果一起写进日志，省得用户/agent 猜。
+            log.push(format!(
+                "起不来：{e}（{}）",
+                crate::proc::describe_command(&cfg.command)
+            ));
             AppError::other(format!(
                 "启动 MCP 服务器「{}」失败（{}）：{e}",
-                cfg.name, cfg.command
+                cfg.name,
+                crate::proc::describe_command(&cfg.command)
             ))
         })?;
 
@@ -108,12 +170,28 @@ impl McpClient {
             .take()
             .ok_or_else(|| AppError::other("MCP 子进程没有 stdout"))?;
 
-        // stderr 单独抽干：不读的话管道满了会把服务器卡死，而且日志本身很有用
+        // stderr 单独抽干：不读的话管道满了会把服务器卡死；而且日志本身就是
+        // 排查「起不来」唯一的线索（以前只 eprintln，发布版没有控制台 = 丢了）
         if let Some(stderr) = child.stderr.take() {
             let name = cfg.name.clone();
+            let log = log.clone();
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                // 按字节读、按本地代码页兜底解码：中文 Windows 上 Python 的 traceback
+                // 就是 GBK 的，用 `lines()`（要求合法 UTF-8）会直接断掉——
+                // 而这段日志正是排查「起不来」唯一的东西，不能因为编码丢了。
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let line = crate::proc::decode_output(&buf).trim_end().to_string();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    log.push(format!("[stderr] {line}"));
                     eprintln!("[mcp:{name}] {line}");
                 }
             });
@@ -122,22 +200,25 @@ impl McpClient {
         let pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
             Arc::new(AsyncMutex::new(HashMap::new()));
 
+        let child = Arc::new(AsyncMutex::new(Some(child)));
         let client = Arc::new(McpClient {
             name: cfg.name.clone(),
             stdin: AsyncMutex::new(stdin),
             pending: pending.clone(),
             next_id: AtomicI64::new(1),
-            child: AsyncMutex::new(Some(child)),
+            child: child.clone(),
             tools: Vec::new(),
             server_info: std::sync::OnceLock::new(),
+            log: log.clone(),
         });
 
         // 读循环：把响应派发给等待中的请求
         {
             let pending = pending.clone();
             let name = cfg.name.clone();
+            let log = log.clone();
             tokio::spawn(async move {
-                read_loop(stdout, pending, name).await;
+                read_loop(stdout, pending, name, log, child).await;
             });
         }
 
@@ -326,11 +407,18 @@ async fn read_loop(
     stdout: ChildStdout,
     pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
     name: String,
+    log: McpLog,
+    child: Arc<AsyncMutex<Option<Child>>>,
 ) {
-    let mut lines = BufReader::new(stdout).lines();
+    // 按字节读、按本地代码页兜底解码（同 stderr 那条）：stdout 里混进来的非协议内容
+    // 本来就常常是中文日志，用 `lines()` 会因编码不合法直接断掉读循环。
+    let mut reader = BufReader::new(stdout);
+    let mut buf: Vec<u8> = Vec::new();
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(n) if n > 0 => {
+                let line = crate::proc::decode_output(&buf);
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
@@ -338,6 +426,9 @@ async fn read_loop(
                 let msg: Value = match serde_json::from_str(line) {
                     Ok(v) => v,
                     Err(e) => {
+                        // **往 stdout 打非协议内容**是 MCP 服务器最常见的坑之一
+                        // （一句 banner 就能把握手搞死），所以这行必须留进日志。
+                        log.push(format!("[stdout 不是 JSON-RPC] {line}"));
                         eprintln!("[mcp:{name}] 跳过无法解析的一行：{e} | {line}");
                         continue;
                     }
@@ -361,20 +452,106 @@ async fn read_loop(
                     let _ = tx.send(outcome);
                 }
             }
-            Ok(None) => {
-                // 进程退出：把所有等待中的请求叫醒，避免一直挂着
+            Ok(_) => {
+                // EOF（Ok(0)）：进程退出，把所有等待中的请求叫醒，避免一直挂着。
+                // 带上退出码——「已退出」和「已退出（code 1）」对排查是两回事。
+                //
+                // EOF 与「进程被系统标成已退出」之间有窗口：`try_wait` 这时候经常还是 None。
+                // 等一小会儿再问一次（这里只是读一个已经关掉 stdout 的子进程，
+                // 最多多花 400ms，换来的是日志里那句能定性的退出码）。
+                let code = {
+                    let mut guard = child.lock().await;
+                    match guard.as_mut() {
+                        Some(c) => match c.try_wait() {
+                            Ok(Some(status)) => Some(status.code()),
+                            _ => match tokio::time::timeout(Duration::from_millis(400), c.wait()).await {
+                                Ok(Ok(status)) => Some(status.code()),
+                                _ => None,
+                            },
+                        },
+                        None => None,
+                    }
+                };
+                let why = match code {
+                    Some(Some(c)) => format!("MCP 服务器「{name}」已退出（code {c}）"),
+                    Some(None) => format!("MCP 服务器「{name}」已退出（被信号杀掉）"),
+                    None => format!("MCP 服务器「{name}」已退出（stdout 关了，但进程还没收尸）"),
+                };
+                log.push(why.clone());
                 let mut map = pending.lock().await;
                 for (_, tx) in map.drain() {
-                    let _ = tx.send(Err(format!("MCP 服务器「{name}」已退出")));
+                    let _ = tx.send(Err(why.clone()));
                 }
                 break;
             }
             Err(e) => {
+                log.push(format!("[读取 stdout 失败] {e}"));
                 eprintln!("[mcp:{name}] 读取失败：{e}");
                 break;
             }
         }
     }
+}
+
+/// 「试运行」的结果：一次把该看的都看了（结论 + 工具清单 + 日志 + 耗时）。
+///
+/// `mcp_publish` 是会**写配置**的动作（发布失败还留在配置里，得再收拾）——想「先试一试
+/// 再发布」就得有这么一条只读的路。面板上的「试运行」按钮与工坊里的 `mcp_probe` 工具都走它。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeReport {
+    pub ok: bool,
+    /// 一句话结论（成功给服务器名 + 工具数，失败给原因）
+    pub summary: String,
+    pub server_info: String,
+    pub tools: Vec<String>,
+    /// 子进程 stderr 的尾巴 + 启动/退出事件（失败时全靠它）
+    pub log: Vec<String>,
+    pub elapsed_ms: u64,
+}
+
+/// 起一次、握个手、拉一次工具清单、然后关掉。**不写任何配置**。
+pub async fn probe(cfg: &McpServerConfig) -> ProbeReport {
+    let log = McpLog::new();
+    let started = std::time::Instant::now();
+    let mut report = ProbeReport {
+        ok: false,
+        summary: String::new(),
+        server_info: String::new(),
+        tools: Vec::new(),
+        log: Vec::new(),
+        elapsed_ms: 0,
+    };
+    match McpClient::connect(cfg, log.clone()).await {
+        Ok(client) => {
+            let info = client.server_info();
+            match client.list_tools().await {
+                Ok(tools) => {
+                    report.ok = true;
+                    report.server_info = info.clone();
+                    report.tools = tools.iter().map(|t| t.name.clone()).collect();
+                    report.summary = format!(
+                        "连上了（{info}），暴露 {} 个工具：{}",
+                        report.tools.len(),
+                        if report.tools.is_empty() {
+                            "（一个都没有）".to_string()
+                        } else {
+                            report.tools.join("、")
+                        }
+                    );
+                }
+                // 握手过了但拉不到工具清单，等于这个服务器没法用——要报出来
+                Err(e) => {
+                    report.summary = format!("握手成功，但 tools/list 失败：{e}");
+                }
+            }
+            client.shutdown().await;
+        }
+        Err(e) => report.summary = e.to_string(),
+    }
+    report.log = log.tail();
+    report.elapsed_ms = started.elapsed().as_millis() as u64;
+    report
 }
 
 // ---------------------------------------------------------------- 本机 agents 配置（~/.agents/servers/*.json）

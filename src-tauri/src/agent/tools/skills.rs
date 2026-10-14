@@ -144,6 +144,13 @@ impl Tool for McpStatus {
             for t in &s.tools {
                 out.push_str(&format!("    · {}\n", t));
             }
+            // 没连上的把子进程自己的输出也带上：那是唯一能说明「为什么」的东西
+            if !s.connected && !s.log.is_empty() {
+                out.push_str("    ── 它自己的输出 ──\n");
+                for line in s.log.iter().rev().take(15).collect::<Vec<_>>().iter().rev() {
+                    out.push_str(&format!("    {line}\n"));
+                }
+            }
         }
         Ok(ToolOutput::ok(out))
     }

@@ -965,6 +965,8 @@ export interface McpEntryView {
   toolCount: number;
   tools: string[];
   error?: string | null;
+  /** 排查用：这个服务器自己的日志尾巴（stderr、启动/退出事件） */
+  log: string[];
 }
 
 /** 连接状态的原始视图（mcp_status / mcp_reload 返回） */
@@ -978,6 +980,23 @@ export interface McpStatusEntry {
   toolCount: number;
   tools: string[];
   error?: string | null;
+  log: string[];
+}
+
+/** 试运行一个 MCP 服务器的结果（不写配置、不重连） */
+export interface McpProbeReport {
+  ok: boolean;
+  summary: string;
+  serverInfo: string;
+  tools: string[];
+  log: string[];
+  elapsedMs: number;
+}
+
+/** 后端眼里「正在跑的轮次」（agent_running）：前端拿它对一次自己的 streaming 状态 */
+export interface RunningTurn {
+  turnId: string;
+  runningMs: number;
 }
 
 export interface McpOverview {

@@ -269,6 +269,42 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   （transport/http、带 url 的只标 `blocked_reason`，不算解析失败）；`agents_mcp_import` 的
   **id 必须按文件名校验**（含 `/` `\` `..` 一律拒绝），否则拼 `{id}.json` 就是路径穿越。
   导入对目录里所有文件一视同仁，别给任何具体名字写特例。
+- **MCP 服务器起不来时，原因必须在界面上看得见**：发布版是 GUI 程序
+  （`windows_subsystem = "windows"`），**没有控制台**——子进程的 stderr 只 `eprintln!`
+  就等于丢掉。踩过的连锁反应：agent 看到「启动失败」却没有任何原因，只能瞎猜，
+  改一次发一次；`tools/list` 失败还被算成「已连接、0 个工具」，看着像服务器没干活。
+  现在的收口是 `mcp::McpLog`（每个服务器一圈环形缓冲：启动命令、解析到哪个文件、
+  stderr 尾巴、退出码）+ `ProbeReport`：面板能展开看、`mcp_status` 会带上、
+  `mcp_publish` 失败时返回、`mcp_probe` 专门用来「不写配置地试一次」。
+  **新加的「起子进程」的地方都要想到这一条**。
+- **`CreateProcess` 不认 `PATHEXT`**：`npx` / `npm` / `uvx` 是 `.cmd` shim，
+  `Command::new("npx")` 只会去找 `npx.exe`，必然 ENOENT。统一走
+  `proc::resolve_command`（按 PATH + PATHEXT 找，`.cmd` / `.bat` 套一层 `cmd.exe /C`），
+  它和 `no_console` 是起进程的两件套。
+- **工坊（studio）卡住的多半是「环境」，不是「协议」**：那里没有终端、没有 shell 是
+  一开始的设计，结果 agent 想装个依赖、跑个脚本验证都没路，只能把活推给用户——
+  而用户明确说过**他不懂技术，丢一个需求就该 agent 自己做完**。现在练习目录里给了
+  `run_command`（一次一条、不能交互、无管理员权限、有超时、走 `no_console`），
+  测 MCP 服务器给了 `mcp_probe`（起进程 → 握手 → 列工具 → 关掉，不写配置）。
+  **加能力时想的是「让 agent 自己闭环」，而不是「让用户去跑一行命令」**；
+  两份规范文档（`src-tauri/docs/studio/*.md`，`include_str!` 编进二进制）与
+  `prompt.rs` 的工坊提示词里写清了这些边界，改工具要同步改它们。
+- **仓库根的 `package.json` 写着 `"type": "module"`**：这个字段对**目录树里所有 `.js`**
+  生效，所以工作区里（以及本仓库里）写的 Node 脚本必须用 ESM `import`，
+  用 `require` 会直接崩（`require is not defined`）——工坊文档里的 Node 示例已经改成
+  `import`，别改回去；真要 CommonJS 就把文件命名成 `.cjs`。
+- **切主题 / 切工坊 / 新建对话都不许清 `streaming`**：它同时喂着侧栏那个转圈与输入框的
+  「停止」按钮，清了就既看不到「正在跑」也没法叫停（用户报过「工坊里没有停止对话的按键」）。
+  要判断那一轮还在不在，用 `agent_running`（前端 `reconcileRunning`，窗口重新聚焦时对账）。
+- **Windows 控制台程序写的是本地代码页，不是 UTF-8**：cmd 内建命令、PowerShell 5.1、
+  Python 往管道里吐的都是 GBK（中文机器上）。按 UTF-8 硬解 → 一串问号，
+  而且 `BufReader::lines()` 会因编码不合法**直接结束读循环**——MCP 服务器崩在
+  Python traceback 上时，「起不来」的原因就这么丢了。命令输出与子进程日志一律走
+  `proc::decode_output`（先严格试 UTF-8，失败按 GBK 兜底；GBK 兼容 ASCII，
+  纯英文输出两种解出来一样）。
+- **`chatMode` 是侧栏判断「刚开、还没落盘的工坊对话」的依据**：只看 `view` 不够——
+  切视图那一刻 `chatId` 还是上一条，会闪出一行假的「新对话」。`loadChat` 的第二个参数
+  就是给这个用的，从主题/工坊清单进来的点击要显式传模式。
 - **InkNote 的样式表是全局的**（`src/inknote/editor.css` 在 `main.tsx` 里引入）：
   里面那些通用类名会直接盖住应用自己的同名样式，CSS 只看优先级和顺序。
   真踩过：右下角的操作提示（`.toast`）被它改成了 `fixed + left:50%` 的居中横幅，
@@ -494,7 +530,8 @@ MCP 面板可一键导入本机 `~/.agents/servers/` 里已配置的服务器并
   一份「CSS 变量覆盖表」，设置页里能从当前配色复制一份来改，也有变量清单可查）、
 工坊（独立于学习的 agent 模式：读内置的 SKILL / MCP 规范 → 在练习目录
   `.hub/workshop/` 里写 → `skill_publish` / `mcp_publish` 发布；发布即重连并回报状态；
-  自己的对话清单挂在侧栏「工坊」下面）、
+  **agent 自己闭环**——`run_command` 在练习目录里跑脚本装依赖、`mcp_probe` 不写配置地试运行，
+  失败时 stderr 与退出码直接回到对话里；自己的对话清单挂在侧栏「工坊」下面，可新建对话）、
 演示卡片（agent 讲难懂内容时在回复里直接放 ```html / ```svg 代码块，前端渲染成沙箱卡片；
   脚本不执行，动画用 CSS / SVG SMIL，卡片可看源码、可全屏）、
 PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看——图、表、公式、扫描页；

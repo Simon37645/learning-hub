@@ -106,12 +106,16 @@ if __name__ == "__main__":
     main()
 ```
 
-Node，无第三方依赖（日志用 `console.error`，`console.log` 会写进协议流）：
+Node，无第三方依赖（日志用 `console.error`，`console.log` 会写进协议流）。
+**用 ESM 的 `import` 写法**：`require` 只在 `.cjs` 或「最近的 package.json 没写 `type: module`」时才成立，
+而用户的工作区里可能正好有这么一份（本应用自己的仓库就有），那时 `.js` 会被当成 ESM、
+`require is not defined` 直接崩——真踩过。要写 CommonJS 就把文件命名成 `server.cjs`：
 
 ```js
 #!/usr/bin/env node
-// 最小 MCP 服务器骨架：stdio、换行分帧、四个方法。
-const readline = require("readline");
+// 最小 MCP 服务器骨架：stdio、换行分帧、四个方法。（ESM；要 CommonJS 请把文件名改成 .cjs）
+import readline from "node:readline";
+
 const PROTOCOL_VERSION = "2024-11-05";
 const now = () => new Date().toLocaleString("zh-CN");
 const TOOLS = [{ name: "server_now", description: "返回当前日期与星期几。", inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false } }];
@@ -139,6 +143,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 });
 ```
 
+（`import` 的服务器在草稿目录里直接 `node server.js` 就能跑，别为了「先试一下」去加 `package.json`——
+多一个文件就多一处发布后会跟着一起被搬走的东西。）
+
 ## 5. 工具定义怎么写
 
 - `name`：小写字母 + 下划线，1–3 个词的动宾短语（`glossary_lookup`）。别用空格、中文、大写；**别在名字里重复服务器名**（应用会拼成 `mcp__<服务器>__<工具>`）。
@@ -147,11 +154,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 - 返回：只用 text 块，内容是给模型看的一小段文本（Markdown 也行）：先给结论，列表带上总数与截断说明（「共 42 条，只显示前 5 条」），让模型知道结果不完整。工具数建议 3–8 个，一个工具只做一件事；参数名别用 `arg1` 这类名字。
 - 长度：应用不截断，所以**服务器自己限长**。单次几百到一两千字；大文件只回当前要用的那一段，并说明怎么取更多（「要别的词再调一次」）。
 
-## 6. 依赖与环境
+## 6. 依赖与环境：装依赖是你自己的事
 
 - **优先标准库**：Python 只用 `json` / `sys` / `csv` / `os` / `datetime`，Node 只用内置模块。没有依赖就没有安装步骤，也就没有「用户机器上装没装」这个问题。
-- 确实要第三方依赖时：目录里放 `requirements.txt` / `package.json`，README 写清装什么、怎么装、装到哪个解释器。**`mcp_publish` 只搬文件、登记配置、连一次，不会替你装依赖**——要么无依赖，要么把安装命令写给用户，并让服务器缺依赖时把原因写 stderr（`except ImportError as e: print(..., file=sys.stderr)`）后退出。
-- Windows 上的解释器名字：`python` / `py` / `python3` 哪个可用取决于用户机器。`command` 会被**直接交给系统执行，不经过 shell**，所以不能写 `cmd /c ...`、不能用管道或重定向；参数全放进 `args` 数组（逐项传递，路径带空格也不用加引号）。不确定就用绝对路径，或直接问用户。
+- 真要第三方依赖时：先在草稿目录里**自己装**（用 `run_command`，见 §6.5），装好、跑通、再发布。依赖要么装进服务器自己的目录（`pip install --target . <包>` / `npm install --prefix . <包>`），要么用环境里已有的包——**别装系统级的东西**（全局 npm 包、系统软件、改 PATH / 注册表），那会影响用户机器上的其它东西，确实需要时先问用户。
+- 目录里放 `requirements.txt` / `package.json`，README 写清装了什么、怎么重装。**`mcp_publish` 只搬文件、登记配置、连一次，不会替你装依赖**——所以发布前一定先自己跑通；让服务器缺依赖时把原因写 stderr（`except ImportError as e: print(..., file=sys.stderr)`）后退出，这样 `mcp_probe` 的日志里能直接看到是哪个包缺了。
+- Windows 上的解释器名字：`python` / `py` / `python3` 哪个可用取决于用户机器，不确定就用 `run_command` 挨个试（`python -V`、`py -V`），把能用的那个写进 `command`。
+- `command` 会被应用自己解析一次：**不带路径分隔符的名字按 PATH + PATHEXT 找**，所以 `npx` / `npm` 这类 `.cmd` shim 也能起（应用会自动套一层 `cmd.exe /C`）；带路径的按原样执行。参数仍**逐项传递、不经过 shell**，`args` 里写 `> file.txt`、`|`、`&&` 都不会被解释（需要这些就用 `run_command`，它走的是 shell）。
 - `mcp_publish` 会**把 `cwd` 自动设成服务器自己的目录**（`<工作区>/.hub/mcp/<id>/`），
   所以 `command: "python"` + `args: ["server.py"]` 这类写法能直接跑起来；你也可以显式传 `cwd`
   覆盖它。即便有这条兜底，**读数据文件时仍建议用脚本所在目录推导**
@@ -161,24 +170,46 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   Node 不需要。`npx` 起服务是允许的，但它首次运行会联网下载包，容易超过 20 秒的握手超时——
   自己写一个无依赖脚本更稳。
 
+## 6.5 在练习目录里跑命令（`run_command`）
+
+工坊里有一条只在练习目录可用的 shell：`run_command(command, cwd?, timeout_secs?)`。
+Windows 上等价于 `cmd.exe /C <你写的那一行>`（别的平台是 `sh -c`），工作目录默认是练习目录。
+装依赖、跑一遍脚本、看退出码都靠它。硬约束：
+
+- **一次一条命令、不能交互**：没有 stdin。要确认的安装加 `-y` / `--yes`；等密码、等按 y 的东西做不了。
+- **没有管理员权限**；**有超时**（默认 60 秒，最多 600）。下载、编译这类长任务拆成几条跑，
+  输出重定向到文件（`python server.py > out.txt 2>&1`）再 `fs_read` 看。
+- **别用它起「等 stdin 的常驻服务器」**（会一直等到超时）：验证服务器用 `mcp_probe`，
+  它按协议握手、拿到工具清单就退出。
+- 返回里是退出码 + stdout / stderr 的尾巴（很长时掐中间）。**先看退出码**：非 0 才算失败，
+  别把脚本正常写在 stderr 的日志当成报错。
+- 输出按本地代码页兜底：Windows 上的 cmd 内建命令、PowerShell 5.1 写的是 GBK 而不是 UTF-8，
+  应用会先试 UTF-8、失败再按 GBK 解，所以中文能看；但**你自己起的程序最好显式输出 UTF-8**
+  （Python 加 `PYTHONIOENCODING=utf-8`），别指望每一层都被兜住。
+- 别用它跑 `git push`、删用户文件、改系统设置这类事——它是练习目录里的自测工具，
+  不是给你操作这台电脑的。
+
 ## 7. 注册与测试
 
 1. 草稿放 `mcp/<服务器id>/`（工作台根是 `<工作区>/.hub/workshop/`）：源码 + `README.md`（做什么、怎么装依赖、怎么排查；启动失败的原因要能在 stderr 里看到）。
-2. `mcp_publish(dir, name, command, args, env, cwd?)`：把目录搬到 `<工作区>/.hub/mcp/<id>/`，登记进全局 MCP 配置（`config.json` 的 `agent.mcp_servers`），立刻重连，返回连接状态与暴露的工具名。
+2. **先试运行**：`mcp_probe(name, command, args, env?, cwd?)`——参数就是发布时要用的那套。
+   它会真的把进程起起来、握手、拉工具清单、再关掉，**不写配置**；失败时把 stderr 尾巴、
+   退出码、命令解析到哪个文件都给你。改到 `ok: true` 再发布，比「发布 → 看状态 → 再来一遍」快得多。
+3. `mcp_publish(dir, name, command, args, env, cwd?)`：把目录搬到 `<工作区>/.hub/mcp/<id>/`，登记进全局 MCP 配置（`config.json` 的 `agent.mcp_servers`），立刻重连，返回连接状态与暴露的工具名。
    - `dir`：相对工作台根的目录，例如 `mcp/glossary`。
    - `name`：服务器名，会成为工具名前缀。短小写英文（`glossary`），**不要含 `__`**（工具名按第一个 `__` 切分，含 `__` 会切错）。
    - `command`：可执行文件名或绝对路径，例如 `python`；不带参数。
    - `args`：参数数组，例如 `["server.py"]`（相对路径按 `cwd` 解析），或直接给发布后的绝对路径 `<工作区>\.hub\mcp\glossary\server.py`。
    - `env`：字符串键值，例如 `{"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}`。
    - `cwd`：可选。不传时自动用服务器自己的目录；`args` 里指向工作台的绝对路径会被自动改写过去，不用你手算新位置。
-3. 看结果：`mcp_status()` 列出每个服务器的连接状态、命令、`serverInfo`、工具数与工具名；发布工具本身也返回连接状态与工具名。工具以 **`mcp__<服务器>__<工具>`** 出现在 agent 的工具表里（描述带 `[来自 MCP 服务器「x」]` 前缀）。
-4. 迭代：改完代码再 `mcp_publish` 一次即可——重连会先杀掉旧子进程、摘掉上一轮的 `mcp__*` 工具再重新连接，不会越堆越多。
-5. 调用新工具：它在发布时就登记好了，但**本轮对话开始时装好的工具清单不会重算**，所以更稳的验证是让用户发下一条消息，或按规则拼名字直接调用（`mcp__glossary__glossary_lookup`）。
-6. 报错定位（会出现在 `mcp_status` 的 error 或工具结果里）：
-   - `启动 MCP 服务器「x」失败（python）：…` → `command` 写错或不在 PATH 上。
-   - `MCP 服务器「x」握手失败：握手超时` → 20 秒内没收到 `initialize` 响应。常见原因：stdout 混入非协议输出、忘了 flush、编码不是 UTF-8、脚本一启动就抛异常（看 stderr 里的 `[mcp:x] …`）。
+4. 看结果：`mcp_status()` 列出每个服务器的连接状态、命令、`serverInfo`、工具数与工具名，未连接的还会附上最后几行 stderr；发布工具本身也返回连接状态与工具名，**失败时带上 stderr 与退出码**。工具以 **`mcp__<服务器>__<工具>`** 出现在 agent 的工具表里（描述带 `[来自 MCP 服务器「x」]` 前缀）。
+5. 迭代：改完代码再 `mcp_publish` 一次即可——重连会先杀掉旧子进程、摘掉上一轮的 `mcp__*` 工具再重新连接，不会越堆越多。
+6. 调用新工具：它在发布时就登记好了，但**本轮对话开始时装好的工具清单不会重算**，所以更稳的验证是让用户发下一条消息，或按规则拼名字直接调用（`mcp__glossary__glossary_lookup`）。
+7. 报错定位（会出现在 `mcp_probe` / `mcp_publish` 的返回、`mcp_status` 的 error 或面板的日志里）：
+   - `启动 MCP 服务器「x」失败（python）：…` → `command` 写错或不在 PATH 上（返回里会给「命令解析到哪个文件」）。
+   - `MCP 服务器「x」握手失败：握手超时` → 20 秒内没收到 `initialize` 响应。常见原因：stdout 混入非协议输出、忘了 flush、编码不是 UTF-8、脚本一启动就抛异常（看 stderr 里那几行）。
    - 请求超时 120 秒 → 响应没带数字 `id`、JSON 跨了多行、或工具真的跑了太久。
-   - 服务器起来又被判「已退出」→ 脚本读 stdin 读到 EOF 就退出了，别在 `main` 之外提前 return。
+   - 服务器起来又被判「已退出」→ 脚本读 stdin 读到 EOF 就退出了，别在 `main` 之外提前 return（返回里带退出码：非 0 是它自己崩了，0 是正常退出）。
 
 ## 8. 安全与边界
 

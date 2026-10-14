@@ -184,6 +184,7 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             commands::extend::skills_set_all,
             commands::extend::mcp_overview,
             commands::extend::mcp_status,
+            commands::extend::mcp_probe,
             commands::extend::mcp_reload,
             commands::extend::mcp_upsert,
             commands::extend::mcp_delete,

@@ -121,6 +121,13 @@ interface AppStore {
 
   // --- 对话 ---
   chatId: string | null;
+  /**
+   * 当前这条对话属于哪个模式：侧栏要靠它判断「这是刚开、还没落盘的工坊对话吗」。
+   *
+   * 光有 `view` 不够用：切视图那一刻 chatId 还是上一条（切过去要等 IPC 回来才换），
+   * 拿它当工坊的待落盘对话就会闪出一行假的「新对话」。
+   */
+  chatMode: AgentMode;
   /** 每个主题的对话清单（侧栏把对话挂在对应主题下面）。键是主题 slug，首页对话用空串 */
   chatIndex: Record<string, ChatOverviewItem[]>;
   /** 工坊的对话清单。工坊没有主题，所以单独一份，键不是 slug */
@@ -221,7 +228,7 @@ interface AppStore {
   setStage: (stage: StudyStage) => Promise<void>;
 
   newChat: () => Promise<void>;
-  loadChat: (chatId: string) => Promise<void>;
+  loadChat: (chatId: string, mode?: AgentMode) => Promise<void>;
   /** 把盘上、界面上还没有的消息补到尾部（只追加、不覆盖，见实现处的说明） */
   syncChatTail: (chatId: string) => Promise<void>;
   /** 读某个主题的对话清单（不传就是当前主题）；侧栏树展开时按需调用 */
@@ -254,6 +261,8 @@ interface AppStore {
   cancelQueued: () => void;
   /** 轮到点了就把排队的消息发出去（等的那一轮结束、或回到那条对话时调） */
   flushQueued: (endedTurnId?: string) => Promise<void>;
+  /** 跟后端对一次「现在到底有没有在跑的轮次」（漏了 finished 就自愈：清掉幽灵转圈） */
+  reconcileRunning: () => Promise<void>;
   stop: () => Promise<void>;
   approve: (allow: boolean, always: boolean) => Promise<void>;
 
@@ -350,6 +359,7 @@ export const useApp = create<AppStore>((set, get) => ({
   agenda: [],
 
   chatId: null,
+  chatMode: "study",
   chatIndex: {},
   studioChats: [],
   messages: [],
@@ -485,12 +495,15 @@ export const useApp = create<AppStore>((set, get) => ({
       set({
         topic: detail,
         view: "topic",
+        chatMode: "study",
         topicLoading: false,
         sessions: detail.sessions,
         cards: [],
         tasks: [],
         activities: [],
-        streaming: null,
+        // **不动 streaming**：那一轮可能就是在这条对话里跑着的。清了它，
+        // 界面上就再也看不到「正在跑」（侧栏不转圈、输入框没有停止键）——
+        // 用户报的「工坊里没有停止对话的按键」就是这么来的。
         usage: null,
       });
       // 优先续上最近一次对话，没有就新开
@@ -526,7 +539,8 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   leaveTopic() {
-    set({ view: "home", topic: null, messages: [], activities: [], streaming: null, usage: null });
+    // 同上：切视图不该把「哪条对话在跑」这件事抹掉
+    set({ view: "home", topic: null, messages: [], activities: [], usage: null });
     void api.viewerSetVisible(false);
     void get().loadChats(null);
   },
@@ -600,24 +614,27 @@ export const useApp = create<AppStore>((set, get) => ({
     const chatId = await api.agentNewChat();
     // 期间用户已经切到别的对话：这条空对话别抢回来
     if (seq !== chatSwitchSeq) return;
-    set({ chatId, messages: [], activities: [], streaming: null, chatError: null, usage: null });
+    set({ chatId, chatMode: "study", messages: [], activities: [], chatError: null, usage: null });
     void get().loadChats();
   },
 
-  async loadChat(chatId) {
+  async loadChat(chatId, mode) {
     const seq = ++chatSwitchSeq;
     const slug = get().topic?.slug ?? null;
+    // 没传就沿用当前模式：打开主题/工坊时那条模式已经在切视图那一刻设好了，
+    // 恢复界面快照那条路也是先 openTopic/openStudio 再 loadChat
+    const m = mode ?? get().chatMode;
     try {
       const messages = await api.agentTranscript(chatId, slug);
       // 先点的对话响应晚到：不能覆盖已经切过去的新对话
       //（否则会出现「标题是 B、正文是 A」的混搭，接着聊还会写错文件）
       if (seq !== chatSwitchSeq) return;
-      set({ chatId, messages, activities: [], chatError: null, usage: null });
+      set({ chatId, chatMode: m, messages, activities: [], chatError: null, usage: null });
       // 回到「排着队等这一轮结束」的那条对话时，把那条消息发出去
       void get().flushQueued();
     } catch (e) {
       if (seq !== chatSwitchSeq) return;
-      set({ chatId, messages: [], usage: null });
+      set({ chatId, chatMode: m, messages: [], usage: null });
       console.warn("读取对话失败", e);
     }
   },
@@ -706,7 +723,17 @@ export const useApp = create<AppStore>((set, get) => ({
       get().toast("info", "工坊只能在电脑上开");
       return;
     }
-    set({ view: "studio", topic: null, cards: [], tasks: [], activities: [], streaming: null, chatError: null, usage: null });
+    // 进工坊也不清 streaming：正在跑的工坊对话要保持「有停止键」的状态
+    set({
+      view: "studio",
+      topic: null,
+      chatMode: "studio",
+      cards: [],
+      tasks: [],
+      activities: [],
+      chatError: null,
+      usage: null,
+    });
     void get().loadStudioChats();
     void get().loadStudio();
     try {
@@ -722,7 +749,7 @@ export const useApp = create<AppStore>((set, get) => ({
     const seq = ++chatSwitchSeq;
     const chatId = await api.agentNewChat();
     if (seq !== chatSwitchSeq) return;
-    set({ chatId, messages: [], activities: [], streaming: null, chatError: null, usage: null });
+    set({ chatId, chatMode: "studio", messages: [], activities: [], chatError: null, usage: null });
     void get().loadStudioChats();
   },
 
@@ -914,6 +941,24 @@ export const useApp = create<AppStore>((set, get) => ({
 
   cancelQueued() {
     set({ queued: null });
+  },
+
+  /**
+   * 跟后端对一次「现在到底有没有在跑的轮次」。
+   *
+   * `streaming` 是前端自己维护的：漏掉一个 `finished`（断线、丢事件）它就会一直挂着——
+   * 侧栏那条对话永远转圈、输入框一直是停止键，而其实早跑完了。窗口回前台、手机重连时
+   * 各对一次；后端说没有就清掉。
+   */
+  async reconcileRunning() {
+    const cur = get().streaming;
+    if (!cur) return;
+    try {
+      const running = await api.agentRunning();
+      if (!running.some((r) => r.turnId === cur.turnId)) set({ streaming: null });
+    } catch {
+      /* 对不上就算了，别打扰用户 */
+    }
   },
 
   /**
@@ -1540,6 +1585,8 @@ async function bootstrapStore(
         void get().refreshBrief();
         // 断线期间另一个窗口改过的对话（删掉/搬走）也要跟着对齐
         void get().refreshChatLists();
+        // 断线期间结束的那一轮：前端这边的 streaming 得清掉，否则一直转圈
+        void get().reconcileRunning();
         scheduleTopicRefresh();
         const id = get().chatId;
         if (id && !get().streaming) void get().loadChat(id);

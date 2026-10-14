@@ -295,6 +295,8 @@ pub struct McpEntryView {
     pub tool_count: usize,
     pub tools: Vec<String>,
     pub error: Option<String>,
+    /// 排查用：这个服务器自己的日志尾巴（stderr、启动/退出事件）
+    pub log: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -332,6 +334,7 @@ pub async fn mcp_overview(
             tool_count: st.as_ref().map(|s| s.tool_count).unwrap_or(0),
             tools: st.as_ref().map(|s| s.tools.clone()).unwrap_or_default(),
             error: st.as_ref().and_then(|s| s.error.clone()),
+            log: st.as_ref().map(|s| s.log.clone()).unwrap_or_default(),
         }
     };
 
@@ -350,6 +353,31 @@ pub async fn mcp_overview(
 #[tauri::command]
 pub async fn mcp_status(state: State<'_, AppState>) -> AppResult<Vec<McpStatusEntry>> {
     Ok(state.0.mcp_status().await)
+}
+
+/// 试运行一个已登记的 MCP 服务器：起一次、握手、拉工具清单、关掉。**不改配置、不重连**。
+///
+/// 面板上的「试运行」按钮用它；工坊里的 agent 用同名的工具（可以先试再发布）。
+#[tauri::command]
+pub async fn mcp_probe(
+    state: State<'_, AppState>,
+    name: String,
+    topic_slug: Option<String>,
+) -> AppResult<crate::mcp::ProbeReport> {
+    let core = state.0.clone();
+    let cfg = core.config_read();
+    let topic = load_topic(&state, &topic_slug)?;
+    let topic_servers: Vec<McpServerConfig> = topic
+        .as_ref()
+        .map(|t| t.meta.tools.extra_mcp.clone())
+        .unwrap_or_default();
+    let server = topic_servers
+        .iter()
+        .chain(cfg.agent.mcp_servers.iter())
+        .find(|s| s.name == name)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound(format!("没有登记过叫 {name} 的 MCP 服务器")))?;
+    Ok(crate::mcp::probe(&server).await)
 }
 
 #[tauri::command]

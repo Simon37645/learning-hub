@@ -510,6 +510,21 @@ body.dragging-chat {
   color: var(--text-faint);
 }
 
+/* 正在跑一轮的对话：把时间那一格换成转圈（一眼看出哪条在忙）。
+   和 .chat-time 同一个位置，尺寸也接近，切换时行高不跳。 */
+.chat-running {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+}
+
+.chat-running .spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
 /* 悬停时「⋯」顶掉时间戳：同一块地方，不额外占宽度 */
 .chat-row .chat-actions {
   display: none;
@@ -1140,6 +1155,31 @@ body.dragging-chat {
    一轮只出现一次头像，否则一次工具循环就冒一个（见 Chat.tsx 的 isTurnStart） */
 .msg-avatar.cont {
   visibility: hidden;
+}
+
+/* MCP 面板里「它自己的输出」：子进程 stderr 的尾巴。
+   起不来的原因通常就在这几行里，所以给它一个可折叠的等宽块。 */
+.mcp-log summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--text-sub);
+}
+
+.mcp-log pre,
+.mcp-log-pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-sub);
 }
 
 .msg-col {

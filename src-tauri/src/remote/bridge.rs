@@ -112,6 +112,8 @@ pub const DENIED: &[(&str, &str)] = &[
     ("skills_set_all", "技能的开关属于配置，留给电脑"),
     ("mcp_upsert", "远程不能改 MCP 服务器定义"),
     ("mcp_delete", "远程不能删 MCP 服务器"),
+    // 试运行会在这台电脑上**真起一个进程**：那是电脑上的事
+    ("mcp_probe", "试运行要在电脑上起进程，留给电脑"),
     ("mcp_set_enabled", "MCP 的开关属于配置，留给电脑"),
     ("mcp_set_all", "MCP 的开关属于配置，留给电脑"),
     ("agents_mcp_import", "导入本机 MCP 配置属于改配置，留给电脑"),

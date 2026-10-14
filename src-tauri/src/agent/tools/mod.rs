@@ -16,6 +16,7 @@ pub mod lesson;
 pub mod mcp;
 pub mod memory;
 pub mod mindmap;
+pub mod pages;
 pub mod quiz;
 pub mod skills;
 pub mod studio;
@@ -66,6 +67,9 @@ pub fn registry() -> ToolRegistry {
 
     // --- 表达与图示 ---
     r.register(Arc::new(mindmap::MindmapCreate));
+    // 会跑的演示页（动画 / 三维 / 可交互）：和对话里的 ```html 卡片是两条路，
+    // 卡片不执行脚本、只适合纯 CSS 的小示意；机制类要走这个。
+    r.register(Arc::new(pages::PageCreate));
 
     // --- 讲解方案 ---
     r.register(Arc::new(lesson::LessonPlanTool))

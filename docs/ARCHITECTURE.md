@@ -497,9 +497,36 @@ chats/<id>.jsonl 里的块：{ "type":"image", "path":".hub/attachments/x.png", 
   （`:hover` / `:checked` / `<details>`）照常可用。提示词里写明了这条约束（`prompt.rs`），
   卡片上也会标「脚本已禁用」——免得用户以为是应用坏了。
 - ```svg 代码块补一层 HTML 壳后同样处理（`demoDocument`），画静态示意图写 svg 更省。
-- 为什么不用「写文件 + `viewer_open`」那条路：那条适合**内容多、要长期回看**的演示页
-  （`lessons/*.html`）；顺手讲一个点时的演示要直接出现在对话里，多一步就没人看。
 - 高度写死 360px（卡片右上角可全屏）：演示页是按一屏看完设计的，跟着内容长会让对话变成一条长图。
+
+### 16.1.1 会跑的演示页（`page_create` + `lhpage://` 协议）
+
+卡片那条路的限制是**脚本不执行**，于是「要真的动起来」的东西（三维结构、波动、受力轨迹、
+算法逐步执行）只能另开一条路：agent 用 `page_create` 写一个**本地网页**，在内置浏览器里当
+真网页跑，用户能拖鼠标、点按钮。两条路的分工写进了提示词：**要 JS / 三维 / 交互 → 页面；
+纯 CSS 的小示意 → 卡片**（卡片轻，不用点开）。
+
+- **协议**：`viewer/pages.rs` 注册 `lhpage://`（WebView2 上表现为 `http://lhpage.localhost/…`），
+  给页面一个**真 origin**。于是 ES 模块、`import`、`fetch('./data.json')`、WebGL 全都成立——
+  这些正是 `srcdoc` iframe 给不了的（srcdoc 没有 URL 基准，还继承应用的 CSP，内联脚本一并被挡）。
+- **可读范围**：通行证（token）→ 目录的映射把页面钉死在**它自己那一级目录**里。
+  URL 形如 `/<token>/<相对路径>`，`..`、绝对路径、盘符、Windows 数据流一律拒绝
+  （`pages::safe_join`，有单测）。模型写的页面读不到工作区里的其它文件——要读别的文件走
+  agent 的工具，那里有沙箱与审批兜着。
+- **渲染**：复用**原生子 WebView**（`viewer/webview.rs`）——顶层浏览上下文，
+  `lhpage.localhost` 不在 capabilities 的 windows 列表里，页面拿不到任何 IPC 权限。
+  前端 `Viewer.tsx` 靠 `isPageUrl(tab.url)` 认出这类标签：地址栏 / 阅读模式 / 外部打开
+  对它们都不适用（地址是内部协议，系统浏览器打不开）。
+- **顺带解锁**：`web_eval` / `web_scan` / `web_screenshot` 对演示页也放行——那是 agent
+  **自查「动画到底画出来没有」的唯一手段**（画布空白、全黑、坐标跑到屏幕外这三种错，
+  只能靠看一眼截图发现）。`require_remote_web_tab` 里对 `lhpage` 开了这个口子。
+- **离线库**：`/_vendor/three.js` 是随二进制内置的 three.js（+ OrbitControls，MIT，
+  esbuild 打成一个 min 模块，`scripts/vendor-three.mjs` 可重建）。三维演示几乎绕不开它，
+  而「依赖 CDN」断网时就是一片空白；别的库不预置，页面要 CDN 就写 CDN（提示词里说明了代价）。
+- **重启之后**：通行证只活在内存里，所以启动恢复标签时要 `AppCore::republish_page_urls()`
+  重新发一遍，否则用户开机看到的是一张「通行证无效」的页。
+- **手机上**：没有原生子 WebView，`lhpage.localhost` 在手机上也解析不了，于是降级成
+  srcdoc 静态版（`viewer_load_text` 字节流是通的）+ 一句「要在这台电脑上看」。
 
 ### 16.2 pdf_screenshot：看文字层里没有的东西
 

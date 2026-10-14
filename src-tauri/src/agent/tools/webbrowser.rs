@@ -6,8 +6,10 @@
 //! - `cdp_call`：走 Chrome DevTools Protocol —— `web_screenshot` 用
 //!   `Page.captureScreenshot` 截整页。
 //!
-//! 只对**远端网页**标签生效（本地 HTML / PDF / Markdown 一律报错，见
-//! `require_remote_web_tab` 的三种文案）。与 `web_fetch` 的分工：那个拿的是
+//! 只对**顶层网页**标签生效：远端网页，以及 agent 自己写的演示页（`lhpage://`，
+//! 见 `viewer::pages`——演示页的动画到底画出来没有，只有这两条通道看得见）。
+//! PDF / Markdown / 普通本地 HTML 一律报错（见 `require_remote_web_tab`）。
+//! 与 `web_fetch` 的分工：那个拿的是
 //! 「服务端渲染的正文副本」，这里操作的是**用户眼前这个活的页面**——
 //! 登录态、滚动位置、点开之后的 DOM，都只有这条路上有。
 

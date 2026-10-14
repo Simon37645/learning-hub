@@ -41,6 +41,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 演示页（agent 写的本地可交互网页）走自己的协议：给它一个真 origin，
+        // 于是能 import 内置的 three.js、能读同目录资源；可读范围由「通行证 → 目录」
+        // 钉死在页面自己的目录里（见 viewer::pages）。
+        .register_asynchronous_uri_scheme_protocol(viewer::pages::SCHEME, |_app, request, responder| {
+            viewer::pages::handle(request, responder)
+        })
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -101,7 +107,12 @@ pub fn run() {
                     match serde_json::from_str::<viewer::SavedViewerShell>(&text) {
                         Ok(shell) => {
                             if let Some(saved) = shell.viewer {
-                                tauri::async_runtime::block_on(core.viewer.restore(saved));
+                                tauri::async_runtime::block_on(async {
+                                    core.viewer.restore(saved).await;
+                                    // 演示页的通行证只在内存里：恢复出来的标签要重新发一次，
+                                    // 否则用户开机看到的是一张「通行证无效」的 404 页。
+                                    core.republish_page_urls().await;
+                                });
                             }
                         }
                         Err(e) => eprintln!("[启动] 界面快照解析失败，按全新启动处理：{e}"),

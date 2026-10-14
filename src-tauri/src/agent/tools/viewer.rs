@@ -176,7 +176,7 @@ impl Tool for ViewerOpen {
             None
         };
 
-        let req = OpenRequest {
+        let mut req = OpenRequest {
             url,
             path: path.clone(),
             topic_slug,
@@ -185,6 +185,15 @@ impl Tool for ViewerOpen {
             page: arg_u32(&input, "page"),
             new_tab: arg_bool(&input, "new_tab").unwrap_or(false),
         };
+        // 本地 HTML 当演示页打开（有脚本、能 import three.js、能读同目录资源）。
+        // 前端那条 viewer_open 命令走的是同一个函数，两条路必须一致。
+        if let (Some(slug), Some(rel)) = (req.topic_slug.as_deref(), req.path.as_deref()) {
+            if let Ok(topic) = ctx.core.workspace().resolve(slug) {
+                if let Ok(abs) = crate::paths::resolve_in_root(&topic.dir, rel) {
+                    crate::viewer::pages::attach_page_url(&mut req, &abs);
+                }
+            }
+        }
         let tab = ctx.core.viewer.open(req).await?;
         ctx.core.emit_viewer_sync().await;
 

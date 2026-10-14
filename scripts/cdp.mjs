@@ -17,8 +17,18 @@ const BASE = `http://127.0.0.1:${PORT}`;
 async function listTargets() {
   const res = await fetch(`${BASE}/json/list`);
   const all = await res.json();
-  // 只要页面类型，且必须是我们的应用（排除 devtools 自己的页面）
-  return all.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
+  // 只要页面类型，排除 devtools 自己的页面
+  const pages = all.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
+  // 演示页 / 远端网页跑在**子 WebView** 里，也会出现在这个列表里：默认必须挑回应用自己那一页，
+  // 否则 eval / click 会打到一个模型写的页面上（真踩过：eval 报「找不到 /src/store/app.ts」）。
+  // 想明确指定就设 CDP_TARGET=url 子串。
+  const want = process.env.CDP_TARGET;
+  if (want) return pages.filter((t) => (t.url ?? "").includes(want));
+  const mine = pages.filter((t) => {
+    const u = t.url ?? "";
+    return u.includes("localhost:1420") || u.startsWith("tauri://") || u.includes("tauri.localhost");
+  });
+  return mine.length > 0 ? mine : pages;
 }
 
 class Cdp {

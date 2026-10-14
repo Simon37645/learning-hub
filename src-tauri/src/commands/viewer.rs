@@ -32,7 +32,15 @@ pub async fn viewer_open(state: State<'_, AppState>, mut req: OpenRequest) -> Ap
     // 引用里常见的「路径 + 章节」写法（例句：…pdf 第三章）：原路径存在就原样用，
     // 不存在才去掉尾巴上的定位词。放在这一层是因为只有这里拿得到工作区。
     if let (Some(slug), Some(path)) = (req.topic_slug.clone(), req.path.clone()) {
-        req.path = Some(tab_rel(&core, &slug, &path));
+        let rel = tab_rel(&core, &slug, &path);
+        // 本地 HTML 按「演示页」打开：给它一个真 origin（脚本 / three.js / 同目录资源
+        // 都能用，见 viewer::pages）。别的类型不动，各有各的渲染器。
+        if let Ok(topic) = core.workspace().resolve(&slug) {
+            if let Ok(abs) = crate::paths::resolve_in_root(&topic.dir, &rel) {
+                crate::viewer::pages::attach_page_url(&mut req, &abs);
+            }
+        }
+        req.path = Some(rel);
     }
     let tab = core.viewer.open(req).await?;
     core.emit_viewer_sync().await;

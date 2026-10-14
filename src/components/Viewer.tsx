@@ -13,6 +13,18 @@ import { useApp } from "../store/app";
 import { Empty, Icon, Spinner } from "./ui";import { Markdown } from "./Chat";
 import { PdfView } from "./PdfView";
 
+/**
+ * 是不是「演示页」：agent 写的本地可交互网页，由 Rust 侧发一个 `lhpage://` 通行证 URL
+ * （WebView2 上表现为 `http://lhpage.localhost/…`，见 `src-tauri/src/viewer/pages.rs`）。
+ *
+ * 这类标签虽然带着本地路径，但渲染要走**网页**那条路——它有真 origin，脚本会跑，
+ * 所以地址栏 / 阅读模式 / 外部打开这三个按钮对它都不适用（地址是内部协议，
+ * 系统浏览器打不开；「正文」是脚本画出来的，服务端提取没有意义）。
+ */
+function isPageUrl(url: string | null | undefined): boolean {
+  return !!url && (url.startsWith("http://lhpage.localhost") || url.startsWith("lhpage://"));
+}
+
 export function ViewerPanel() {
   const viewer = useApp((s) => s.viewer);
   const width = useApp((s) => s.viewerWidth);
@@ -254,7 +266,26 @@ function TabBar({
 
   return (
     <div className="viewer-bar">
-      {tab.kind === "web" ? (
+      {isPageUrl(tab.url) ? (
+        // 演示页：显示路径（用户能照着去文件管理器找），只留「重新加载」——
+        // 地址栏、阅读模式、外部打开对它都不成立（见 isPageUrl 的说明）。
+        <>
+          <Icon name="globe" size={13} />
+          <span className="url" title={tab.path ?? tab.title}>
+            {tab.path ?? tab.title}
+          </span>
+          <span className="muted nowrap" style={{ fontSize: 10.5 }} title="这是一个可交互的本地页面（脚本会执行）">
+            演示页
+          </span>
+          <button
+            className="icon-btn"
+            title="重新加载（页面改过之后点它；agent 改完会自动刷）"
+            onClick={() => void api.viewerReload(tab.id).catch((e) => useApp.getState().toast("error", errText(e)))}
+          >
+            <Icon name="refresh" size={13} />
+          </button>
+        </>
+      ) : tab.kind === "web" ? (
         <>
           <Icon name="globe" size={13} />
           <input
@@ -474,7 +505,14 @@ function WebTab({
   const [frameBlock, setFrameBlock] = useState<string | null>(null);
   /** 原生视图创建失败 → 退回 iframe 兜底（本标签内不再重试） */
   const [nativeFailed, setNativeFailed] = useState(false);
-  const isLocal = !!tab.path;
+  /**
+   * 演示页（agent 写的本地可交互网页）：带着 path，但要走**网页**那条渲染路——
+   * 它有一个真 origin（`lhpage://` 协议），脚本会跑、能 import three.js、能读同目录资源。
+   */
+  const page = isPageUrl(tab.url);
+  // 手机上（remote）没有原生子 WebView，`http://lhpage.localhost` 在手机上也解析不了，
+  // 所以手机上退回 srcdoc 静态版：至少能看见页面结构与文字，动画跑不起来。
+  const isLocal = !!tab.path && !page;
   // 手机浏览器里没有原生子 WebView（那是挂在电脑窗口上的东西）：
   // 直接走 iframe 兜底那条路——站点拒绝内嵌时会自动切到阅读模式，
   // 正文是**电脑上那个内置浏览器**提取好的，手机上照样读得到。
@@ -589,8 +627,9 @@ function WebTab({
 
   // iframe 兜底路径才探测响应头：原生视图是顶层浏览上下文，不受那些头约束。
   // 站点拒绝被嵌时 Chromium 只会画一张「拒绝了我们的连接请求」，不如直接切阅读模式。
+  // 演示页不探：它的地址是我们自己发的通行证，reqwest 那边根本解析不到这个主机名。
   useEffect(() => {
-    if (!nativeFailed || isLocal || !tab.url) return;
+    if (!nativeFailed || isLocal || page || !tab.url) return;
     let cancelled = false;
     setFrameBlock(null);
     api
@@ -608,9 +647,11 @@ function WebTab({
     };
   }, [tab.url, tab.id, isLocal, nativeFailed, reloadSeq, setReaderMode]);
 
-  // 本地 HTML：读出源码用 sandbox iframe 渲染
+  // 本地 HTML：读出源码用 sandbox iframe 渲染。演示页在**电脑上**不走这里
+  // （它走原生网页视图），只有手机端降级时才需要这份静态副本。
+  const staticHtml = isLocal || (page && remote);
   useEffect(() => {
-    if (!isLocal) return;
+    if (!staticHtml) return;
     let cancelled = false;
     api
       .viewerLoadText(tab.id)
@@ -619,7 +660,7 @@ function WebTab({
     return () => {
       cancelled = true;
     };
-  }, [isLocal, tab.id, reloadSeq]);
+  }, [staticHtml, tab.id, reloadSeq]);
 
   // 阅读模式：取 agent 视角的正文
   useEffect(() => {
@@ -635,7 +676,7 @@ function WebTab({
     };
   }, [readerMode, tab.id, isLocal, reloadSeq]);
 
-  if (isLocal) {
+  if (staticHtml) {
     if (localHtml === null)
       return (
         <div className="empty" style={{ height: "100%" }}>
@@ -643,13 +684,22 @@ function WebTab({
         </div>
       );
     return (
-      <iframe
-        className="viewer-frame"
-        title={tab.title}
-        // 本地 HTML 只渲染展示，不允许脚本，避免它去调 IPC
-        sandbox=""
-        srcDoc={localHtml}
-      />
+      <>
+        {page && (
+          <div className="viewer-note">
+            这是 agent 建的演示页，要在这台电脑的学习中枢里看（页面里的动画与交互需要本地环境）。
+            这里显示的是静态版本。
+          </div>
+        )}
+        <iframe
+          className="viewer-frame"
+          title={tab.title}
+          // 普通本地 HTML 只渲染展示，不允许脚本，避免它去调 IPC；
+          // 演示页在手机上是降级显示，同样不给脚本（它要的可读范围只有电脑上才有）。
+          sandbox=""
+          srcDoc={localHtml}
+        />
+      </>
     );
   }
 

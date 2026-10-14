@@ -302,6 +302,32 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   Python traceback 上时，「起不来」的原因就这么丢了。命令输出与子进程日志一律走
   `proc::decode_output`（先严格试 UTF-8，失败按 GBK 兜底；GBK 兼容 ASCII，
   纯英文输出两种解出来一样）。
+- **本地 HTML 有两种渲染路径，别混**：普通本地 HTML（用户自己丢进来的、`lessons/*.html` 里的旧文件）
+  走 `sandbox=""` 的 srcdoc iframe——**不跑脚本**；agent 用 `page_create` 建的**演示页**走
+  `lhpage://` 协议 + 原生子 WebView，脚本、WebGL、`import` three.js、读同目录文件全都成立。
+  两条路的判据在前端是 `isPageUrl(tab.url)`（地址形如 `http://lhpage.localhost/<token>/…`），
+  在 Rust 侧是 `viewer::pages` 那一套。**演示页标签不要按 `path` 当本地文件处理**：
+  地址栏 / 阅读模式 / 「用系统程序打开」对它都不成立（内部协议，系统浏览器打不开）。
+- **`lhpage://` 的可读范围靠通行证钉死**：token → 目录的映射（`viewer/pages.rs`），
+  页面只能读**它自己那一级目录**里的文件，`..` / 绝对路径 / 盘符 / `%2e%2e` 一律拒。
+  想做「让页面读别的地方」之前先想清楚：那等于把用户的资料暴露给模型写的脚本。
+  另外这张表**只在内存里**，所以启动恢复标签时要 `AppCore::republish_page_urls()`
+  重新发一遍（漏了的话用户开机看到一张「通行证无效」的页）。
+- **演示页是唯一会被 agent 自己 eval 的本地页面**：`require_remote_web_tab` 对
+  `lhpage` URL 开了口子——因为「动画到底画出来没有」只能靠 `web_eval` + `web_screenshot` 看
+  （真踩过：模型写的页面 `new OrbitControls(...)` 少了 `THREE.` 前缀，脚本在第 23 行抛错、
+  画布一片空白，而**只有**截图能发现）。PDF / Markdown / 普通本地 HTML 仍然一律拒绝。
+- **`/_vendor/three.js` 是编进二进制的**（`include_str!`，见 `src-tauri/assets/vendor/README.md`）：
+  改它要重新编译，不是热更新。升级用 `node scripts/vendor-three.mjs [版本]`——
+  three 从 r160 起拆成 `three.module.js` + `three.core.js` 且不给 min 版，OrbitControls 又是
+  `from 'three'` 的裸模块名，所以是**构建期用 esbuild 打成一个 min 模块**再提交。
+  只预置这一个库：别的库让页面自己写 CDN（提示词里说明了断网就会白屏）。
+- **`chat_delete` 的 id 一定要拿「当前」的**：`useApp.getState()` 返回的是**快照对象**，
+  `await s.newChat()` 之后 `s.chatId` 还是旧值（导致测试脚本删掉了用户正在用的那条对话，
+  已从回收站恢复）。要读新值就重新 `getState()`。**验收脚本删东西之前先确认自己删的是自己建的。**
+- **`scripts/cdp.mjs` 会挑目标**：演示页 / 远端网页跑在子 WebView 里，也会出现在
+  `/json/list`；默认按 `localhost:1420` / `tauri://` 挑回应用自己那一页（要指定用
+  `CDP_TARGET=url 子串`）。不挑的症状是 eval 报「找不到 /src/store/app.ts」。
 - **`chatMode` 是侧栏判断「刚开、还没落盘的工坊对话」的依据**：只看 `view` 不够——
   切视图那一刻 `chatId` 还是上一条，会闪出一行假的「新对话」。`loadChat` 的第二个参数
   就是给这个用的，从主题/工坊清单进来的点击要显式传模式。
@@ -534,6 +560,10 @@ MCP 面板可一键导入本机 `~/.agents/servers/` 里已配置的服务器并
   失败时 stderr 与退出码直接回到对话里；自己的对话清单挂在侧栏「工坊」下面，可新建对话）、
 演示卡片（agent 讲难懂内容时在回复里直接放 ```html / ```svg 代码块，前端渲染成沙箱卡片；
   脚本不执行，动画用 CSS / SVG SMIL，卡片可看源码、可全屏）、
+**会跑的演示页**（`page_create`：agent 写一个**本地真网页**（动画 / three.js 三维 / 可拖参数），
+  在内置浏览器里当网页跑——`lhpage://` 协议给它真 origin，`/_vendor/three.js` 离线可用，
+  可读范围用通行证钉死在页面自己的目录里；三条网页操作工具对它放行，agent 能自己
+  `web_eval` + `web_screenshot` 确认「真的画出来了」；手机端降级成静态版）、
 PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看——图、表、公式、扫描页；
   渲染在前端 pdf.js，图片落进 `.hub/attachments/` 并作为工具结果的图片回灌，
   工具卡片里能看到 agent 看了哪一页）、
@@ -559,3 +589,5 @@ PDF 看图（`pdf_screenshot` 把 PDF 的某一页渲染成图片给模型看—
 4. SPA 网页的正文提取（现在依赖服务端渲染的 HTML）
 5. 父主题的进度汇总（子主题的待复习数、任务合并到父主题视图）
 6. 附件回收（删对话后 `.hub/attachments/` 里的孤儿图片要手动清）
+7. 演示页的入口（`page_create` 建的页面现在只能靠 agent 再打开、或者标签页还开着；
+   可以在资料面板里加一栏 `pages/`，或把「上次讲过哪些演示」列出来）

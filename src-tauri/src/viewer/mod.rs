@@ -9,6 +9,7 @@
 //! `viewer_report_state`（用户翻页/滚动）。
 //! Rust → 前端：`hub://viewer` 事件（打开、关闭、跳转、请求快照）。
 
+pub mod pages;
 pub mod web_extract;
 pub mod webview;
 
@@ -447,6 +448,14 @@ impl ViewerService {
         g.active = Some(tab.id.clone());
         g.visible = true;
         Ok(tab)
+    }
+
+    /// 换掉标签的 URL（只用于演示页：通行证只在内存里，重启后要重新发一个）。
+    pub async fn set_url(&self, id: &str, url: String) {
+        let mut g = self.inner.write().await;
+        if let Some(t) = g.tabs.iter_mut().find(|t| t.id == id) {
+            t.url = Some(url);
+        }
     }
 
     pub async fn activate(&self, id: &str) -> AppResult<ViewerTab> {

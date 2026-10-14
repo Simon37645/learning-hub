@@ -399,8 +399,11 @@ async fn require_remote_web_tab(service: &ViewerService, tab_id: &str) -> AppRes
             kind_label(tab.kind)
         )));
     }
-    // 本地 HTML 文件也登记成 Web 类（靠 path 区分），但它没有远端网页那套语义
-    if tab.path.is_some() {
+    // 本地 HTML 文件也登记成 Web 类（靠 path 区分）：普通本地文件没有远端网页那套语义。
+    // **例外是演示页**（`lhpage://`，agent 自己写的可交互网页）：它在原生视图里就是个
+    // 真正的顶层页面，eval / 截图既成立、也是 agent 自查「动画到底画出来没有」的唯一手段。
+    let is_page = crate::viewer::pages::is_page_url(tab.url.as_deref().unwrap_or(""));
+    if tab.path.is_some() && !is_page {
         return Err(AppError::invalid(format!(
             "「{}」是本地 HTML 文件，不是远端网页；网页操作工具对它不生效。",
             tab.title

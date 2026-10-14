@@ -173,6 +173,30 @@ impl AppCore {
         self.emit_viewer(ViewerEvent::Sync { snapshot });
     }
 
+    /// 启动时给恢复出来的**演示页**标签重新发通行证。
+    ///
+    /// 通行证（`lhpage://` 的 token → 目录）只活在内存里，重启后旧的 URL 一律失效——
+    /// 不补这一步，用户开机会看到一个「通行证无效」的页面。判据是标签的 `path`：
+    /// 本地 `.html` 都能当演示页跑（打开时就是这么登记的），所以按文件重算即可。
+    pub async fn republish_page_urls(&self) {
+        let ws = self.config_read().workspace();
+        for tab in self.viewer.list().await {
+            let (Some(slug), Some(rel)) = (tab.topic_slug.clone(), tab.path.clone()) else {
+                continue;
+            };
+            let Ok(topic) = ws.resolve(&slug) else { continue };
+            let Ok(abs) = crate::paths::resolve_in_root(&topic.dir, &rel) else { continue };
+            if !crate::viewer::pages::is_page_file(&abs) {
+                continue;
+            }
+            if let Some(url) = crate::viewer::pages::pages().url_for_file(&abs) {
+                if tab.url.as_deref() != Some(url.as_str()) {
+                    self.viewer.set_url(&tab.id, url).await;
+                }
+            }
+        }
+    }
+
     pub fn emit_topics(&self, ev: TopicsEvent) {
         self.emit_event(EVENT_TOPICS, ev);
     }

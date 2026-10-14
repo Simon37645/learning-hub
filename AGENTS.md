@@ -313,6 +313,11 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   想做「让页面读别的地方」之前先想清楚：那等于把用户的资料暴露给模型写的脚本。
   另外这张表**只在内存里**，所以启动恢复标签时要 `AppCore::republish_page_urls()`
   重新发一遍（漏了的话用户开机看到一张「通行证无效」的页）。
+- **演示页的 CSP 里 `connect-src` 是刻意收死的**（只给 `'self'`，不给 https）：
+  本地 `.html` 都会被当演示页跑起来，用户从别处下载的页面可能就躺在 `materials/` 里，
+  放开 `connect-src` 等于给它一条「读走讲义再发出去」的路。CDN 上的**库**仍然能加载
+  （走 `script-src`，那条放开了）——**要联网取数据的页面做不到**，让 agent 先把数据写进页面目录。
+  改这段 CSP 之前先想清楚这两句。
 - **演示页是唯一会被 agent 自己 eval 的本地页面**：`require_remote_web_tab` 对
   `lhpage` URL 开了口子——因为「动画到底画出来没有」只能靠 `web_eval` + `web_screenshot` 看
   （真踩过：模型写的页面 `new OrbitControls(...)` 少了 `THREE.` 前缀，脚本在第 23 行抛错、

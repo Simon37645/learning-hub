@@ -513,6 +513,11 @@ chats/<id>.jsonl 里的块：{ "type":"image", "path":".hub/attachments/x.png", 
   URL 形如 `/<token>/<相对路径>`，`..`、绝对路径、盘符、Windows 数据流一律拒绝
   （`pages::safe_join`，有单测）。模型写的页面读不到工作区里的其它文件——要读别的文件走
   agent 的工具，那里有沙箱与审批兜着。
+- **写不出去**：页面的 CSP 里 `connect-src` 只给 `'self' data: blob:`——不许 `fetch`/XHR/
+  WebSocket 到外网（`script-src` 仍放开 https，所以 CDN 上的库还能加载）。这一条是给
+  「用户自己下载来的 `.html`」准备的：那种页面也会被当演示页跑起来，而它往往和讲义躺在
+  同一个目录里。只读自己 + 发不出去，破坏力就和「打开一个静态网页」差不多。
+  要联网取数据的演示页做不到——让 agent 先把数据抓下来写进页面目录。
 - **渲染**：复用**原生子 WebView**（`viewer/webview.rs`）——顶层浏览上下文，
   `lhpage.localhost` 不在 capabilities 的 windows 列表里，页面拿不到任何 IPC 权限。
   前端 `Viewer.tsx` 靠 `isPageUrl(tab.url)` 认出这类标签：地址栏 / 阅读模式 / 外部打开

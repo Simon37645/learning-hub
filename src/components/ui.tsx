@@ -674,6 +674,8 @@ export function AutoTextarea({
   value,
   onChange,
   onSend,
+  onInterrupt,
+  onQueue,
   onPaste,
   placeholder,
   minRows = 1,
@@ -683,6 +685,10 @@ export function AutoTextarea({
   value: string;
   onChange: (v: string) => void;
   onSend?: () => void;
+  /** Ctrl/Cmd+Enter：打断当前一轮再发（没在跑就等于发送） */
+  onInterrupt?: () => void;
+  /** Alt+Enter：让当前这一轮跑完（当前工具循环结束）再发 */
+  onQueue?: () => void;
   /** 粘贴：输入框里用它接截图（Ctrl+V） */
   onPaste?: (e: { clipboardData: DataTransfer | null; preventDefault: () => void }) => void;
   placeholder?: string;
@@ -726,13 +732,22 @@ export function AutoTextarea({
         // 输入法组合中的回车是「确认候选词」，不是发送：这时候发出去的是
         // 上一帧的旧文案，刚打的字会被清空（keyCode 229 = IME 处理中）
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-        if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && onSend) {
+        if (e.key !== "Enter") return;
+        if (e.altKey) {
+          // Alt+Enter：这一轮（工具循环）跑完再发
           e.preventDefault();
-          onSend();
+          onQueue?.();
+          return;
         }
-        if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && onSend) {
+        if (e.metaKey || e.ctrlKey) {
+          // Ctrl/Cmd+Enter：打断当前一轮再发（没在跑时就是普通发送）
           e.preventDefault();
-          onSend();
+          (onInterrupt ?? onSend)?.();
+          return;
+        }
+        if (!e.shiftKey) {
+          e.preventDefault();
+          onSend?.();
         }
       }}
     />

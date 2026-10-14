@@ -721,6 +721,9 @@ function partColor(i: number): string {
 function Composer({ mode = "study" }: { mode?: AgentMode }) {
   const send = useApp((s) => s.send);
   const stop = useApp((s) => s.stop);
+  const queueSend = useApp((s) => s.queueSend);
+  const cancelQueued = useApp((s) => s.cancelQueued);
+  const queued = useApp((s) => s.queued);
   const streamingAll = useApp((s) => s.streaming);
   const chatId = useApp((s) => s.chatId);
   const config = useApp((s) => s.config);
@@ -757,6 +760,24 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
     setAttachments([]);
     setImages([]);
     await send(t, attachments, pics);
+  }
+
+  /**
+   * Ctrl+Enter / Alt+Enter：把当前输入框里的东西排到队里。
+   *
+   * 两个键的区别只在「要不要打断这一轮」（见 store 的 queueSend）：
+   * Ctrl+Enter = 打断它、它一收尾就发；Alt+Enter = 让它跑完再发。
+   * 没在跑的时候两者都等于普通发送。
+   */
+  async function enqueue(interrupt: boolean) {
+    if (!text.trim() && images.length === 0) return;
+    const t = text;
+    const pics = images.map((i) => i.upload);
+    // 先清空输入框（发送用的是快照）：万一排队失败也不至于重复发
+    setText("");
+    setAttachments([]);
+    setImages([]);
+    await queueSend(t, attachments, pics, interrupt);
   }
 
   /**
@@ -894,10 +915,28 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
           </div>
         )}
 
+        {/* 排队的消息：Alt+Enter（让它跑完再发）/ Ctrl+Enter（打断它再发）之后停在这儿，
+            直到那一轮收尾自动发出去——显式给一条「说了什么、什么时候发」的凭证，
+            免得用户以为消息丢了 */}
+        {queued && (!queued.chatId || queued.chatId === chatId) && (
+          <div className="composer-queued">
+            <Icon name="clock" size={12} />
+            <span className="ellip grow">{queued.text || `${queued.images.length} 张图`}</span>
+            <span className="muted nowrap">
+              {queued.interrupting ? "正在打断这一轮…" : "这一轮结束后自动发送"}
+            </span>
+            <button className="icon-btn" title="取消排队" onClick={() => cancelQueued()}>
+              <Icon name="close" size={11} />
+            </button>
+          </div>
+        )}
+
         <AutoTextarea
           value={text}
           onChange={setText}
           onSend={submit}
+          onInterrupt={() => void enqueue(true)}
+          onQueue={() => void enqueue(false)}
           onPaste={(e) => {
             // 截图直接粘进来是最常用的一条路（Win+Shift+S 之后 Ctrl+V）
             const files = imageFilesFrom(e.clipboardData?.items);
@@ -1092,13 +1131,17 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
           )}
 
           {streaming ? (
-            <button className="send-btn stop" title="停止生成" onClick={() => void stop()}>
+            <button
+              className="send-btn stop"
+              title={`停止生成（也可以 Ctrl+${hotkey("Enter")} 直接打断并发送新消息）`}
+              onClick={() => void stop()}
+            >
               <Icon name="square" size={12} />
             </button>
           ) : (
             <button
               className="send-btn"
-              title={`发送 (${hotkey("Enter")})`}
+              title={`发送 (${hotkey("Enter")})　·　Ctrl+Enter 打断当前一轮再发　·　Alt+Enter 等这一轮跑完再发`}
               onClick={submit}
               disabled={!text.trim() && images.length === 0}
             >

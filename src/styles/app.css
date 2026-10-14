@@ -3367,6 +3367,22 @@ pre[data-mermaid="failed"] {
   padding: 8px 12px 0;
 }
 
+/* 排着队、等这一轮跑完再发的那条消息（Alt+Enter / Ctrl+Enter）。
+   摆在输入框上面一行，和附件条一个层次：看得见「说了什么、什么时候发」，
+   右边一个 ✕ 能撤。 */
+.composer-queued {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 5px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 12px;
+}
+
 .composer-img {
   position: relative;
   line-height: 0;

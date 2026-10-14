@@ -243,6 +243,16 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   （`visibility: hidden`，占位不塌陷）撑住左边距。判据是「前一条不是 assistant」
   （`tool` 消息不参与渲染，见 `Chat.tsx` 的 `visible`）。活动卡片与流式气泡同理：
   这一轮已经画过头像就不再画。
+- **输入框三个回车键**（`Composer` 传给 `AutoTextarea` 的三个回调）：Enter＝直接发；
+  **Ctrl+Enter＝打断当前一轮再发**（`queueSend(…, interrupt=true)`）；
+  **Alt+Enter＝让这一轮跑完（当前工具循环结束）再发**（`queueSend(…, false)`）。
+  两个「排队」的都不立刻发：先入 `store.queued`（里面记着**哪条对话的哪一轮**），真正发送交给
+  `flushQueued`，在那一轮的 finished / failed 里触发。**别改成「立刻塞进去」**：中止那一轮要先给
+  没执行完的工具调用补上「已被用户中止」的 `tool_result`（tool_use / tool_result 必须成对落库，
+  否则这条对话之后每次请求都被服务商 400），等它收尾再发，落库顺序天然是对的（中止标记在前、
+  新消息在后）。队列**发出去了才清**——被「上一轮还在进行中」挡回来或发送报错时留着，
+  别把用户打的字弄丢；回到那条对话时（`loadChat`）也会再试一次。
+  回归网：`src/store/queue.test.ts`（9 例：等哪一轮 / 发到哪条对话 / 什么时候清）。
 - **对话可以在主题之间搬**（`chat_move` 动 `.hub/chats/<id>.jsonl` **和**同名的 `.meta.json`）：
   搬的是文件，聊天记录里已有的相对引用不会跟着重算——所以这是「整理」语义。
   正在看的那条被搬走后，前端会给源主题新开一条，免得接着聊又写回旧主题。

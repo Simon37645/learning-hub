@@ -87,6 +87,19 @@ export function registerSnapshotProvider(tabId: string, fn: SnapshotProvider | n
   else snapshotProviders.delete(tabId);
 }
 
+/** 排队等一轮跑完再发的那条消息（见 `AppStore.queued`）。 */
+interface QueuedSend {
+  text: string;
+  attachments: string[];
+  images: ImageUpload[];
+  /** 排给哪条对话（切到别处时不串台；null = 还没定对话，就按当前对话发） */
+  chatId: string | null;
+  /** 等哪一轮结束（排队那一刻正在跑的那一轮） */
+  afterTurnId: string | null;
+  /** 排队时是否顺便打断了那一轮（Ctrl+Enter）——只影响界面文案 */
+  interrupting: boolean;
+}
+
 interface AppStore {
   // --- 启动 ---
   ready: boolean;
@@ -116,6 +129,13 @@ interface AppStore {
   /** 正在流式的那一轮。chatId 用来区分「这轮是谁的」：切到别的对话时，
    * 旧轮次的增量不能打进新对话的气泡里（后端每个事件都带 turn_id/chat_id） */
   streaming: { turnId: string; chatId: string; text: string; thinking: string } | null;
+  /**
+   * 排着队、等某一轮跑完才发的那条消息（Alt+Enter / Ctrl+Enter）。
+   *
+   * 它绑在「哪条对话的哪一轮」上：用户中途切到别的对话去，这条也不会串台——
+   * 回到那条对话时再发。`interrupting` 只是给界面文案用的（「正在打断当前一轮…」）。
+   */
+  queued: QueuedSend | null;
   activities: ToolActivity[];
   iteration: { index: number; max: number } | null;
   /** 上一轮的用量与上下文构成；服务商不报真实用量时 cached/cacheWrite 为 0 */
@@ -227,6 +247,13 @@ interface AppStore {
   /** 把一条对话移进回收站 */
   deleteChat: (chatId: string, slug?: string | null, mode?: AgentMode) => Promise<void>;
   send: (text: string, attachments?: string[], images?: ImageUpload[]) => Promise<void>;
+  /** 排队发送（Alt+Enter：这一轮跑完再发）；`interrupt` 为真时顺便打断当前一轮（Ctrl+Enter）。
+   *  当前没有在跑就直接发。 */
+  queueSend: (text: string, attachments?: string[], images?: ImageUpload[], interrupt?: boolean) => Promise<void>;
+  /** 取消排队 */
+  cancelQueued: () => void;
+  /** 轮到点了就把排队的消息发出去（等的那一轮结束、或回到那条对话时调） */
+  flushQueued: (endedTurnId?: string) => Promise<void>;
   stop: () => Promise<void>;
   approve: (allow: boolean, always: boolean) => Promise<void>;
 
@@ -327,6 +354,7 @@ export const useApp = create<AppStore>((set, get) => ({
   studioChats: [],
   messages: [],
   streaming: null,
+  queued: null,
   activities: [],
   iteration: null,
   usage: null,
@@ -585,6 +613,8 @@ export const useApp = create<AppStore>((set, get) => ({
       //（否则会出现「标题是 B、正文是 A」的混搭，接着聊还会写错文件）
       if (seq !== chatSwitchSeq) return;
       set({ chatId, messages, activities: [], chatError: null, usage: null });
+      // 回到「排着队等这一轮结束」的那条对话时，把那条消息发出去
+      void get().flushQueued();
     } catch (e) {
       if (seq !== chatSwitchSeq) return;
       set({ chatId, messages: [], usage: null });
@@ -846,6 +876,65 @@ export const useApp = create<AppStore>((set, get) => ({
     } catch (e) {
       console.warn(e);
     }
+  },
+
+  /**
+   * 排队发送。两个入口都用它：
+   * - **Alt+Enter**：`interrupt=false` —— 让这一轮跑完（当前工具循环结束）再发；
+   * - **Ctrl+Enter**：`interrupt=true` —— 先把这一轮打断，它一收尾就发。
+   *
+   * 打断不是「立刻硬塞进去」：中止那一轮要给还没执行完的工具调用补上
+   * 「已被用户中止」的 tool_result 再落库（tool_use/tool_result 必须成对，
+   * 否则这条对话之后每次请求都会被服务商 400）。所以这里只负责打断 + 排队，
+   * 真正的发送交给 `flushQueued`，在那一轮的 finished/failed 事件里触发——
+   * 那时落库已经收尾，顺序天然是对的（中止标记在前、新消息在后）。
+   */
+  async queueSend(text, attachments, images, interrupt) {
+    const t = text.trim();
+    const pics = images ?? [];
+    if (!t && pics.length === 0) return;
+    const st = get();
+    // 没在跑：跟普通发送一样（Ctrl+Enter 也就等于发送）
+    if (!st.streaming) {
+      await st.send(t, attachments, pics);
+      return;
+    }
+    set({
+      queued: {
+        text: t,
+        attachments: attachments ?? [],
+        images: pics,
+        chatId: st.streaming.chatId,
+        afterTurnId: st.streaming.turnId,
+        interrupting: !!interrupt,
+      },
+    });
+    if (interrupt) await st.stop();
+  },
+
+  cancelQueued() {
+    set({ queued: null });
+  },
+
+  /**
+   * 把排队的消息发出去。三个调用点：那一轮 finished / failed、以及回到那条对话时
+   * （`loadChat`）。**发出去了才清队列**——被「上一轮还在进行中」挡回来、或者发送
+   * 报错时，排队内容留着，别把用户打的字弄丢。
+   */
+  async flushQueued(endedTurnId) {
+    const q = get().queued;
+    if (!q) return;
+    // 不是在等这一轮：留着
+    if (endedTurnId && q.afterTurnId && q.afterTurnId !== endedTurnId) return;
+    // 用户切到别的对话去了：留着，回到那条对话时再发（loadChat 会再调一次）
+    if (q.chatId && q.chatId !== get().chatId) return;
+    // 它那条对话又有一轮在跑（比如用户手动发了）：再等等
+    const running = get().streaming;
+    if (running && (!q.chatId || running.chatId === q.chatId)) return;
+    const before = get().messages.length;
+    set({ chatError: null });
+    await get().send(q.text, q.attachments, q.images);
+    if (get().messages.length > before) set({ queued: null });
   },
 
   async approve(allow, always) {
@@ -1746,6 +1835,8 @@ function handleAgentEvent(
       if (lastTurn?.turnId === ev.turn_id && lastTurn.chatId === get().chatId) {
         void get().syncChatTail(lastTurn.chatId);
       }
+      // 有排在队里的消息（Alt+Enter / Ctrl+Enter）：这一轮收尾了，该它上了
+      void get().flushQueued(ev.turn_id);
       break;
     case "failed":
       set((s) => {
@@ -1754,6 +1845,8 @@ function handleAgentEvent(
         return { streaming: null, iteration: null, approval: null, chatError: ev.message };
       });
       get().toast("error", ev.message);
+      // 失败也一样：排队的消息别一直卡着
+      void get().flushQueued(ev.turn_id);
       break;
   }
 }

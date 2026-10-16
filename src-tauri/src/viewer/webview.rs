@@ -72,6 +72,12 @@ pub fn navigation_allowed(u: &url::Url) -> bool {
     }
 }
 
+/// 界面缩放系数的兜底：NaN / 0 / 负数都当 1 处理（和 `to_physical_rect` 对 scale 的兜底一个道理，
+/// 配置文件是用户可手改的，不能让它把原生视图摆到天涯海角）。
+pub fn sanitize_zoom(z: f64) -> f64 {
+    if z.is_finite() && z > 0.0 { z } else { 1.0 }
+}
+
 /// 一个字符串 URL 是否是可以交给系统浏览器的普通网页。
 fn is_web_url(s: &str) -> bool {
     url::Url::parse(s).map(|u| navigation_allowed(&u)).unwrap_or(false)
@@ -113,12 +119,15 @@ impl WebviewManager {
         url: &str,
         css: RectCss,
         reload: bool,
+        ui_zoom: f64,
     ) -> AppResult<()> {
         let window = Self::main_window(app)?;
         let scale = window
             .scale_factor()
             .map_err(|e| AppError::other(format!("读取屏幕缩放失败：{e}")))?;
-        let (px, py, pw, ph) = to_physical_rect(scale, css);
+        // 乘上界面缩放：前端量的矩形是「缩放前的 CSS 像素」，而 WebView2 的 zoom
+        // 会把这些像素再放大一遍（见 commands::app::apply_ui_zoom 的说明）
+        let (px, py, pw, ph) = to_physical_rect(scale * sanitize_zoom(ui_zoom), css);
         let parsed: url::Url = url
             .parse()
             .map_err(|e| AppError::invalid(format!("网址无法解析：{e}")))?;
@@ -283,7 +292,7 @@ impl WebviewManager {
 
     /// 只改位置与尺寸（前端 ResizeObserver / 拖侧栏时高频调用）。
     /// 不改可见性：显示与否由 `ensure` / `set_visible` 管。
-    pub fn set_bounds_css(&self, app: &AppHandle, tab_id: &str, css: RectCss) -> AppResult<()> {
+    pub fn set_bounds_css(&self, app: &AppHandle, tab_id: &str, css: RectCss, ui_zoom: f64) -> AppResult<()> {
         let Some(wv) = self.webviews.lock().get(tab_id).cloned() else {
             return Ok(()); // 还没建：等下一次 ensure 一起带上
         };
@@ -291,7 +300,7 @@ impl WebviewManager {
         let scale = window
             .scale_factor()
             .map_err(|e| AppError::other(format!("读取屏幕缩放失败：{e}")))?;
-        let (px, py, pw, ph) = to_physical_rect(scale, css);
+        let (px, py, pw, ph) = to_physical_rect(scale * sanitize_zoom(ui_zoom), css);
         self.align(&wv, px, py, pw, ph, false)
     }
 

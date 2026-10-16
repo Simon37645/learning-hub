@@ -632,6 +632,19 @@ function AppearanceSection() {
   return (
     <>
       <div className="card-box">
+        <FieldRow label="界面缩放" hint="放大整个界面（等效浏览器缩放），100% 为默认。内置浏览器里的网页视图会跟着对齐，布局不会乱">
+          <Segmented
+            value={String(config.appearance.uiScale ?? 1)}
+            onChange={(v) => void useApp.getState().setUiScale(Number(v))}
+            options={[
+              { id: "0.9", label: "90%" },
+              { id: "1", label: "100%" },
+              { id: "1.1", label: "110%" },
+              { id: "1.25", label: "125%" },
+              { id: "1.5", label: "150%" },
+            ]}
+          />
+        </FieldRow>
         <FieldRow label="配色" hint="强制明亮适合长时间读讲义；侧栏底部也有一个快捷切换按钮">
           <Segmented
             value={config.appearance.theme}

@@ -558,11 +558,28 @@ pub struct AppearanceConfig {
     /// 主题文件被删掉不该让界面变成一片没有颜色的白板。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_theme: Option<String>,
+    /// 界面缩放（等效浏览器缩放）：1.0 = 100%。应用到主 WebView 的 zoom 上，
+    /// 所以**所有东西**（字、间距、图、原生网页视图以外的 DOM）一起变大，布局不会散架。
+    /// 子 WebView（内置浏览器里的网页）是独立原生面，不吃这个缩放；但它的**位置与尺寸**
+    /// 要按这个系数换算（见 `viewer_webview_bounds`），否则面板会对不上。
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+impl AppearanceConfig {
+    /// 合法范围内的缩放值。手改配置文件写了个离谱数字时按边界处理，不让界面炸掉。
+    pub fn clamped_scale(&self) -> f32 {
+        self.ui_scale.clamp(0.7, 1.6)
+    }
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
-        Self { theme: ThemeMode::System, custom_theme: None }
+        Self { theme: ThemeMode::System, custom_theme: None, ui_scale: default_ui_scale() }
     }
 }
 

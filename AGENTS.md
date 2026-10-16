@@ -333,6 +333,19 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
 - **`scripts/cdp.mjs` 会挑目标**：演示页 / 远端网页跑在子 WebView 里，也会出现在
   `/json/list`；默认按 `localhost:1420` / `tauri://` 挑回应用自己那一页（要指定用
   `CDP_TARGET=url 子串`）。不挑的症状是 eval 报「找不到 /src/store/app.ts」。
+- **Mermaid 图放大要放大 svg，而不是画布容器**：`.mermaid-block` 是 `overflow: hidden` 的，
+  把 `.mermaid-canvas` 自己放宽到 160% 的话，超出部分被裁掉、滚动条永远不出现
+  （症状：点「放大」只能看到局部，没有任何办法挪）。正确做法：可视区固定块宽、
+  `svg.style.width = k*100%`，让容器的 `overflow: auto` 出滚动条；居中用 `safe center`
+  （普通 center 会把溢出的左半边裁进不可滚动区）。放大后按住拖动平移的实现见
+  `markdown.ts` 的 `attachPan`（只在真的超出时接管指针）。
+- **「界面缩放」用的是 WebView2 的 zoom（等效浏览器缩放），别改成 CSS zoom**：
+  浏览器 zoom 下 `getBoundingClientRect` 的数值不随缩放变（CSS px 是页面自己的单位），
+  但**视觉尺寸 = CSS px × zoom**——所以 Rust 侧把前端量来的矩形换算成物理像素时
+  必须再乘配置里的 `ui_scale`（`viewer_webview_bounds` / `viewer_webview_ensure` 两处，
+  都走 `to_physical_rect(scale × zoom)`；将来加「原生层按矩形摆放」的新功能也要记得乘）。
+  应用缩放统一走 `commands::app::apply_ui_zoom`（启动 setup 一次 + `ui_scale_set` 一次），
+  别在别处再调 `set_zoom`。
 - **`chatMode` 是侧栏判断「刚开、还没落盘的工坊对话」的依据**：只看 `view` 不够——
   切视图那一刻 `chatId` 还是上一条，会闪出一行假的「新对话」。`loadChat` 的第二个参数
   就是给这个用的，从主题/工坊清单进来的点击要显式传模式。

@@ -433,6 +433,11 @@ export interface AppearanceConfig {
   theme: ThemeMode;
   /** 正在用的自定义主题 id（见「外观主题」一节）。null/undefined = 用内置配色 */
   customTheme?: string | null;
+  /**
+   * 界面缩放（等效浏览器缩放），1 = 100%。由 Rust 应用到主 WebView 的 zoom 上，
+   * 内置浏览器里原生子 WebView 的边界也按它换算。老配置没这个字段 = 1。
+   */
+  uiScale?: number;
 }
 
 export interface PublicConfig {

@@ -3131,11 +3131,27 @@ mark.hit {
   padding: 12px;
   overflow: auto;
   display: flex;
-  justify-content: center;
+  /* safe center：放得下才居中；放不下时退回起点，保证滚动条能滚到每一个角落
+     （普通 center 会把溢出的左半边裁在不可滚动区里） */
+  justify-content: safe center;
+  align-items: safe center;
+}
+
+/* 放大后：超出可视区，按住可以直接拖动平移（滚动条的替代操作） */
+.mermaid-canvas.is-zoomed {
+  cursor: grab;
+}
+
+.mermaid-canvas.is-panning {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .mermaid-canvas svg {
   height: auto;
+  /* svg 是 flex 项：不放开这个的话默认 flex-shrink:1 会把放大后的图缩回容器宽，
+     「放大」就永远超不出可视区、滚动条也永远不会出现 */
+  flex: none;
 }
 
 /* 缩放按钮：悬停或聚焦时出现，平时不打扰阅读 */

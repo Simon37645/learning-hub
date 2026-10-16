@@ -268,6 +268,8 @@ interface AppStore {
 
   patchConfig: (patch: ConfigPatch) => Promise<void>;
   setTheme: (theme: ThemeMode) => Promise<void>;
+  /** 界面缩放（设置 → 外观）。Rust 存配置并立刻应用；成功后 config 里的 uiScale 是钳制过的值 */
+  setUiScale: (scale: number) => Promise<void>;
   setReasoning: (effort: ReasoningEffort, style?: ReasoningStyle) => Promise<void>;
   upsertProfile: (input: ProfileInput) => Promise<void>;
   deleteProfile: (id: string) => Promise<void>;
@@ -1023,6 +1025,17 @@ export const useApp = create<AppStore>((set, get) => ({
     }
     applyTheme(theme, null);
     await get().patchConfig({ theme });
+  },
+
+  async setUiScale(scale) {
+    try {
+      const config = await api.uiSetScale(scale);
+      set({ config });
+      const applied = Math.round((config.appearance.uiScale ?? 1) * 100);
+      get().toast("success", applied === 100 ? "界面缩放已恢复 100%" : `界面缩放已调整为 ${applied}%`);
+    } catch (e) {
+      get().toast("error", errText(e));
+    }
   },
 
   async loadThemes() {

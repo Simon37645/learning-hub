@@ -99,6 +99,8 @@ export const api = {
   uiStateGet: () => invoke<string | null>("ui_state_get"),
   uiStateSave: (text: string) => invoke<void>("ui_state_save", { text }),
   configPatch: (patch: ConfigPatch) => invoke<PublicConfig>("config_patch", { patch }),
+  /** 界面缩放（设置 → 外观）。Rust 侧存配置并立刻应用到主 WebView（等效浏览器缩放） */
+  uiSetScale: (scale: number) => invoke<PublicConfig>("ui_scale_set", { scale }),
   profileUpsert: (input: ProfileInput) => invoke<PublicConfig>("profile_upsert", { input }),
   profileDelete: (id: string) => invoke<PublicConfig>("profile_delete", { id }),
   profileTest: (id: string) => invoke<ProfileTestResult>("profile_test", { id }),

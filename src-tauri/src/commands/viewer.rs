@@ -346,6 +346,7 @@ pub async fn viewer_webview_ensure(
     if tab.kind != ViewerKind::Web {
         return Err(AppError::invalid("只有网页标签才用原生视图，本地文件请用对应的渲染器"));
     }
+    let ui_zoom = core.config_read().appearance.clamped_scale() as f64;
     core.webviews.ensure(
         &core.app,
         &core.viewer,
@@ -353,6 +354,7 @@ pub async fn viewer_webview_ensure(
         &url,
         crate::viewer::webview::RectCss { x, y, w, h },
         false,
+        ui_zoom,
     )
 }
 
@@ -367,8 +369,13 @@ pub async fn viewer_webview_bounds(
     h: f64,
 ) -> AppResult<()> {
     let core = state.0.clone();
-    core.webviews
-        .set_bounds_css(&core.app, &tab_id, crate::viewer::webview::RectCss { x, y, w, h })
+    let ui_zoom = core.config_read().appearance.clamped_scale() as f64;
+    core.webviews.set_bounds_css(
+        &core.app,
+        &tab_id,
+        crate::viewer::webview::RectCss { x, y, w, h },
+        ui_zoom,
+    )
 }
 
 /// 显示 / 隐藏原生视图（浮层弹出、切阅读模式、切标签、收起面板时都要让它让路；

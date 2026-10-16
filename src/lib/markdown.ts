@@ -237,6 +237,7 @@ export async function renderMermaidIn(root: HTMLElement | null): Promise<number>
         </div>
         <div class="mermaid-canvas">${svg}</div>`;
       applyZoom(holder, "fit");
+      attachPan(holder.querySelector<HTMLElement>(".mermaid-canvas")!);
       holder.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((btn) => {
         btn.addEventListener("click", (e) => {
           e.preventDefault();
@@ -278,23 +279,61 @@ function cleanupMermaidErrorNode(id: string): void {
   }
 }
 
-/** 缩放：适应宽度用 max-width 限制，固定比例用宽度百分比 */function applyZoom(holder: HTMLElement, zoom: string) {
+/**
+ * 缩放：「适应宽度」用 max-width 限制；固定比例把 **svg** 放大、可视区（.mermaid-canvas）
+ * 保持块宽——超出的部分交给容器的 overflow 滚动条。
+ *
+ * 之前放大的对象搞反了（把 canvas 自己放宽到 160%），超出被 `.mermaid-block` 的
+ * overflow: hidden 裁掉，用户看到的是「放大后只剩局部，没有任何办法挪到别处」。
+ */
+function applyZoom(holder: HTMLElement, zoom: string) {
   const canvas = holder.querySelector<HTMLElement>(".mermaid-canvas");
   const svg = canvas?.querySelector<SVGSVGElement>("svg");
   if (!canvas || !svg) return;
   holder.querySelectorAll("[data-zoom]").forEach((b) => b.classList.remove("on"));
   holder.querySelector(`[data-zoom="${zoom}"]`)?.classList.add("on");
 
+  canvas.classList.toggle("is-zoomed", zoom !== "fit");
   if (zoom === "fit") {
     svg.style.removeProperty("width");
-    svg.style.removeProperty("height");
     svg.style.maxWidth = "100%";
-    canvas.style.width = "100%";
   } else {
     const k = Number(zoom) || 1;
     svg.style.removeProperty("max-width");
-    canvas.style.width = `${Math.round(k * 100)}%`;
+    svg.style.width = `${Math.round(k * 100)}%`;
   }
+}
+
+/**
+ * 放大之后可以按住拖动来平移（滚动条的替代操作，编辑器里的大图查看器也是这么做的）。
+ *
+ * 只在「真的超出了可视区」时接管指针；`setPointerCapture` 包 try/catch（合成事件下会抛）。
+ */
+function attachPan(canvas: HTMLElement) {
+  let drag: { x: number; y: number; left: number; top: number } | null = null;
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !canvas.classList.contains("is-zoomed")) return;
+    if (canvas.scrollWidth <= canvas.clientWidth && canvas.scrollHeight <= canvas.clientHeight) return;
+    drag = { x: e.clientX, y: e.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+    canvas.classList.add("is-panning");
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {
+      /* 拿不到捕获也能拖：指针只要没离开元素就还会发 move */
+    }
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    canvas.scrollLeft = drag.left + drag.x - e.clientX;
+    canvas.scrollTop = drag.top + drag.y - e.clientY;
+  });
+  const end = () => {
+    drag = null;
+    canvas.classList.remove("is-panning");
+  };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("lostpointercapture", end);
 }
 
 /**

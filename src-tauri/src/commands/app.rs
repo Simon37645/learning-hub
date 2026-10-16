@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::State;
+use tauri::{Manager, State};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +142,38 @@ pub struct ConfigPatch {
     pub clear_approved_roots: Option<bool>,
     /// 主题模式：system / light / dark
     pub theme: Option<crate::config::ThemeMode>,
+}
+
+/// 把界面缩放应用到主 WebView 上（等效浏览器缩放）。
+///
+/// 放在 Rust 侧而不是让前端自己调 `setZoom`：启动时（`setup`，页面加载之前）也要应用一次，
+/// 两处走同一个函数就不会出现「设置里改了、重启后又跳回 100%」。
+pub fn apply_ui_zoom(app: &tauri::AppHandle, scale: f32) {
+    use tauri::Manager;
+    // 用 `get_webview` 而不是 `get_webview_window`：内置浏览器一开网页，
+    // 主窗口就多了一个 `web-<tab_id>` 的子 WebView，`get_webview_window` 会因为
+    // 「窗口里的 webview 不全叫 main」而永远返回 None（症状：刚启动时改缩放有效，
+    // 开过一个网页标签后就再也不生效）。
+    let Some(wv) = app.get_webview("main") else {
+        eprintln!("[界面缩放] 找不到主窗口的 webview，这次没有应用");
+        return;
+    };
+    // WebView2 的合法范围比这宽，但界面在 0.7 以下已经读不了、1.6 以上放不下，卡死在这
+    if let Err(e) = wv.set_zoom(scale.clamp(0.7, 1.6) as f64) {
+        eprintln!("[界面缩放] 应用失败：{e}");
+    }
+}
+
+/// 设置界面缩放（设置 → 外观 →「界面缩放」）。
+#[tauri::command]
+pub async fn ui_scale_set(state: State<'_, AppState>, scale: f32) -> AppResult<PublicConfig> {
+    let core = state.0.clone();
+    let scale = scale.clamp(0.7, 1.6);
+    let cfg = core.update_config(|c| {
+        c.appearance.ui_scale = scale;
+    })?;
+    apply_ui_zoom(&core.app, scale);
+    Ok(PublicConfig::from(&cfg))
 }
 
 #[tauri::command]

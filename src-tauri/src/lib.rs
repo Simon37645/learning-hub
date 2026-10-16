@@ -31,6 +31,7 @@ pub mod theme;
 pub mod updater;
 pub mod viewer;
 
+use crate::commands::app::apply_ui_zoom;
 use crate::config::AppConfig;
 use crate::state::{AppCore, AppState};
 use std::time::Duration;
@@ -65,6 +66,9 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("学习中枢"));
 
             let cfg = AppConfig::load(&config_path, default_ws)?;
+            // 界面缩放要在页面加载前应用，避免「先按 100% 画一屏再跳一下」。
+            // 放在 AppCore::new 之前：handle / cfg 马上要被 move 进去
+            apply_ui_zoom(&handle, cfg.appearance.clamped_scale());
             let http = net::client(600).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             let core = AppCore::new(handle, config_path, cfg, http);
 
@@ -164,6 +168,7 @@ fn main_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
             commands::app::ui_state_get,
             commands::app::ui_state_save,
             commands::app::config_patch,
+            commands::app::ui_scale_set,
             commands::app::profile_upsert,
             commands::app::profile_delete,
             commands::app::profile_set_reasoning,

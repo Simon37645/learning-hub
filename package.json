@@ -1,7 +1,7 @@
 {
   "name": "learning-hub",
   "private": true,
-  "version": "0.7.0-rc.2",
+  "version": "0.7.0-rc.3",
   "description": "Learning Hub — a personal AI study companion (Tauri 2 + Rust + React)",
   "type": "module",
   "scripts": {

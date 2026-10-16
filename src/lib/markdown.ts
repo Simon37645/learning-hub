@@ -352,13 +352,19 @@ function attachPan(canvas: HTMLElement) {
  */
 const DEMO_LANGS = new Set(["html", "htm", "svg"]);
 
-/** 组装 iframe 里真正要渲染的那份文档（`svg` 代码块补一层 HTML 壳）。 */
+/**
+ * 组装 iframe 里真正要渲染的那份文档（`svg` 代码块补一层 HTML 壳）。
+ *
+ * svg 必须给显式的 width/height：模型常写「只有 viewBox」的 SVG，这种图在
+ * grid 容器里按 auto 尺寸排版会塌成 0×0（max 约束救不回来），卡片就是一片空白。
+ * 让元素撑满、由 viewBox 默认的等比缩放（xMidYMid meet）居中，什么写法都兜得住。
+ */
 export function demoDocument(lang: string, source: string): string {
   if (lang !== "svg") return source;
   return (
     "<!doctype html><html><head><meta charset=\"utf-8\"><style>" +
     "html,body{margin:0;height:100%;display:grid;place-items:center;overflow:hidden}" +
-    "svg{max-width:100%;max-height:100%}" +
+    "svg{width:100%;height:100%;max-width:100%;max-height:100%}" +
     `</style></head><body>${source}</body></html>`
   );
 }

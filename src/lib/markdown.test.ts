@@ -25,6 +25,12 @@ describe("demoDocument", () => {
     expect(doc).toContain("place-items:center");
     expect(doc).toContain('<circle r="4" />');
   });
+
+  it("壳要给 svg 显式宽高（模型常写只有 viewBox 的图，grid 里 auto 会塌成 0×0）", () => {
+    const doc = demoDocument("svg", '<svg viewBox="0 0 760 380"><rect width="760" height="380" /></svg>');
+    expect(doc).toMatch(/svg\{[^}]*width:100%/);
+    expect(doc).toMatch(/svg\{[^}]*height:100%/);
+  });
 });
 
 describe("renderDemoBlocksIn", () => {

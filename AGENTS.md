@@ -366,6 +366,13 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   `:hover` / `:checked` / `<details>` 这类纯 CSS 手段；提示词里已经这么要求模型了。
   **别为了「让演示能动起来」把 sandbox 改成 `allow-scripts`**：那等于让模型写的脚本进到应用里跑
   （srcdoc 还继承应用的 CSP，改成 allow-scripts 也大概率只是白忙）。卡片上会标「脚本已禁用」。
+- **```svg 演示卡片的壳必须给 svg 显式宽高**（`markdown.ts` 的 `demoDocument`，踩过一次）：
+  模型常写「只有 `viewBox`」的 SVG，这种图在 `display:grid` 的壳里按 auto 尺寸排版会塌成
+  **0×0**——srcdoc 正常加载、元素都在，就是什么都不画，看着像「最新版本渲染坏了」。
+  `max-width` / `max-height` 救不回来（真机 + 独立浏览器对照实验都试过；去掉 grid 也不对，
+  会丢垂直居中）。现在壳里写 `svg{width:100%;height:100%;…}`，由 viewBox 默认的等比缩放居中。
+  再遇到「演示卡片空白」别急着怀疑 iframe / CSP / 沙箱：先做一个**去掉 sandbox 的复现页**
+  （这样才能 `contentDocument` 进去），量元素尺寸、看 srcdoc 加没加载。
 - **`pdf_screenshot` 是请求-响应，前端必须回话**：工具在 Rust 侧登记等待位 → 发
   `render_request` 事件 → 前端 `lib/pdfshot.ts` 用 pdf.js 渲染 → 调 `viewer_report_render`。
   成功要回，**失败也要回**（带 `error`），否则工具一直等到 25s 超时才报错，用户盯着一个不动的卡片。

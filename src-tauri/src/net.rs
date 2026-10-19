@@ -14,6 +14,10 @@ use std::time::Duration;
 const UA: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
+/// 客户端级兜底超时（秒）。模型请求每轮的超时由 `ChatRequest.timeout` 单独控制，
+/// 这里只保证「不管怎么卡，连接池不会挂着一辈子」。
+pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
 pub fn client(timeout_secs: u64) -> AppResult<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(UA)

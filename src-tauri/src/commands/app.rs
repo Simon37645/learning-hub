@@ -412,7 +412,7 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
         });
     }
 
-    let provider = provider::build(&profile, core.http.clone());
+    let provider = provider::build(&profile, core.http_fresh()?);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let req = ChatRequest {
         model: profile.model.clone(),

@@ -120,6 +120,17 @@ impl AppCore {
         self.config.read().clone()
     }
 
+    /// 现建一个 HTTP 客户端，给**模型请求**用（对话、一次性调用、连通性测试）。
+    ///
+    /// 为什么模型请求不共用启动时那个 `http`：reqwest **只在建客户端时读一次**
+    /// 系统代理，之后不再刷新。用户开着代理启动、中途关掉代理（或反过来）时，
+    /// 那个客户端会一直往已经死掉的代理端口里送请求——症状是「网络请求失败：
+    /// error sending request」，重启应用才能恢复。现建的成本只是一次连接池重建
+    /// （每次对话轮/点一次测试才付一次），换来的是「发请求那一刻的系统代理」。
+    pub fn http_fresh(&self) -> AppResult<reqwest::Client> {
+        crate::net::client(crate::net::DEFAULT_TIMEOUT_SECS)
+    }
+
     pub fn workspace(&self) -> Workspace {
         Workspace::new(self.config.read().workspace_root.clone())
     }

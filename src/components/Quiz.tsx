@@ -353,7 +353,7 @@ export function QuizPane() {
 }
 
 /** 按题型渲染作答控件：单选 / 多选 / 填空 */
-function QuestionInput({
+export function QuestionInput({
   q,
   options,
   value,
@@ -390,17 +390,18 @@ function QuestionInput({
   }
 
   const multi = q.type === "x";
-  const selected = value
-    .split(/[^A-Za-z]/)
-    .map((s) => s.toUpperCase())
-    .filter(Boolean);
+  // 选项号是单个字母，作答存的是连写串（"AC"，与 Rust 侧 normalize_keys 的契约一致），
+  // 所以这里**按字符拆**。曾经写成「按非字母分隔」——单选看不出来，多选选第二个时
+  // "AC" 里没有分隔符、整个变成一个元素 ["AC"]，两个勾全灭，之后怎么点都选不上。
+  const selected = Array.from(value.toUpperCase()).filter((c) => c >= "A" && c <= "Z");
 
   const toggle = (key: string) => {
+    const k = key.toUpperCase();
     if (multi) {
-      const next = selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key];
+      const next = selected.includes(k) ? selected.filter((x) => x !== k) : [...selected, k];
       onChange(next.sort().join(""));
     } else {
-      onChange(key);
+      onChange(k);
     }
   };
 

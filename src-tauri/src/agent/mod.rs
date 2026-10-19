@@ -398,7 +398,7 @@ impl AgentService {
         } else {
             Vec::new()
         };
-        let provider = provider::build(&profile, core.http.clone());
+        let provider = provider::build(&profile, core.http_fresh()?);
         let ctx = ToolCtx {
             core: core.clone(),
             topic: topic.clone(),
@@ -815,7 +815,7 @@ pub async fn complete_once(
 ) -> AppResult<String> {
     let cfg = core.config_read();
     let profile = cfg.active_profile()?.clone();
-    let provider = provider::build(&profile, core.http.clone());
+    let provider = provider::build(&profile, core.http_fresh()?);
     let max_attempts = cfg.agent.reconnect_max_attempts;
 
     let request = ChatRequest {

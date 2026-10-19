@@ -69,7 +69,7 @@ pub fn run() {
             // 界面缩放要在页面加载前应用，避免「先按 100% 画一屏再跳一下」。
             // 放在 AppCore::new 之前：handle / cfg 马上要被 move 进去
             apply_ui_zoom(&handle, cfg.appearance.clamped_scale());
-            let http = net::client(600).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            let http = net::client(net::DEFAULT_TIMEOUT_SECS).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             let core = AppCore::new(handle, config_path, cfg, http);
 
             // 笔记里的本地图片通过 asset:// 显示。范围收窄到工作区，

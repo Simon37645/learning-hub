@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "learning-hub"
-version = "0.7.0-rc.3"
+version = "0.7.1-beta.1"
 dependencies = [
  "anyhow",
  "async-trait",

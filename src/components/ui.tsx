@@ -403,7 +403,7 @@ export function Modal({
   }, [onClose]);
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className={"modal" + (wide ? " wide" : "")} role="dialog" aria-modal>
         <div className="modal-head">
           {icon && <Icon name={icon} size={16} />}

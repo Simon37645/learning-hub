@@ -1880,8 +1880,10 @@ body.dragging-chat {
   color: var(--text-faint);
 }
 
-/* 弹窗 */
-.overlay {
+/* 弹窗遮罩。类名**不能**叫 `.overlay`：KaTeX 内部也用 `.overlay`（\vec 这类重音
+   的定位层），全局样式会把公式里的元素改成 fixed + 深色底，钉在视口左上角变成
+   一个盖住标题栏的黑方块（踩过一次，排查手法见 AGENTS.md）。 */
+.modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(20, 18, 16, 0.34);
@@ -2007,7 +2009,7 @@ body.dragging-chat {
   white-space: nowrap;
 }
 
-.overlay.top {
+.modal-overlay.top {
   place-items: start center;
 }
 
@@ -2622,7 +2624,9 @@ mark.hit {
   white-space: nowrap;
 }
 
-.tag {
+/* KaTeX 的 	ag{} 也用 .tag（公式编号），全局 chip 样式会渗到公式上——
+   用 :not(.katex *) 把它挡在 KaTeX 之外。 */
+.tag:not(.katex *) {
   font-size: 11px;
   padding: 1px 7px;
   border-radius: 999px;

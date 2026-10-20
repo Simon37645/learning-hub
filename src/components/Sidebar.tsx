@@ -1240,7 +1240,7 @@ function PaletteOpen() {
 
   return (
     <div
-      className="overlay top"
+      className="modal-overlay top"
       onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}
     >
       <div className="palette">

@@ -353,7 +353,20 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   里面那些通用类名会直接盖住应用自己的同名样式，CSS 只看优先级和顺序。
   真踩过：右下角的操作提示（`.toast`）被它改成了 `fixed + left:50%` 的居中横幅，
   而且 `bottom` 用了未定义的 `--statusbar-height` 导致 calc 失效，提示有一半跑到窗口外面。
-  往组件里加通用类名前先跑 `node scripts/style-collisions.mjs`（退出码非 0 就是撞了）。
+  往组件里加通用类名前先跑 `node scripts/style-collisions.mjs`（退出码非 0 就是撞了；
+  它现在也查 **KaTeX**——见下一条）。
+- **类名会和 KaTeX 撞，且症状极难猜**（用户报「左上角莫名出现黑框」）：`katex.min.css`
+  同样是全局引入的第三方样式表，KaTeX 给公式内部元素挂的类名有 `.overlay` / `.tag` /
+  `.accent` 这些**很通用**的名字。app.css 里任何**单类名的全局规则**都会套到公式元素上：
+  弹窗遮罩 `.overlay { position: fixed; inset: 0; background: rgba(20,18,16,.34); padding: 40px }`
+  撞上 KaTeX `\vec` 的定位层后，每个向量记号都变成钉在视口左上角、80×80 的深色方块
+  （padding 40×2 + box-sizing:border-box），叠几个公式就是几个方块——看起来像「标题栏
+  被一块黑框盖住」，和公式、和应用状态都看不出关系。
+  现在：应用侧叫 `.modal-overlay`；`.tag` 用 `:not(.katex *)` 挡住；`scripts/style-collisions.mjs`
+  会扫 app.css 的单类名规则 ∩ katex.min.css（`katex-display` 是**故意**给公式容器加样式的，
+  在脚本的允许名单里）。**排查这类"凭空出现的方块"**：先把截图做像素级分析（洪水填充量
+  精确矩形、算叠色——4 层 34% 深色叠在浅色上正好是实测的 `#3E3C38`），再开 dev 实例用
+  CDP `document.elementFromPoint` 直接问「这一点的元素是什么」，比盯着截图猜快得多。
 - **复习是内置的，外部 Anki 已整体移除**：卡片调度（SM-2）、复习界面都在本应用里。
   曾经的 AnkiConnect 同步与 TSV 导出已经删干净——`anki.rs` 模块、`anki_status` / `anki_sync` /
   `anki_ping` / `card_export_anki` 四个命令、`AnkiConfig`、`Card::anki_note_id` 与 `anki_fields`、

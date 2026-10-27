@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// 访问模式，决定越权申请时怎么向用户描述。
@@ -109,6 +110,10 @@ pub struct ToolCtx {
     pub mode: AgentMode,
     pub turn_id: String,
     pub chat_id: String,
+    /// 这一轮的停止标志。工具在等用户审批（沙箱越权申请）期间也要盯着它：
+    /// 用户点「停止」就把等待掐断、摘掉审批槽，不然槽条目随被丢弃的工具
+    /// future 一起失去清理时机，每次这样操作永久泄漏一个。
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl ToolCtx {
@@ -160,7 +165,14 @@ impl ToolCtx {
                 let granted = self
                     .core
                     .agent
-                    .request_sandbox(&self.core, &self.turn_id, &path, access.label(), reason)
+                    .request_sandbox(
+                        &self.core,
+                        &self.turn_id,
+                        &path,
+                        access.label(),
+                        reason,
+                        &self.cancel,
+                    )
                     .await;
                 if !granted {
                     return Err(AppError::Denied(format!(

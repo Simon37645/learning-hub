@@ -287,6 +287,10 @@ pub async fn chat_fork(
             title: src_title,
         });
         crate::agent::chats::save(&dir, &new_id, &mut meta)?;
+        // 对话清单是「读过就缓存」的：改了清单的命令都要发一次 Refresh，
+        // 另一个窗口才会跟着重拉（AGENTS.md「移动端网页会显示已经删除的对话」
+        // 那条约定的另一半）。学习分支、rename/pin/archive/delete 都发，这里别漏。
+        core.emit_topics(crate::agent::event::TopicsEvent::Refresh);
         return Ok(new_id);
     }
 

@@ -256,8 +256,8 @@ pub async fn build(
 ) -> AppResult<KbIndex> {
     let mut index = if force { KbIndex::default() } else { load_index(topic_dir) };
 
-    // (引用路径, 绝对路径)
-    let mut targets: Vec<(String, PathBuf)> = Vec::new();
+    // (引用路径, 绝对路径, 文件所属的主题目录——分页缓存按它找)
+    let mut targets: Vec<(String, PathBuf, PathBuf)> = Vec::new();
 
     // 自己的：materials/（讲义资料）、kb/（用户自己丢进来的）、notes/（笔记）
     for sub in [
@@ -267,14 +267,14 @@ pub async fn build(
     ] {
         for f in store::walk_files(&topic_dir.join(sub), 5) {
             if is_indexable(&f) {
-                targets.push((crate::paths::rel_in_root(topic_dir, &f), f));
+                targets.push((crate::paths::rel_in_root(topic_dir, &f), f, topic_dir.to_path_buf()));
             }
         }
     }
     // 主题根目录下的 README 也算
     let readme = topic_dir.join("README.md");
     if readme.is_file() {
-        targets.push(("README.md".to_string(), readme));
+        targets.push(("README.md".to_string(), readme, topic_dir.to_path_buf()));
     }
 
     // 祖先主题的资料与讲义（笔记也算：预习要拿你以前学过的东西当框架）
@@ -286,7 +286,10 @@ pub async fn build(
         ] {
             for f in store::walk_files(&dir.join(sub), 5) {
                 if is_indexable(&f) {
-                    targets.push((crate::paths::rel_in_root(ws_root, &f), f));
+                    // 所属目录记祖先主题的：分页缓存是写在「打开它的那个主题」的
+                    // .hub/pdf-pages/ 下的（viewer_open 按文件所属主题归档），
+                    // 拿子主题目录去找的话 rel_in_root 必败、缓存永远 miss。
+                    targets.push((crate::paths::rel_in_root(ws_root, &f), f, dir.clone()));
                 }
             }
         }
@@ -295,7 +298,7 @@ pub async fn build(
     let mut files: Vec<KbFile> = Vec::new();
     let mut chunks: Vec<KbChunk> = Vec::new();
 
-    for (rel, path) in targets {
+    for (rel, path, owner_dir) in targets {
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(_) => continue,
@@ -322,7 +325,7 @@ pub async fn build(
             .unwrap_or_default();
 
         let chunk_start = chunks.len();
-        match extract(&path, topic_dir).await {
+        match extract(&path, &owner_dir).await {
             Ok(pages) => {
                 let mut chars = 0usize;
                 let mut headings: Vec<String> = Vec::new();

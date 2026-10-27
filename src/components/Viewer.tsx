@@ -331,7 +331,13 @@ function TabBar({
         {tab.snapshotChars > 0 ? `${(tab.snapshotChars / 1000).toFixed(1)}k 字` : "未读"}
       </span>
 
-      {tab.path && (
+      {/* 演示页（lhpage 内部协议）的 path 指向磁盘上的 .html，但「用系统程序打开」
+          对它完全不成立：/_vendor/three.js 是编进二进制、只由 lhpage 协议提供的，
+          系统浏览器里是死链，同目录资源被 file:// 的 CORS 拦——三维/交互全坏；
+          而且应用给演示页收死的 CSP 不随文件走，系统浏览器里脚本反而能访问外网
+          （AGENTS.md「演示页标签不要按 path 当本地文件处理」）。上面的演示页
+          分支已经给了「重新加载」，这里整体跳过。 */}
+      {tab.path && !isPageUrl(tab.url) && (
         <>
           <button
             className="icon-btn"

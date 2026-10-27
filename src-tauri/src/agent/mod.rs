@@ -112,6 +112,9 @@ struct TurnHandle {
     /// 这轮属于哪条对话。chat_delete / chat_move / chat_fork 靠它判断
     /// 「这条对话还有没有回合正在落库」（那几个动作必须等回合收尾，见 commands/agent.rs）。
     chat_id: String,
+    /// 这轮属于哪个主题（工坊回合为 None）。topic_update / topic_delete
+    /// 这类主题级整理靠它判断「这个主题下还有没有回合在落库」。
+    topic_slug: Option<String>,
 }
 
 /// 待审批的工具调用：request_id → (工具名, 决定回执)
@@ -238,6 +241,19 @@ impl AgentService {
         // `gate` 字段说明——这些命令也持同一把门）。
         let _gate = self.chat_exclusive();
 
+        // 同一条对话不许同时跑两个回合。前端的 sendInFlight/streaming 只是**本
+        // 实例**的状态：远程手机页是同一份 dist 的独立 JS 实例，SSE 断开窗口
+        // （息屏、切网是常态）里收不到桌面回合的 TurnStarted，就会在桌面回合
+        // 进行中再发一枪——两个 run_turn 并发 load/append 同一份 jsonl，回复与
+        // 提问错位，落盘行交错还会把 tool_use/tool_result 的配对拆散，之后
+        // load_transcript 把这段历史发出去就是服务商 400。后端是所有实例的
+        // 唯一咽喉，守卫必须在这里。
+        if self.is_chat_running(&req.chat_id) {
+            return Err(AppError::invalid(
+                "这条对话还有一轮正在进行（也可能在手机等另一端），等它跑完再发",
+            ));
+        }
+
         // 主题先解析：Study 模式带了 slug 但解析失败（主题刚被改名/删除，前端还持
         // 旧 slug）要**报错**，消息不落库。与 run_turn 同口径——以前这里把 NotFound
         // 吞成 None，用户消息静默落进工作区级 `.hub/chats/`（首页日常问答的位置），
@@ -270,6 +286,8 @@ impl AgentService {
                 // 句柄要在用户消息落库**之前**就位：登记晚了的话，「发出去的瞬间就删」
                 // 这类操作能从窗口里钻过去
                 chat_id: req.chat_id.clone(),
+                // 主题级的整理（改名/删主题）要能问「这个主题下有没有回合在跑」
+                topic_slug: topic.as_ref().map(|t| t.slug()),
             },
         );
 
@@ -355,6 +373,19 @@ impl AgentService {
                 started_at_ms: now.duration_since(h.started).as_millis() as i64,
             })
             .collect()
+    }
+
+    /// 某个主题（其名下任意对话）是否还有回合正在跑。
+    ///
+    /// topic_update / topic_delete 动的是整个主题目录：回合里留的快照目录
+    /// 消姍后，下一次追加会把目录原样建回来（append_jsonl 开头就是
+    /// create_dir_all）——改名把历史从中间勈成两份，删除的主题以半截
+    /// 残件复活并被自动认领成新主题。
+    pub fn is_topic_running(&self, slug: &str) -> bool {
+        self.turns
+            .lock()
+            .values()
+            .any(|h| h.topic_slug.as_deref() == Some(slug))
     }
 
     /// 某条对话是否还有回合正在跑（落库进行中）。
@@ -479,6 +510,7 @@ impl AgentService {
             mode,
             turn_id: turn_id.clone(),
             chat_id: req.chat_id.clone(),
+            cancel: cancel.clone(),
         };
 
         let mut total_in = 0u32;
@@ -869,6 +901,7 @@ impl AgentService {
     /// 越权申请：agent 想访问工作区之外的文件，等用户点头。
     ///
     /// 批准粒度是**目录**：用户同意后整个目录长期有效，不再反复打断。
+    #[allow(clippy::too_many_arguments)]
     pub async fn request_sandbox(
         &self,
         core: &Arc<AppCore>,
@@ -876,6 +909,7 @@ impl AgentService {
         path: &std::path::Path,
         mode: &str,
         reason: &str,
+        cancel: &AtomicBool,
     ) -> bool {
         if !core.needs_escalation(path) {
             return true;
@@ -897,12 +931,23 @@ impl AgentService {
             pre_approved: false,
         });
 
-        let allowed = match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
-            Ok(Ok(allow)) => allow,
-            _ => {
+        // 等待也要盯着「停止」（与 is_allowed 同一套）：这个 future 挂在工具
+        // run 的深处，execute_tool 在取消时丢弃工具 future——不在这里自己摘槽的话，
+        // approvals 表里的条目就随丢弃失去清理时机，每次「沙箱弹窗开着时点停止」
+        // 永久泄漏一个。
+        let allowed = tokio::select! {
+            biased;
+            _ = wait_cancel(cancel) => {
                 self.approvals.lock().remove(&request_id);
                 false
             }
+            r = tokio::time::timeout(APPROVAL_TIMEOUT, rx) => match r {
+                Ok(Ok(allow)) => allow,
+                _ => {
+                    self.approvals.lock().remove(&request_id);
+                    false
+                }
+            },
         };
         if allowed {
             if let Err(e) = core.approve_root(&root) {
@@ -935,7 +980,11 @@ pub async fn complete_once(
         tools: Vec::new(),
         temperature: 0.2,
         max_tokens,
-        reasoning: profile.reasoning,
+        // **不**带档案的思考强度：判分/抽取这类一次性结构化输出不需要思考，而
+        // Anthropic 的思考预算计入 max_tokens——判分入口传 4096 时思考被夹到
+        // 4095、正文只剩极限空间，回复近空 → extract_json 报「没有按要求返回
+        // JSON」，判分必失败（profile_test 同款坑，那边连 ReasoningConfig 都换了默认值）。
+        reasoning: crate::config::ReasoningConfig::default(),
         cancel: Arc::new(AtomicBool::new(false)),
         // 这条路径只做一次结构化输出，不带图片
         attachments: Attachments::disabled(),

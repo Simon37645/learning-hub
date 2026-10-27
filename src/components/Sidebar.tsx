@@ -199,7 +199,11 @@ export function Sidebar() {
 
     const openChat = (chatId: string) => {
       void (async () => {
-        if (topic?.slug !== t.slug) await openTopic(t.slug);
+        // openTopic 被作废（期间用户点了别的主题/首页/工坊）就停手：接着
+        // loadChat 的话，chatSlug 会记成作废那一刻的环境主题，之后在这条
+        // 对话里发消息会把 topicSlug 发成那个主题——消息写进错误主题目录下
+        // 的同名 jsonl、读不到原历史，同 id 对话劈成两份文件
+        if (topic?.slug !== t.slug && !(await openTopic(t.slug))) return;
         await loadChat(chatId, "study");
       })();
     };

@@ -49,8 +49,17 @@ impl LlmProvider for OpenAiProvider {
             )),
         );
         body.insert("stream".into(), json!(true));
-        body.insert("temperature".into(), json!(req.temperature));
-        body.insert("max_tokens".into(), json!(req.max_tokens));
+        // OpenAI 官方推理模型（o1 / o3 / o4-mini / gpt-5 系）只认改名后的
+        // max_completion_tokens，且 temperature/top_p 只接受默认值 1——照常发
+        // max_tokens + 0.5 的话每一轮请求都是 400（is_transient 对 400 不重试，
+        // 换一条对话也一样）。第三方网关普遍兼容旧字段，所以按模型名识别，
+        // 只对官方系列切换。
+        if is_openai_reasoning_model(&req.model) {
+            body.insert("max_completion_tokens".into(), json!(req.max_tokens));
+        } else {
+            body.insert("temperature".into(), json!(req.temperature));
+            body.insert("max_tokens".into(), json!(req.max_tokens));
+        }
 
         // 思考强度：只有用户明确打开、且风格允许时才写进请求体
         apply_reasoning_openai(&mut body, &req.reasoning, self.profile.kind);
@@ -235,7 +244,18 @@ pub fn to_openai_messages(
         out.push(json!({ "role": "system", "content": system }));
     }
 
+    // 带图工具结果的 sidecar user 消息（见 Role::Tool 分支）要**攒到这一批连续
+    // tool 消息发完之后**再放：OpenAI 硬校验「tool 消息必须紧跟带 tool_calls 的
+    // assistant、全部 tool 结果必须连续排在任何 user 消息之前」，user 插在
+    // tool 结果中间就是 400——同一 assistant 的多个调用里带图的不是最后一个时
+    // 必然命中，且历史形状固定（配对完好，清洗器不清它），这条对话在这个
+    // 档案下从此每一轮都 400。
+    let mut pending_images: Vec<Value> = Vec::new();
+
     for m in messages {
+        if m.role != Role::Tool && !pending_images.is_empty() {
+            out.append(&mut pending_images);
+        }
         match m.role {
             Role::System => {}
             Role::User => {
@@ -290,8 +310,9 @@ pub fn to_openai_messages(
                         "content": content,
                     }));
                     // OpenAI 的 tool 消息只能放字符串，**塞不进图片**。
-                    // 所以带图的工具结果后面再补一条 user 消息专门放图——
-                    // 这是各家 agent 通行的绕法，模型据此把「结果」和「图」对上号。
+                    // 所以带图的工具结果补一条 user 消息专门放图——各家 agent
+                    // 通行的绕法。先攒进 pending_images，等这批连续的 tool 结果
+                    // 全部发完再放（顺序规则见上面的说明）。
                     if !images.is_empty() {
                         let label = images
                             .iter()
@@ -314,12 +335,13 @@ pub fn to_openai_messages(
                                 }
                             }
                         }
-                        out.push(json!({ "role": "user", "content": parts }));
+                        pending_images.push(json!({ "role": "user", "content": parts }));
                     }
                 }
             }
         }
     }
+    out.append(&mut pending_images);
     out
 }
 
@@ -369,6 +391,21 @@ fn user_content_parts(
 /// - `effort = off` 时完全不写（默认，保证最大兼容）
 /// - 风格为 QwenThinking 时改发 `enable_thinking`（通义千问的写法）
 /// - 风格为 None 时不发
+/// 模型名是不是 OpenAI **官方**推理模型（o1 / o3 / o4-mini / gpt-5 系）。
+///
+/// 这批模型在 Chat Completions 上拒绝 `max_tokens`（要用 `max_completion_tokens`）、
+/// 拒绝自定义 `temperature`（只认默认 1）。第三方网关的自定义名字极少撞上这些
+/// 前缀，误判的代价也只是改发一个兼容性更好的新字段。
+fn is_openai_reasoning_model(model: &str) -> bool {
+    // 允许 "openai/o3" 这类带组织前缀的写法：看最后一段
+    let m = model.trim().to_ascii_lowercase();
+    let m = m.rsplit('/').next().unwrap_or(&m);
+    let o_series = (m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4-"))
+        // 排除 "o11" 这类巧合：o 系名字后面要么结束、要么跟 '-'
+        && (m.len() == 2 || !m.as_bytes()[2].is_ascii_digit());
+    o_series || m.starts_with("gpt-5")
+}
+
 fn apply_reasoning_openai(
     body: &mut Map<String, Value>,
     cfg: &crate::config::ReasoningConfig,
@@ -512,6 +549,62 @@ mod tests {
         assert_eq!(to_openai_messages("sys", &plain, &att, true).len(), 3);
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// OpenAI 硬校验「全部 tool 结果必须连续排在任何 user 消息之前」：
+    /// 同一条 assistant 的多个调用里，带图的**不是最后一个**时，sidecar user
+    /// 消息必须攒到这批 tool 消息发完之后——插在中间是 400，且历史形状固定，
+    /// 这条对话在这个档案下从此每一轮都 400。
+    #[test]
+    fn image_sidecar_waits_until_the_tool_run_ends() {
+        let tmp = std::env::temp_dir().join(format!("lh-oai-shot2-{}", uuid::Uuid::new_v4()));
+        let att = crate::agent::attachment::Attachments::new(&tmp);
+        let png: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+            v.extend_from_slice(b"page-3");
+            v
+        };
+        let stored = att.save("p3.png", &png).unwrap();
+        let shot = crate::agent::message::ToolImage {
+            path: stored.rel.clone(),
+            media_type: "image/png".into(),
+            name: "讲义.pdf 第 3 页".into(),
+            bytes: png.len() as u64,
+            width: Some(800),
+            height: Some(600),
+        };
+
+        let msgs = vec![
+            ChatMessage::user("对比这两页"),
+            ChatMessage::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::ToolUse { id: "call_1".into(), name: "pdf_screenshot".into(), input: json!({"page": 3}) },
+                    ContentBlock::ToolUse { id: "call_2".into(), name: "pdf_screenshot".into(), input: json!({"page": 4}) },
+                ],
+            ),
+            // 带图的是**第一个**结果：sidecar 不能插在两个 tool 之间
+            ChatMessage::tool_result_with("call_1", "第 3 页", false, vec![shot]),
+            ChatMessage::tool_result("call_2", "第 4 页", false),
+        ];
+        let out = to_openai_messages("", &msgs, &att, true);
+        let roles: Vec<&str> = out.iter().filter_map(|v| v["role"].as_str()).collect();
+        assert_eq!(
+            roles,
+            vec!["user", "assistant", "tool", "tool", "user"],
+            "sidecar user 要等全部 tool 结果发完：{out:?}"
+        );
+    }
+
+    #[test]
+    fn official_reasoning_models_get_renamed_params() {
+        // o 系与 gpt-5 系：判定要命中，且能排除 "o11" 这类巧合
+        for m in ["o1", "o1-mini", "o1-preview", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "openai/o3"] {
+            assert!(is_openai_reasoning_model(m), "{m} 应判为官方推理模型");
+        }
+        for m in ["gpt-4o", "deepseek-chat", "qwen-max", "o11", "claude-3-5-sonnet"] {
+            assert!(!is_openai_reasoning_model(m), "{m} 不该被判为官方推理模型");
+        }
     }
 
     /// 带图消息：content 变 parts 数组，图排在文字前面（模型指代更稳）。

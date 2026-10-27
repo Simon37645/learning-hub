@@ -133,6 +133,9 @@ pub async fn topic_update(
     patch: TopicPatch,
 ) -> AppResult<TopicDetail> {
     let core = state.0.clone();
+    // 互斥门包住整段（本函数无 await）：与回合注册（start_turn）互斥，检查通过后
+    // 不会再有新回合插进来落库
+    let _gate = core.agent.chat_exclusive();
     let mut topic = core.workspace().resolve(&slug)?;
 
     if let Some(d) = patch.description.clone() {
@@ -166,6 +169,14 @@ pub async fn topic_update(
             if topic.dir.file_name().map(|n| n.eq_ignore_ascii_case(&wanted)).unwrap_or(false) {
                 topic.meta.name = new_name;
             } else {
+                // 目录要被搬走：回合里留的是旧目录快照，追加时 append_jsonl 会把
+                // 旧目录原样建回来——这轮剩余消息全部落进幽灵目录，改名后的主题
+                // 里这条对话的历史从中间劈成两个文件。等回合收尾再改。
+                if core.agent.is_topic_running(&topic.slug()) {
+                    return Err(AppError::invalid(
+                        "这个主题里还有对话正在运行，等它跑完（或点「停止」）再改名",
+                    ));
+                }
                 let target = crate::paths::unique_child(&parent, &wanted);
                 std::fs::rename(&topic.dir, &target)?;
                 topic.dir = target;
@@ -187,10 +198,26 @@ pub async fn topic_update(
 #[tauri::command]
 pub async fn topic_delete(state: State<'_, AppState>, slug: String) -> AppResult<String> {
     let core = state.0.clone();
+    // 互斥门包住整段（本函数无 await）：检查与搬目录之间不许有回合插进来
+    let _gate = core.agent.chat_exclusive();
     let ws = core.workspace();
     let topic = ws.resolve(&slug)?;
     let children = ws.descendants(&topic);
     let trash = ws.root.join(crate::domain::topic::DIR_INTERNAL).join("trash");
+
+    // 父主题与子主题的目录都要被搬走：哪个里面有回合在跑，回合的下一次追加
+    // 就会把那个目录建回来——被删的主题以「只有 .hub/chats 半截对话」的形式
+    // 复活，还会被 Workspace::list 自动认领成新主题出现在侧栏。
+    let busy = std::iter::once(&topic)
+        .chain(children.iter())
+        .find(|t| core.agent.is_topic_running(&t.slug()))
+        .cloned();
+    if let Some(t) = busy {
+        return Err(AppError::invalid(format!(
+            "「{}」里还有对话正在运行，等它跑完（或点「停止」）再删除",
+            t.meta.name
+        )));
+    }
 
     let dest = store::move_to_trash(&trash, &topic.dir)?;
     core.emit_topics(crate::agent::event::TopicsEvent::Deleted {

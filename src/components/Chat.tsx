@@ -772,7 +772,14 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
     setText("");
     setAttachments([]);
     setImages([]);
-    await send(t, attachments, pics);
+    const ok = await send(t, attachments, pics);
+    if (!ok) {
+      // send 被挡回（发送在途等竞态窗口）：把内容放回输入框，别静默吞掉。
+      // 窗口里用户可能又打了字——只在框还空着时回填，不覆盖新输入。
+      setText((prev) => (prev ? prev : t));
+      setAttachments((prev) => (prev.length ? prev : attachments));
+      setImages((prev) => (prev.length ? prev : images));
+    }
   }
 
   /**

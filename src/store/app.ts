@@ -220,7 +220,9 @@ interface AppStore {
   setView: (v: ViewName) => void;
   /** 切换专注模式：F11 与界面上的按钮都走这里（窗口全屏与样式在同一个动作里改，避免两边不同步） */
   setZen: (on: boolean) => void;
-  openTopic: (slug: string) => Promise<void>;
+  /** 打开主题。返回 false = 没打开成（响应被作废/打开失败）——调用方接下来
+   *  基于环境态（topic/chatSlug）做的后续动作（比如 loadChat 某条对话）必须停手 */
+  openTopic: (slug: string) => Promise<boolean>;
   leaveTopic: () => void;
   /** 窗口回到前台时轻量重拉当前主题的文件清单（见实现处的说明） */
   refreshTopicFiles: () => Promise<void>;
@@ -262,7 +264,9 @@ interface AppStore {
   forkChat: (chatId: string, slug?: string | null, mode?: AgentMode) => Promise<string | null>;
   /** 把一条对话移进回收站 */
   deleteChat: (chatId: string, slug?: string | null, mode?: AgentMode) => Promise<void>;
-  send: (text: string, attachments?: string[], images?: ImageUpload[]) => Promise<void>;
+  /** 发送。返回 false = 没收下（发送在途/有轮次在跑被挡、或发送失败）——
+   *  调用方该把内容放回输入框，别静默吞掉用户打的字 */
+  send: (text: string, attachments?: string[], images?: ImageUpload[]) => Promise<boolean>;
   /** 排队发送（Alt+Enter：这一轮跑完再发）；`interrupt` 为真时顺便打断当前一轮（Ctrl+Enter）。
    *  当前没有在跑就直接发。返回 false = 没收下（已有一条排队时拒绝，调用方该把内容留在输入框里）。 */
   queueSend: (
@@ -509,8 +513,11 @@ export const useApp = create<AppStore>((set, get) => ({
     set({ topicLoading: true });
     try {
       const detail = await api.topicOpen(slug);
-      // 期间用户又点了别的主题：这次响应作废，别把旧主题的数据糊上去
-      if (seq !== topicOpenSeq) return;
+      // 期间用户又点了别的主题（或点了首页/工坊/日程——那些也会作废在途的
+      // openTopic）：这次响应作废，别把旧主题的数据糊上去。返回 false 让
+      // 调用方知道环境态已经不属于这个主题，别接着 loadChat 旧主题的对话
+      //（不然 chatSlug 记成作废时的环境主题，发送会写错目录）。
+      if (seq !== topicOpenSeq) return false;
       const chats = detail.chats ?? [];
       set({
         topic: detail,
@@ -532,9 +539,11 @@ export const useApp = create<AppStore>((set, get) => ({
       void get().loadChats(detail.slug);
       void get().loadCards();
       void get().loadTasks();
+      return true;
     } catch (e) {
       set({ topicLoading: false });
       get().toast("error", errText(e));
+      return false;
     }
   },
 
@@ -905,14 +914,18 @@ export const useApp = create<AppStore>((set, get) => ({
     const t = text.trim();
     const pics = images ?? [];
     // 只贴图不打字是合法的（「这张图里的第三行是什么」可以省略）
-    if (!t && pics.length === 0) return;
+    if (!t && pics.length === 0) return false;
     // 双发竞态：streaming 要等 turn_started 事件回来才置上，快速连按两次
     // 回车会双双穿过守卫、在同一对话里并发跑两个轮次。sendInFlight 在
-    // invoke 返回前就同步置位，把窗口关死。
-    if (sendInFlight) return;
+    // invoke 返回前就同步置位，把窗口关死。两个挡回都带提示并返回 false——
+    // 静默吞字违背「别把用户打的字弄丢」，调用方（Composer）会把内容放回输入框。
+    if (sendInFlight) {
+      get().toast("info", "上一条还在发送中，等一下再按");
+      return false;
+    }
     if (get().streaming) {
       get().toast("info", "上一轮还在进行中，等它跑完再发");
-      return;
+      return false;
     }
     sendInFlight = true;
     // 发到哪按**这条对话自己的归属**算（chatMode/chatSlug 随 loadChat/newChat 走），
@@ -964,10 +977,14 @@ export const useApp = create<AppStore>((set, get) => ({
           streaming: { turnId: res.turnId, chatId: cid, text: "", thinking: "" },
         };
       });
+      // moved（期间切走）也算成功：消息已落库到它自己的对话、轮次在跑，
+      // flushQueued 要据此清队列，不能靠界面消息列表有没有变长来判断
+      return true;
     } catch (e) {
       // 期间切走了：错误别写进新对话的 chatError（那是另一条对话界面的状态），toast 提一句就够
       if (get().chatId === chatId) set({ chatError: errText(e) });
       get().toast("error", errText(e));
+      return false;
     } finally {
       sendInFlight = false;
     }
@@ -1003,10 +1020,10 @@ export const useApp = create<AppStore>((set, get) => ({
     const pics = images ?? [];
     if (!t && pics.length === 0) return false;
     const st = get();
-    // 没在跑：跟普通发送一样（Ctrl+Enter 也就等于发送）
+    // 没在跑：跟普通发送一样（Ctrl+Enter 也就等于发送）。
+    // send 被挡回/失败时如实返回 false——Composer 收到 false 会把内容留在输入框
     if (!st.streaming) {
-      await st.send(t, attachments, pics);
-      return true;
+      return await st.send(t, attachments, pics);
     }
     if (st.queued) {
       get().toast("info", "已有一条排队的消息（输入框下面那条），等它发出后再排；点凭证条上的 × 可以取消它");
@@ -1056,17 +1073,26 @@ export const useApp = create<AppStore>((set, get) => ({
   async flushQueued(endedTurnId) {
     const q = get().queued;
     if (!q) return;
-    // 不是在等这一轮：留着
-    if (endedTurnId && q.afterTurnId && q.afterTurnId !== endedTurnId) return;
+    // 不是在等这一轮：先看「等的那一轮」还跑不跑。它可能早已收尾（被下面的
+    // 守卫挡回来之后，任何后续轮次的收尾都不会再带它的 turn_id）——那之后
+    // 再拿 afterTurnId 当闸的话，队列就永久滞留了（凭证条一直承诺「这一轮结束
+    // 后自动发送」却永不发送，只能靠再切一次对话解锁）。还在跑就继续等，
+    // 已经不在了就落到下面的通用条件（切走/在跑的守卫继续兜底）。
+    if (endedTurnId && q.afterTurnId && q.afterTurnId !== endedTurnId) {
+      const waiting = get().streaming;
+      if (waiting && waiting.turnId === q.afterTurnId) return;
+    }
     // 用户切到别的对话去了：留着，回到那条对话时再发（loadChat 会再调一次）
     if (q.chatId && q.chatId !== get().chatId) return;
     // 它那条对话又有一轮在跑（比如用户手动发了）：再等等
     const running = get().streaming;
     if (running && (!q.chatId || running.chatId === q.chatId)) return;
-    const before = get().messages.length;
-    set({ chatError: null });
-    await get().send(q.text, q.attachments, q.images);
-    if (get().messages.length > before) set({ queued: null });
+    // 按 send 的「收下了没有」清队列：发出去（含期间切走——消息已落库到
+    // 原对话、轮次在跑）才清，被挡回或失败都留着。以前用「messages.length
+    // 有没有变长」判断，切走窗口里那是另一条对话的长度：发送成功却留着
+    // （回到原对话自动重发一份）、发送失败反而清掉（排队内容无声丢失）。
+    const ok = await get().send(q.text, q.attachments, q.images);
+    if (ok) set({ queued: null });
   },
 
   async approve(allow, always) {
@@ -1720,7 +1746,12 @@ async function bootstrapStore(
             localStorage.setItem("hub.sidebarWidth", String(ui.sidebarWidth));
           }
           if (typeof ui.viewerWidth === "number" && ui.viewerWidth >= 280) {
-            set({ viewerWidth: ui.viewerWidth });
+            // 走分界线拖动同一套钳制（给中间对话/工作台留 400px、上限 1200）：
+            // 窗口尺寸不持久化（tauri.conf 固定 1480×940），上次把浏览器拖宽后
+            // 关窗，这次原样恢复会把中间栏挤到几十像素、.viewer 不收缩还把
+            // 对话区整个顶出窗口（overflow: clip 连滚动条都不给）。侧栏宽度的
+            // 恢复有完整上下限校验，这里漏了是疏忽不是设计。
+            get().setViewerWidth(ui.viewerWidth);
           }
         }
         if (ui.topicTab === "workbench" || ui.topicTab === "chat") {

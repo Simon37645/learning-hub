@@ -128,7 +128,14 @@ describe("Markdown 所见即所得预览", () => {
     const { parent, handle } = mount("");
     typeText(handle, "```py");
     startCompletion(handle.view);
-    await vi.waitFor(() => expect(completionStatus(handle.view.state)).toBe("active"));
+    // 补全激活是异步的（CodeMirror 要等补全源返回）。这里不能吃默认的 1s 超时：
+    // 它是全文件唯一挂在异步竞态上的断言，构建机满载（vitest 与 cargo 并跑）时
+    // 墙钟被挤爆，实测这一用例能从 ~100ms 涨到 4s+，1s 等不到就直接撞 testTimeout。
+    // 空闲时激活在几十毫秒内完成，放宽上限不影响速度，只是不再对负载过敏。
+    await vi.waitFor(() => expect(completionStatus(handle.view.state)).toBe("active"), {
+      timeout: 20_000,
+      interval: 25,
+    });
     press(handle, "Tab");
     expect(handle.view.state.doc.toString()).toBe("```python");
     press(handle, "Enter");

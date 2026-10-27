@@ -34,6 +34,17 @@ pub struct AppCore {
     skills_cache: RwLock<Vec<crate::skills::Skill>>,
     /// MCP 服务器的连接状态
     mcp_state: RwLock<Vec<McpEntry>>,
+    /// mcp_reload 的互斥门：reload 是「take 旧状态 → 逐个起子进程握手 → 整体写回」
+    /// 的长过程（秒级到几十秒），全程无锁的话两个并发调用（面板保存配置、工坊发布、
+    /// 手机的远程命令都可能触发）会对同一批服务器各起一份子进程并互相覆盖登记——
+    /// 落败一代的子进程没人 shutdown，不读 stdin 的常驻型服务器直接成孤儿。
+    /// async 环境里要等这把门，所以用 tokio 的 Mutex。
+    mcp_reload_gate: tokio::sync::Mutex<()>,
+    /// update_config 的互斥门：「读快照 → 改 → 落盘 → 写回」必须整段原子，
+    /// 不然两个并发调用都从同一快照出发，后落盘者把先落盘者的字段改回旧值
+    /// （内存与磁盘一致地丢一次改动）。save 是同步写、锁里没有 await，
+    /// parking_lot 即可（见 AGENTS.md「别在持锁时 await」）。
+    config_write_gate: parking_lot::Mutex<()>,
     /// 长期记忆（全局 + 各主题），内存里有缓存，磁盘是唯一真相
     memory: RwLock<MemoryStore>,
     /// 移动端远程控制（迷你 HTTP 服务 + 事件扇出）。没打开时不监听任何端口
@@ -110,6 +121,8 @@ impl AppCore {
             approved_roots: RwLock::new(approved),
             skills_cache: RwLock::new(Vec::new()),
             mcp_state: RwLock::new(Vec::new()),
+            mcp_reload_gate: tokio::sync::Mutex::new(()),
+            config_write_gate: parking_lot::Mutex::new(()),
             memory: RwLock::new(MemoryStore::new()),
             remote: Arc::new(crate::remote::RemoteService::new()),
         })
@@ -156,6 +169,10 @@ impl AppCore {
     /// 改配置并落盘。**先写盘成功再提交进内存**：反过来的话，保存失败（磁盘满 /
     /// 安全软件锁文件）时命令报了错，运行态却已经变了样，重启又全回退。
     pub fn update_config(&self, f: impl FnOnce(&mut AppConfig)) -> AppResult<AppConfig> {
+        // 整段持锁（见 config_write_gate 字段说明）：「读快照 → 改 → 落盘 → 写回」
+        // 是一个原子单元，两个并发调用不许交错。本函数全程同步（save 是普通 fs 写），
+        // 持 parking_lot 锁不违反「别在持锁时 await」。
+        let _gate = self.config_write_gate.lock();
         let mut next = self.config.read().clone();
         f(&mut next);
         next.save(&self.config_path)?;
@@ -404,6 +421,10 @@ impl AppCore {
     ///
     /// 连接失败不会中断其它服务器——一个坏插件不该拖垮整个工具集。
     pub async fn mcp_reload(&self) -> Vec<McpStatusEntry> {
+        // 互斥门贯穿整个 reload（见 mcp_reload_gate 字段说明）。后来的调用方在这里
+        // 排队等上一轮做完：自己的那轮会 shut down 上一轮的连接、重新登记，
+        // 最终状态一致，不会出现两代连接并存的中间态。
+        let _gate = self.mcp_reload_gate.lock().await;
         // 先关掉旧的
         let old: Vec<McpEntry> = std::mem::take(&mut *self.mcp_state.write());
         for entry in old {

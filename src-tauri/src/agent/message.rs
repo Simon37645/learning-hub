@@ -62,6 +62,16 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    /// Anthropic 的 redacted_thinking：服务端把这段思考隐去了，只给一段加密的
+    /// `data`（没有明文、没有签名，流式时也没有 delta——内容在 content_block_start
+    /// 一次给全）。官方要求这种块**原样传回**后续请求：丢掉的话，若它恰好在
+    /// 「最后一条 assistant」（工具循环里的那条）里，下一轮请求会被 400 拒收
+    /// （thinking 开启时最后一条 assistant 必须以 thinking/redacted_thinking 开头），
+    /// 历史不变、重发同样 400，这条对话在思考模式下永久卡死。
+    /// OpenAI 兼容端不认识这种块，编码时按无内容处理。
+    RedactedThinking {
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -340,6 +350,8 @@ pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> u32 {
                 .map(|b| match b {
                     ContentBlock::Text { text } => estimate_tokens(text),
                     ContentBlock::Thinking { text, .. } => estimate_tokens(text),
+                    // 加密思考块按明文同量级估（它的 token 数与解出来的思考等量）
+                    ContentBlock::RedactedThinking { data } => estimate_tokens(data),
                     ContentBlock::Image { width, height, .. } => {
                         crate::agent::attachment::estimate_image_tokens(*width, *height)
                     }

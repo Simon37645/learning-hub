@@ -81,6 +81,10 @@ pub enum StreamEvent {
     /// 思考块的签名（Anthropic 的 signature_delta）。回传思考块时必须原样带上，
     /// 缺了服务商会 400。
     ThinkingSignature { index: usize, sig: String },
+    /// Anthropic 的 redacted_thinking 块：服务端把这段思考隐去了，没有 delta，
+    /// 加密的 data 在 content_block_start 里一次给全。必须原样落库并回传
+    /// （见 `ContentBlock::RedactedThinking`），否则思考模式下这条对话会被 400 卡死。
+    RedactedThinking { index: usize, data: String },
     /// 工具调用的增量片段，按 `index` 归并
     ToolCall {
         index: usize,

@@ -172,7 +172,18 @@ export function Settings() {
   return (
     <div className="settings">
       <nav className="settings-nav">
-        <button className="btn sm settings-back" onClick={() => setView("home")}>
+        <button
+          className="btn sm settings-back"
+          onClick={() => {
+            // 与侧栏「首页」按钮同一条路（leaveTopic + setView）：光 setView("home")
+            // 的话，上一条对话的身份还挂着——从工坊进设置再返回，首页就挂着工坊
+            // 对话（消息列表、chatMode 全是工坊的），在这里发消息会继续写进那条
+            // 工坊对话，而它并不出现在首页的对话清单里。leaveTopic 把对话身份
+            // 一并清掉，回首页就是「新起一条」。
+            useApp.getState().leaveTopic();
+            setView("home");
+          }}
+        >
           <Icon name="arrow-left" size={13} /> 返回工作区
         </button>
         {NAV.map((g) => (

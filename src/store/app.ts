@@ -484,10 +484,13 @@ export const useApp = create<AppStore>((set, get) => ({
       get().toast("info", "设置与工坊只能在电脑上改（远程是拿来用的）");
       return;
     }
-    set({ view: v });
+    // 离开主题视图的导航（日程/设置）也要作废在途的 openTopic：
+    // 晚到的主题响应会把 view 强行拉回 topic（同 leaveTopic 里的说明）
     if (v !== "topic") {
+      topicOpenSeq++;
       void api.viewerSetVisible(get().viewer.visible);
     }
+    set({ view: v });
   },
 
   setZen(on) {
@@ -561,6 +564,11 @@ export const useApp = create<AppStore>((set, get) => ({
     // 在这里发消息会把内容追加进一条看不见历史的对话（它属于刚才那个主题）。
     // 序号 +1 把还在路上的 loadChat 响应作废，别让它把刚清掉的 chatId 又写回来。
     chatSwitchSeq++;
+    // 姐妹路径：在途的 openTopic 也得作废（它的守卫用的是 topicOpenSeq）。
+    // 不作废的话，「点开主题 → 立刻点首页」会让晚到的 topicOpen 响应把界面
+    // 强行拉回主题视图、把刚清掉的对话身份又写回去——beta.3 修了 loadChat
+    // 这条路，漏了 openTopic 这条。
+    topicOpenSeq++;
     set({
       view: "home",
       topic: null,
@@ -764,7 +772,10 @@ export const useApp = create<AppStore>((set, get) => ({
       get().toast("info", "工坊只能在电脑上开");
       return;
     }
-    // 进工坊也不清 streaming：正在跑的工坊对话要保持「有停止键」的状态
+    // 进工坊也不清 streaming：正在跑的工坊对话要保持「有停止键」的状态。
+    // 同时作废在途的 openTopic（同 leaveTopic 里的说明）：不然晚到的主题响应
+    // 会把 view 拉回 topic，工坊刚设好的 chatMode 也被覆盖
+    topicOpenSeq++;
     set({
       view: "studio",
       topic: null,
@@ -929,18 +940,33 @@ export const useApp = create<AppStore>((set, get) => ({
         images: pics,
         mode: studio ? "studio" : "study",
       });
-      set((s) => ({
-        messages: [...s.messages, res.message],
-        chatError: null,
-        activities: [],
-        chatSlug: slug,
-        chatMode: studio ? "studio" : "study",
-        // 乐观占位：不等 turn_started 事件，输入框立刻进入「停止」态，
-        // 也让后续事件的 turn_id 守卫有东西可比
-        streaming: { turnId: res.turnId, chatId: cid, text: "", thinking: "" },
-      }));
+      set((s) => {
+        // await 期间用户可能已经切走（切对话 / 回首页 / 进工坊——远程桥一个往返
+        // 就有几百毫秒）：消息与对话归属都**不能**再写进当前界面。消息已落库到
+        // 它自己的对话，切回去 loadChat 会读到；归属写了会把「当前对话属于谁」
+        // 污染成发起时那条，下一次发送就会写进错误主题目录下的同名 jsonl
+        // （与 syncChatTail / 事件路径的「期间切走」守卫是同一竞态）。
+        // streaming 记录的是这一轮自己的归属（chatId = cid），照常设置，
+        // turn_started 事件来了也会对齐同一个值。
+        const moved = s.chatId !== cid;
+        return {
+          ...(moved
+            ? {}
+            : {
+                messages: [...s.messages, res.message],
+                activities: [],
+                chatError: null,
+                chatSlug: slug,
+                chatMode: studio ? ("studio" as const) : ("study" as const),
+              }),
+          // 乐观占位：不等 turn_started 事件，输入框立刻进入「停止」态，
+          // 也让后续事件的 turn_id 守卫有东西可比
+          streaming: { turnId: res.turnId, chatId: cid, text: "", thinking: "" },
+        };
+      });
     } catch (e) {
-      set({ chatError: errText(e) });
+      // 期间切走了：错误别写进新对话的 chatError（那是另一条对话界面的状态），toast 提一句就够
+      if (get().chatId === chatId) set({ chatError: errText(e) });
       get().toast("error", errText(e));
     } finally {
       sendInFlight = false;

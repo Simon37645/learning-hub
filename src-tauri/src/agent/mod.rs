@@ -45,6 +45,20 @@ use tokio::sync::{mpsc, oneshot};
 /// 等用户点「允许」的最长时间，超时按拒绝处理。
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// 每 150ms 看一眼「停止」标志（与流阶段的轮询同节奏）。
+///
+/// cancel 是个 AtomicBool，没有可 select 的信号量，等待方（审批弹窗、工具执行）
+/// 都用这个轮询包装把自己挂进 select。150ms 与流阶段一致：用户点「停止」后
+/// 半秒内收尾，感知上就是「立刻」。
+async fn wait_cancel(cancel: &AtomicBool) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+    }
+}
+
 /// 开始一轮对话的入参。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +124,13 @@ pub struct AgentService {
     approvals: Mutex<HashMap<String, ApprovalSlot>>,
     /// 本次运行内「始终允许」的工具
     always_allow: Mutex<HashSet<String>>,
+    /// 回合注册与「对话文件整理」互斥的门。
+    ///
+    /// start_turn 的「插句柄 + 落库用户消息」与 chat_delete / chat_move / chat_fork
+    /// 的「查在跑 + 搬文件」都要**整段持有**这把锁：两边都没有 await，同步锁就能把
+    /// check-then-act 窗口关死——光靠时点检查（beta.3）只能收窄，「删除方检查通过 →
+    /// start_turn 插进来并落库 → 文件被搬走」的交错仍会把删除的对话复活成残件。
+    gate: parking_lot::Mutex<()>,
 }
 
 impl Default for AgentService {
@@ -125,7 +146,16 @@ impl AgentService {
             turns: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
             always_allow: Mutex::new(HashSet::new()),
+            gate: parking_lot::Mutex::new(()),
         }
+    }
+
+    /// 拿「回合注册 / 对话整理」互斥门（见字段说明）。
+    ///
+    /// 调用方必须把「检查 + 落库/搬文件」整段包在 guard 作用域里；guard 不许跨
+    /// await（这几条路径本来就没有 await，start_turn 与那几个命令都是同步段落）。
+    pub fn chat_exclusive(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.gate.lock()
     }
 
     pub fn tool_names(&self) -> Vec<String> {
@@ -203,6 +233,33 @@ impl AgentService {
             }
         }
 
+        // 拿互斥门到函数结束：句柄登记、主题解析、用户消息落库、工坊侧车是一个
+        // 整体，期间 chat_delete / chat_move / chat_fork 不得插进文件操作（见
+        // `gate` 字段说明——这些命令也持同一把门）。
+        let _gate = self.chat_exclusive();
+
+        // 主题先解析：Study 模式带了 slug 但解析失败（主题刚被改名/删除，前端还持
+        // 旧 slug）要**报错**，消息不落库。与 run_turn 同口径——以前这里把 NotFound
+        // 吞成 None，用户消息静默落进工作区级 `.hub/chats/`（首页日常问答的位置），
+        // 而同一请求的回合又报「找不到主题」失败：消息落错位置，这条对话的历史
+        // 从此劈成主题目录与工作区两个文件，两份界面各只能读到一半。
+        let topic = match req.mode {
+            // 工坊没有主题：它的对话也是工作区级的
+            AgentMode::Studio => None,
+            AgentMode::Study => match req.topic_slug.as_deref() {
+                Some(s) if !s.trim().is_empty() => {
+                    let workspace = core.workspace();
+                    Some(workspace.resolve(s).map_err(|e| {
+                        AppError::other(format!(
+                            "这条对话所属的主题打不开了（{e}）。它可能刚被改名或删除，\
+                             请回到主题列表重新打开后再发。"
+                        ))
+                    })?)
+                }
+                _ => None,
+            },
+        };
+
         let turn_id = uuid::Uuid::new_v4().to_string();
         let cancel = Arc::new(AtomicBool::new(false));
         self.turns.lock().insert(
@@ -222,11 +279,6 @@ impl AgentService {
             ChatMessage::user(body)
         } else {
             ChatMessage::user_with_images(&body, image_blocks)
-        };
-        let topic = match req.mode {
-            // 工坊没有主题：它的对话也是工作区级的
-            AgentMode::Studio => None,
-            AgentMode::Study => resolve_topic_opt(&core, req.topic_slug.as_deref()),
         };
         // 插了句柄之后的两步落库都可能失败（磁盘满 / 权限）；任务还没 spawn，
         // 收尾清理不在后台那段里——失败就得自己把句柄摘掉，否则 turns 表里
@@ -511,6 +563,12 @@ impl AgentService {
                             Some(StreamEvent::ThinkingSignature { index, sig }) => {
                                 acc.thinking_part(index).signature = Some(sig);
                             }
+                            // Anthropic 的 redacted_thinking：服务端把这段思考隐去了，
+                            // 只给一段加密 data。不展示（没有明文），但要攒下来落库并
+                            // 原样回传——丢了之后这条对话在思考模式下会被 400 卡死。
+                            Some(StreamEvent::RedactedThinking { index, data }) => {
+                                acc.redacted.push((index, data));
+                            }
                             Some(StreamEvent::Finish(r)) => acc.finish = Some(r),
                             // 通道关闭 = provider 任务结束
                             None => break provider_task.await,
@@ -563,15 +621,25 @@ impl AgentService {
             let tool_calls = acc.tool_calls();
             let mut blocks: Vec<ContentBlock> = Vec::new();
             // 思考块按原顺序逐块落库，各带各的签名（没有签名的跳过：带不上
-            // 有效签名的思考块回放只会被服务商拒收）
-            for (_, part) in &acc.thinking {
-                if part.text.trim().is_empty() {
-                    continue;
+            // 有效签名的思考块回放只会被服务商拒收）。redacted_thinking 没有
+            // 明文与签名，但官方要求**原样传回**——按内容块序号与普通思考块
+            // 合并排序，保持服务商给出的原始顺序。
+            let mut thought_idx: Vec<usize> = acc.thinking.iter().map(|(i, _)| *i).collect();
+            thought_idx.extend(acc.redacted.iter().map(|(i, _)| *i));
+            thought_idx.sort_unstable();
+            thought_idx.dedup();
+            for i in thought_idx {
+                if let Some((_, part)) = acc.thinking.iter().find(|(j, _)| *j == i) {
+                    if part.text.trim().is_empty() {
+                        continue;
+                    }
+                    blocks.push(ContentBlock::Thinking {
+                        text: part.text.clone(),
+                        signature: part.signature.clone(),
+                    });
+                } else if let Some((_, data)) = acc.redacted.iter().find(|(j, _)| *j == i) {
+                    blocks.push(ContentBlock::RedactedThinking { data: data.clone() });
                 }
-                blocks.push(ContentBlock::Thinking {
-                    text: part.text.clone(),
-                    signature: part.signature.clone(),
-                });
             }
             if !acc.text.is_empty() {
                 blocks.push(ContentBlock::Text { text: acc.text.clone() });
@@ -648,7 +716,7 @@ impl AgentService {
                     }
                     return Err(AppError::Cancelled);
                 }
-                let result = self.execute_tool(&core, &ctx, &turn_id, tc).await;
+                let result = self.execute_tool(&core, &ctx, &turn_id, tc, &cancel).await;
                 let (content, is_error, images) = match result {
                     Ok(o) => (o.content, o.is_error, o.images),
                     Err(e) => (format!("工具执行失败：{e}"), true, Vec::new()),
@@ -676,12 +744,18 @@ impl AgentService {
     }
 
     /// 审批 + 执行单个工具调用，并把结果通过事件告诉前端。
+    ///
+    /// `cancel` 是这一轮的停止标志：等待审批与工具执行两个阶段都会盯着它
+    /// （见下面两处的 select）——否则「停止」在流阶段立刻生效、到了工具阶段
+    /// 却要干等审批超时（最长 600s）或工具自然结束（run_command 最长 600s），
+    /// 用户看到的就是「点了停止没反应」。
     async fn execute_tool(
         &self,
         core: &Arc<AppCore>,
         ctx: &ToolCtx,
         turn_id: &str,
         tc: &ToolCall,
+        cancel: &Arc<AtomicBool>,
     ) -> AppResult<registry::ToolOutput> {
         let Some(tool) = self.tools.read().get(&tc.name) else {
             let msg = format!(
@@ -710,7 +784,7 @@ impl AgentService {
         let risk = tool.risk();
 
         // --- 审批 ---
-        if !self.is_allowed(core, turn_id, tc, &summary, risk).await {
+        if !self.is_allowed(core, turn_id, tc, &summary, risk, cancel).await {
             let msg = format!(
                 "用户拒绝执行 {}({})。请换一种方式，或向用户说明为什么需要这个操作。",
                 tc.name, summary
@@ -741,7 +815,23 @@ impl AgentService {
         });
 
         let started = Instant::now();
-        let outcome = tool.run(ctx, tc.input.clone()).await;
+        // 工具执行本身感知不到「停止」（Tool::run 没有 cancel 通道，ToolCtx 也不带），
+        // 在这里包一层轮询：点了停止就把工具 future 就地丢弃——run_command / MCP
+        // 调用这类长工具不再拖满自己的超时（最长 600 秒）才收尾。被丢弃的工具可能
+        // 留下半截副作用（落盘类工具走 atomic_write，最多多一个临时文件）；
+        // tool_result 以「已被用户中止」落库，tool_use/tool_result 配对完好，
+        // 回合在下一个工具开头的检查点补齐剩余调用并正常收尾。
+        let fut = tool.run(ctx, tc.input.clone());
+        tokio::pin!(fut);
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                out = &mut fut => break out,
+                _ = wait_cancel(cancel) => {
+                    break Ok(registry::ToolOutput::err("已被用户中止"));
+                }
+            }
+        };
         let duration_ms = started.elapsed().as_millis() as u64;
 
         let view = match &outcome {
@@ -940,6 +1030,12 @@ pub fn extract_json<T: serde::de::DeserializeOwned>(text: &str) -> AppResult<T> 
 
 impl AgentService {
     /// 风险 → 是否需要问用户。
+    ///
+    /// `cancel`：这一轮的停止标志。等待审批的 select 里必须有这个分支——
+    /// 不然用户在弹窗开着时点「停止」，回合要干等 APPROVAL_TIMEOUT（600 秒）
+    /// 超时按拒绝处理才收尾，侧栏转圈不停、「停止」看上去点了没反应。
+    /// 取消按**拒绝**处理（回合随后的工具循环检查点会补齐 tool_result 并收尾），
+    /// 同时把弹窗从审批表里摘掉，之后用户再点弹窗会落空（前端本来就会收起它）。
     async fn is_allowed(
         &self,
         core: &Arc<AppCore>,
@@ -947,6 +1043,7 @@ impl AgentService {
         tc: &ToolCall,
         summary: &str,
         risk: Risk,
+        cancel: &Arc<AtomicBool>,
     ) -> bool {
         let mode = core.config_read().agent.permission_mode;
         if !risk.needs_approval(mode) {
@@ -975,13 +1072,24 @@ impl AgentService {
             },
         });
 
-        match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
-            Ok(Ok(allow)) => allow,
-            _ => {
+        let decision = tokio::select! {
+            biased;
+            // 用户点了「停止」：立刻按拒绝处理，别干等超时（见函数说明）
+            _ = wait_cancel(cancel) => {
                 self.approvals.lock().remove(&request_id);
                 false
             }
-        }
+            r = rx => match r {
+                Ok(allow) => allow,
+                // 回执端没了（slot 被别的路径摘掉）：按拒绝处理
+                Err(_) => false,
+            },
+            _ = tokio::time::sleep(APPROVAL_TIMEOUT) => {
+                self.approvals.lock().remove(&request_id);
+                false
+            }
+        };
+        decision
     }
 }
 
@@ -1001,6 +1109,7 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, budget_chars: usize) -> u
             .map(|b| match b {
                 ContentBlock::Text { text } => text.chars().count(),
                 ContentBlock::Thinking { text, .. } => text.chars().count(),
+                ContentBlock::RedactedThinking { data } => data.chars().count(),
                 ContentBlock::ToolUse { input, name, .. } => name.chars().count() + input.to_string().chars().count(),
                 ContentBlock::ToolResult { content, images, .. } => {
                     content.chars().count()
@@ -1058,6 +1167,9 @@ struct Accumulator {
     text: String,
     /// 思考块按内容块序号分开攒（顺序 = 首次出现的顺序）
     thinking: Vec<(usize, ThinkingPart)>,
+    /// Anthropic 的 redacted_thinking 块：没有 delta，内容在 content_block_start
+    /// 一次给全（加密 data）。与 thinking 一样按内容块序号攒，落库时按序号合并。
+    redacted: Vec<(usize, String)>,
     tools: Vec<ToolCall>,
     finish: Option<String>,
     /// 服务商在这条流里报的真实用量（可能为空）
@@ -1151,6 +1263,8 @@ fn context_breakdown(
                 ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
                     msg_tokens += est(text)
                 }
+                // 加密思考块按明文同量级估（它的 token 数与解出来的思考等量）
+                ContentBlock::RedactedThinking { data } => msg_tokens += est(data),
                 ContentBlock::Image { width, height, .. } => {
                     msg_tokens += crate::agent::attachment::estimate_image_tokens(*width, *height)
                 }
@@ -1276,7 +1390,66 @@ fn load_transcript(core: &AppCore, topic: Option<&Topic>, chat_id: &str) -> AppR
             None => {}
         }
     }
+    // 崩溃/强杀留下的配对孤儿在这里清掉：append 不是原子的，assistant(tool_use)
+    // 落库与 tool_result 落库之间隔着审批等待与工具执行（可达数十秒），进程死在
+    // 中间就是一条「有 tool_use 没回应」的残尾——之后这条对话**每一次**请求都被
+    // 服务商 400，且没有任何自愈路径（历史不变、重发同样 400）。读历史与发请求
+    // 走同一条路，所以界面看到的也是修复后的形状；盘上文件不动（坏行旁边本就有
+    // .bad 留底，历史保持「只追加」的简单性）。
+    drop_orphan_tool_pairs(&mut msgs);
     Ok(msgs)
+}
+
+/// 清掉历史里「tool_use / tool_result 配对断了」的孤儿。两条规则：
+///
+/// - **有 tool_use 没回应**：把没被任何 tool_result 回应的 tool_use 块从它的
+///   assistant 消息里摘掉，摘空了就丢掉整条 assistant——宁可少一个工具调用，
+///   也不能整条对话被 400；
+/// - **有 tool_result 没有对应的 tool_use**：整行丢掉。
+///
+/// 只清内存副本，不写盘。
+pub fn drop_orphan_tool_pairs(messages: &mut Vec<ChatMessage>) {
+    use crate::agent::message::Role;
+    // 第一遍：收集历史里出现过的全部 tool_use id 与已被回应的 tool_use id
+    let mut all_uses: std::collections::HashSet<String> = Default::default();
+    let mut answered: std::collections::HashSet<String> = Default::default();
+    for m in messages.iter() {
+        for b in &m.blocks {
+            if let ContentBlock::ToolUse { id, .. } = b {
+                all_uses.insert(id.clone());
+            }
+        }
+        if m.role == Role::Tool {
+            for b in &m.blocks {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                    answered.insert(tool_use_id.clone());
+                }
+            }
+        }
+    }
+    // 第二遍：摘掉没被回应的 tool_use（assistant 空了就丢），丢掉孤儿 tool_result
+    let mut kept: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    for mut m in messages.drain(..) {
+        if m.role == Role::Assistant {
+            m.blocks.retain(|b| match b {
+                ContentBlock::ToolUse { id, .. } => answered.contains(id),
+                _ => true,
+            });
+            if m.blocks.is_empty() {
+                continue;
+            }
+        } else if m.role == Role::Tool {
+            let orphan = m.blocks.iter().all(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => !all_uses.contains(tool_use_id),
+                _ => false,
+            });
+            if orphan {
+                continue;
+            }
+        }
+        kept.push(m);
+    }
+    *messages = kept;
 }
 
 fn append_transcript(
@@ -1355,6 +1528,63 @@ pub fn config_summary(cfg: &AppConfig) -> String {
 mod tests {
     use super::*;
     use crate::agent::message::Role;
+
+    /// 进程死在「assistant(tool_use) 落库」与「tool_result 落库」之间会留下配对
+    /// 孤儿，之后这条对话每次请求都被服务商 400。清孤儿的三条规则分别钉住：
+    /// 没回应的 tool_use 摘块（摘空丢整条）、孤儿 tool_result 丢行、正常配对不动。
+    #[test]
+    fn orphan_tool_pairs_are_dropped() {
+        let use_a = || ContentBlock::ToolUse {
+            id: "A".into(),
+            name: "viewer_read".into(),
+            input: serde_json::json!({}),
+        };
+        let use_b = || ContentBlock::ToolUse {
+            id: "B".into(),
+            name: "run_command".into(),
+            input: serde_json::json!({}),
+        };
+        // 形状一：A 有回应、B 没有（进程死在两个工具之间）——
+        // B 从 assistant 里摘掉，A 与它的结果原样保留
+        let mut msgs = vec![
+            ChatMessage::user("帮我查"),
+            ChatMessage::assistant(vec![use_a(), use_b()]),
+            ChatMessage::tool_result("A", "结果", false),
+        ];
+        drop_orphan_tool_pairs(&mut msgs);
+        assert_eq!(msgs.len(), 3);
+        assert!(matches!(msgs[1].blocks[0], ContentBlock::ToolUse { ref id, .. } if id == "A"));
+        assert_eq!(msgs[1].blocks.len(), 1, "没被回应的 B 要被摘掉");
+
+        // 形状二：整条 assistant 只有没被回应的 tool_use（进程死在工具调用后）——
+        // 摘空了连整条一起丢，历史收在上一轮的 tool_result 上（合法形状）
+        let mut msgs = vec![
+            ChatMessage::user("帮我查"),
+            ChatMessage::assistant(vec![use_a()]),
+            ChatMessage::tool_result("A", "结果", false),
+            ChatMessage::assistant(vec![use_b()]),
+        ];
+        drop_orphan_tool_pairs(&mut msgs);
+        assert_eq!(msgs.len(), 3, "尾端孤儿 assistant 要整条丢掉");
+        assert!(matches!(&msgs[2].blocks[0], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "A"));
+
+        // 形状三：孤儿 tool_result（对应的 tool_use 根本不在历史里）——整行丢
+        let mut msgs = vec![
+            ChatMessage::user("帮我查"),
+            ChatMessage::tool_result("幽灵", "结果", false),
+        ];
+        drop_orphan_tool_pairs(&mut msgs);
+        assert_eq!(msgs.len(), 1);
+
+        // 正常配对一动不动
+        let mut msgs = vec![
+            ChatMessage::user("帮我查"),
+            ChatMessage::assistant(vec![use_a()]),
+            ChatMessage::tool_result("A", "结果", false),
+        ];
+        drop_orphan_tool_pairs(&mut msgs);
+        assert_eq!(msgs.len(), 3);
+    }
 
     #[test]
     fn tool_args_parse_gracefully() {

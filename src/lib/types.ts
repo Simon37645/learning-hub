@@ -56,6 +56,12 @@ export type ContentBlock =
       height?: number | null;
     }
   | { type: "thinking"; text: string; /** Anthropic 思考块签名（回传时要原样带）；老消息没有 */ signature?: string | null }
+  | {
+      /** Anthropic 的 redacted_thinking：服务端把这段思考隐去了，只有加密 data。
+       *  界面不展示（没有明文），Rust 侧会把它原样回传给服务商 */
+      type: "redacted_thinking";
+      data: string;
+    }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | {
       type: "tool_result";

@@ -251,6 +251,10 @@ pub async fn chat_fork(
     mode: Option<String>,
 ) -> AppResult<String> {
     let core = state.0.clone();
+    // 互斥门包住「检查 + 整份读写」全段（本函数无 await，同步锁即可）：
+    // 不然「检查通过 → start_turn 插进来落库 → 文件被复制」的交错会把
+    // 半截历史复制进新对话
+    let _gate = core.agent.chat_exclusive();
     ensure_safe_chat_id(&chat_id)?;
     // 分叉要整份读源文件：回合进行中读到的可能正好是「assistant(tool_use) 已落库、
     // tool_result 还没落库」的中间态，复制出去的新对话天然缺半截配对
@@ -265,7 +269,10 @@ pub async fn chat_fork(
         if !src_path.is_file() {
             return Err(AppError::NotFound(format!("工坊里没有这条对话：{chat_id}")));
         }
-        let messages = crate::store::read_jsonl::<ChatMessage>(&src_path)?;
+        let mut messages = crate::store::read_jsonl::<ChatMessage>(&src_path)?;
+        // 源历史若有配对孤儿（进程死在工具执行窗口留下的），先清再分叉：
+        // fork_prefix 原样保留到末尾，孤儿会被复制进新对话
+        crate::agent::drop_orphan_tool_pairs(&mut messages);
         let src_title = crate::agent::chats::load(&dir, &chat_id).display_title(&messages);
         let kept = fork_prefix(&messages)?;
         let new_id = uuid::Uuid::new_v4().to_string();
@@ -299,7 +306,10 @@ pub async fn chat_fork(
     if !src_path.is_file() {
         return Err(AppError::NotFound(format!("这个主题里没有这条对话：{chat_id}")));
     }
-    let messages = crate::store::read_jsonl::<ChatMessage>(&src_path)?;
+    let mut messages = crate::store::read_jsonl::<ChatMessage>(&src_path)?;
+    // 源历史若有配对孤儿（进程死在工具执行窗口留下的），先清再分叉：
+    // fork_prefix 原样保留到末尾，孤儿会被复制进新对话
+    crate::agent::drop_orphan_tool_pairs(&mut messages);
     let src_meta = crate::agent::chats::load(&src_dir, &chat_id);
     let src_title = src_meta.display_title(&messages);
 
@@ -384,6 +394,10 @@ pub async fn chat_delete(
     topic_slug: Option<String>,
 ) -> AppResult<()> {
     let core = state.0.clone();
+    // 互斥门包住「检查 + 移进回收站」全段（本函数无 await，同步锁即可）：
+    // 检查与文件操作之间不再给 start_turn 插进来的机会，否则删除后下一次追加
+    // 会在原路径把文件重建出来，删除的对话「复活」成只有尾巴的残件
+    let _gate = core.agent.chat_exclusive();
     ensure_safe_chat_id(&chat_id)?;
     ensure_not_running(&core, &chat_id, "删除")?;
     let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
@@ -416,6 +430,10 @@ pub async fn chat_move(
     to_slug: String,
 ) -> AppResult<()> {
     let core = state.0.clone();
+    // 互斥门包住「检查 + rename」全段（本函数无 await，同步锁即可）：检查通过后
+    // 不再让 start_turn 插进来落库，否则搬走文件后下一次追加会在源主题原路径
+    // 重建出同 id 的半截副本
+    let _gate = core.agent.chat_exclusive();
     ensure_safe_chat_id(&chat_id)?;
     ensure_not_running(&core, &chat_id, "搬动")?;
     let ws = core.workspace();

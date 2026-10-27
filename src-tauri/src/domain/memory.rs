@@ -606,25 +606,18 @@ impl MemoryStore {
         render(&self.pick(scopes))
     }
 
-    /// 供界面显示用的字符数估算（不真正注入、不改计数）。
+    /// 供界面显示用的「实际会注入多少」估算。**必须与真实注入同一套挑法**
+    /// （复用 [`pick`]，与 [`digest_text`] 一样）：记忆量超出预算时，挑哪几条由
+    /// 「钉住 → 用得多 → 新」的排序决定——以前这里自己按磁盘顺序另挑一份，
+    /// 面板显示的条数/字符与每轮真正写进系统提示词的对不上（card.rs 的
+    /// preview_secs 刻意跑在 apply 副本上，就是为了杜绝这种「预览与执行两套逻辑」）。
     pub fn digest_preview(&self, scopes: &[(Scope, String)]) -> (usize, usize) {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut chars = 0usize;
-        let mut n = 0usize;
-        for (scope, _) in scopes {
-            for m in self.list(scope) {
-                if !seen.insert(m.fingerprint()) {
-                    continue;
-                }
-                let cost = m.content.chars().count() + 12;
-                if chars + cost > DIGEST_BUDGET || n >= DIGEST_MAX_ITEMS {
-                    break;
-                }
-                chars += cost;
-                n += 1;
-            }
-        }
-        (n, chars)
+        let picked = self.pick(scopes);
+        let chars = picked
+            .iter()
+            .map(|(_, m)| m.content.chars().count() + 12)
+            .sum::<usize>();
+        (picked.len(), chars)
     }
 
     /// 总览视图。`topic` 是当前主题（没有就只给全局）。

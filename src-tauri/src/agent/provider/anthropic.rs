@@ -146,10 +146,11 @@ impl LlmProvider for AnthropicProvider {
                         tool_seq.resize(index + 1, usize::MAX);
                     }
                     let block = v.get("content_block");
-                    let is_tool = block
+                    let btype = block
                         .and_then(|b| b.get("type"))
                         .and_then(|t| t.as_str())
-                        .is_some_and(|t| t == "tool_use" || t == "server_tool_use");
+                        .unwrap_or("");
+                    let is_tool = btype == "tool_use" || btype == "server_tool_use";
                     block_is_tool[index] = is_tool;
                     if is_tool {
                         let seq = tool_seq.iter().filter(|s| **s != usize::MAX).count();
@@ -159,6 +160,23 @@ impl LlmProvider for AnthropicProvider {
                         if tx
                             .send(StreamEvent::ToolCall { index: seq, id, name, args: String::new() })
                             .is_err()
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    // redacted_thinking：服务端把这段思考隐去了，只给一段加密 data，
+                    // **没有 delta**——内容在 start 里一次给全，不在这里接住就整块丢失。
+                    // 而官方要求把它原样传回后续请求（尤其「最后一条 assistant」里的），
+                    // 丢了的话这条对话在思考模式下会被 400 永久卡死。
+                    if btype == "redacted_thinking" {
+                        let data = block
+                            .and_then(|b| b.get("data"))
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("");
+                        if !data.is_empty()
+                            && tx
+                                .send(StreamEvent::RedactedThinking { index, data: data.to_string() })
+                                .is_err()
                         {
                             return Ok(false);
                         }
@@ -366,17 +384,28 @@ pub fn to_anthropic_messages(
                 // 那条）以思考块开头，且必须原样带回签名——丢了从第二轮起全是 400。
                 // 没有签名的（老对话或别家模型的思考块）只能跳过，那是有损的兜底。
                 for b in &m.blocks {
-                    if let ContentBlock::Thinking { text, signature } = b {
-                        if text.trim().is_empty() {
-                            continue;
+                    match b {
+                        ContentBlock::Thinking { text, signature } => {
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            if let Some(sig) = signature {
+                                blocks.push(json!({
+                                    "type": "thinking",
+                                    "thinking": text,
+                                    "signature": sig,
+                                }));
+                            }
                         }
-                        if let Some(sig) = signature {
-                            blocks.push(json!({
-                                "type": "thinking",
-                                "thinking": text,
-                                "signature": sig,
-                            }));
+                        // redacted_thinking 原样传回（官方要求）：丢了这个块的话，
+                        // 「最后一条 assistant」不满足 thinking/redacted_thinking 开头
+                        // 的要求，下一轮请求直接 400（见 ContentBlock::RedactedThinking）
+                        ContentBlock::RedactedThinking { data } => {
+                            if !data.is_empty() {
+                                blocks.push(json!({ "type": "redacted_thinking", "data": data }));
+                            }
                         }
+                        _ => {}
                     }
                 }
                 let text = m.text();

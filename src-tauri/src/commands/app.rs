@@ -128,6 +128,10 @@ pub struct ConfigPatch {
     pub active_profile_id: Option<String>,
     pub permission_mode: Option<PermissionMode>,
     pub allow_web: Option<bool>,
+    /// DeepSeek 联网搜索的 API Key（只存本机 config.json；空串=清除）
+    pub deepseek_api_key: Option<String>,
+    pub web_search_enabled: Option<bool>,
+    pub web_search_count: Option<u32>,
     pub sandbox: Option<bool>,
     pub max_iterations: Option<u32>,
     pub system_prompt_extra: Option<String>,
@@ -202,6 +206,16 @@ pub async fn config_patch(state: State<'_, AppState>, patch: ConfigPatch) -> App
         }
         if let Some(v) = patch.allow_web {
             c.agent.allow_web = v;
+        }
+        if let Some(v) = patch.deepseek_api_key.clone() {
+            // trim 后为空＝清除；Key 只进本机 config.json
+            c.deepseek.api_key = v.trim().to_string();
+        }
+        if let Some(v) = patch.web_search_enabled {
+            c.deepseek.enabled = v;
+        }
+        if let Some(v) = patch.web_search_count {
+            c.deepseek.count = v.clamp(1, 50);
         }
         if let Some(v) = patch.sandbox {
             c.agent.sandbox = v;

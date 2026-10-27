@@ -370,6 +370,16 @@ export interface AgentConfig {
   memoryEnabled: boolean;
 }
 
+/** 联网搜索给前端看的部分（DeepSeek Key 本体不出 PublicConfig，只有「配没配」） */
+export interface WebSearchConfig {
+  /** 总开关：配了 Key 默认启用，可手动关 */
+  enabled: boolean;
+  /** 单次搜索的结果条数（1-50，默认 8；DeepSeek 按次计费，省着用） */
+  count: number;
+  /** 是否已配置 DeepSeek API Key */
+  hasKey: boolean;
+}
+
 export interface ViewerConfig {
   homeUrl: string;
   searchEngine: string;
@@ -453,6 +463,7 @@ export interface PublicConfig {
   activeProfileId: string;
   profiles: PublicProfile[];
   agent: AgentConfig;
+  webSearch: WebSearchConfig;
   viewer: ViewerConfig;
   appearance: AppearanceConfig;
   remote: RemoteConfig;
@@ -557,6 +568,10 @@ export interface ConfigPatch {
   activeProfileId?: string;
   permissionMode?: PermissionMode;
   allowWeb?: boolean;
+  /** DeepSeek 联网搜索的 API Key（只存本机 config.json；空串 = 清除） */
+  deepseekApiKey?: string;
+  webSearchEnabled?: boolean;
+  webSearchCount?: number;
   sandbox?: boolean;
   maxIterations?: number;
   systemPromptExtra?: string;

@@ -265,6 +265,36 @@ impl PermissionMode {
     }
 }
 
+/// DeepSeek 联网搜索的配置（与模型 API 同一把 Key、同一 Bearer 鉴权）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeepSeekConfig {
+    /// DeepSeek API Key。只存本机 config.json， PublicConfig 里只给「配没配」
+    pub api_key: String,
+    /// 总开关：配了 Key 默认启用，可手动关（关掉后 web_search / web_fetch
+    /// 返回引导信息，不报裸错误）
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// 单次搜索返回的结果条数（DeepSeek 允许 1-50；按成功请求计费，省着用）
+    #[serde(default = "default_search_count")]
+    pub count: u32,
+}
+
+fn default_search_count() -> u32 {
+    8
+}
+
+impl DeepSeekConfig {
+    pub fn has_key(&self) -> bool {
+        !self.api_key.trim().is_empty()
+    }
+
+    /// 工具真正可用的条件：开关开着且配了 Key
+    pub fn effective(&self) -> bool {
+        self.enabled && self.has_key()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
@@ -599,6 +629,11 @@ pub struct AppConfig {
     pub profiles: Vec<ProviderProfile>,
     #[serde(default)]
     pub agent: AgentConfig,
+    /// DeepSeek 联网搜索（alpha）：Search / Fetch 工具的底层。Key 与模型 API
+    /// 是同一把，只存在本机 config.json 里——**不进 PublicConfig**（给前端的
+    /// 只有「配没配」的布尔，见 `PublicWebSearch`），更不进仓库。
+    #[serde(default)]
+    pub deepseek: DeepSeekConfig,
     #[serde(default)]
     pub viewer: ViewerConfig,
     #[serde(default)]
@@ -637,6 +672,7 @@ impl AppConfig {
             active_profile_id: active,
             profiles: vec![deepseek, anthropic, ollama],
             agent: AgentConfig::default(),
+            deepseek: DeepSeekConfig::default(),
             viewer: ViewerConfig::default(),
             appearance: AppearanceConfig::default(),
             remote: RemoteConfig::default(),
@@ -720,11 +756,22 @@ pub struct PublicConfig {
     pub active_profile_id: String,
     pub profiles: Vec<PublicProfile>,
     pub agent: AgentConfig,
+    /// 联网搜索给前端看的部分：**只有开关、条数与「配没配」**，Key 本体不出去
+    pub web_search: PublicWebSearch,
     pub viewer: ViewerConfig,
     pub appearance: AppearanceConfig,
     /// 远程控制的配置（含令牌：这是本机界面，用户要靠它拼链接与二维码）
     pub remote: RemoteConfig,
     pub last_topic: Option<String>,
+}
+
+/// `web_search` 对前端的视图（不含 Key 本体，参照 `PublicProfile.has_api_key` 的做法）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicWebSearch {
+    pub enabled: bool,
+    pub count: u32,
+    pub has_key: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,6 +799,11 @@ impl From<&AppConfig> for PublicConfig {
             user_name: c.user_name.clone(),
             workspace_root: c.workspace_root.to_string_lossy().to_string(),
             active_profile_id: c.active_profile_id.clone(),
+            web_search: PublicWebSearch {
+                enabled: c.deepseek.enabled,
+                count: c.deepseek.count,
+                has_key: c.deepseek.has_key(),
+            },
             profiles: c
                 .profiles
                 .iter()

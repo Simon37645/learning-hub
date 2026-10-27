@@ -22,6 +22,7 @@ import {
   type UpdateInfo,
   type UpdateProgressEvent,
 } from "../lib/types";
+import { clampSearchCount, COUNT_MAX, COUNT_MIN } from "../lib/websearch";
 import { useApp } from "../store/app";
 import { Field, FieldRow, Icon, Modal, Segmented, Spinner, Switch, type IconName } from "./ui";
 
@@ -332,6 +333,7 @@ function AgentSection() {
   const config = useApp((s) => s.config)!;
   const patchConfig = useApp((s) => s.patchConfig);
   const agent = config.agent;
+  const webSearch = config.webSearch;
 
   /** 数字字段统一走这里：只在是合法数字且不小于 min 时才写回配置 */
   const commitNumber = (key: "maxIterations" | "requestTimeoutSecs" | "reconnectMaxAttempts" | "contextBudgetChars", min: number) => (
@@ -404,6 +406,54 @@ function AgentSection() {
 
       <FieldRow label="允许 agent 联网" hint="放开 web_fetch / web_search 两个工具">
         <Switch checked={agent.allowWeb} onChange={(v) => void patchConfig({ allowWeb: v })} />
+      </FieldRow>
+
+      <FieldRow
+        label="联网搜索"
+        hint="agent 遇到拿不准的事实、时效性问题先搜再答（DeepSeek Search / Fetch，与模型 API 同一把 Key）。按次计费，默认 8 条结果、不抓全文"
+      >
+        <Switch
+          checked={webSearch.enabled}
+          onChange={(v) => void patchConfig({ webSearchEnabled: v })}
+        />
+      </FieldRow>
+
+      <FieldRow
+        label="DeepSeek API Key"
+        hint={
+          webSearch.hasKey
+            ? "已保存（明文只存在本机 config.json，不会上传）。留空表示不修改；想清除就提交一个空值"
+            : "还没配置。与 DeepSeek 模型 API 是同一把 Key；搜索与抓取按次计费"
+        }
+      >
+        <input
+          className="input mono"
+          type="password"
+          placeholder={webSearch.hasKey ? "••••••（不改就留空）" : "sk-在此填入你的Key"}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            // 只在用户真的输入了内容时才写回： onBlur 空值不覆盖已有 Key
+            //（想清除就先粘贴一个空格再清空——编辑框里按原样提交）
+            if (v) {
+              void patchConfig({ deepseekApiKey: v });
+              e.target.value = "";
+            }
+          }}
+        />
+      </FieldRow>
+
+      <FieldRow
+        label="单次搜索条数"
+        hint="1-50，默认 8。条数越多单次返回越多，但结果都是按同一次请求计费的"
+      >
+        <DraftInput
+          className="input num"
+          type="number"
+          min={COUNT_MIN}
+          max={COUNT_MAX}
+          value={String(webSearch.count)}
+          onCommit={(v) => void patchConfig({ webSearchCount: clampSearchCount(v) })}
+        />
       </FieldRow>
 
       <FieldRow

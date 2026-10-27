@@ -127,8 +127,15 @@ impl AppCore {
     /// 那个客户端会一直往已经死掉的代理端口里送请求——症状是「网络请求失败：
     /// error sending request」，重启应用才能恢复。现建的成本只是一次连接池重建
     /// （每次对话轮/点一次测试才付一次），换来的是「发请求那一刻的系统代理」。
+    ///
+    /// 「请求超时」（配置里的 `request_timeout_secs`）在这里落成**空闲超时**
+    /// （read_timeout）：首 token 迟迟不来、或流中途停住，超时照旧生效；
+    /// 但健康的耗时长流（思考 + 满速输出，超过 180 秒很正常）不再被总超时
+    /// 在流中途掐死、然后被当成网络抖动整轮重发（每次都重新计费）。
+    /// 总时长仍有 `DEFAULT_TIMEOUT_SECS`（10 分钟）兜底。
     pub fn http_fresh(&self) -> AppResult<reqwest::Client> {
-        crate::net::client(crate::net::DEFAULT_TIMEOUT_SECS)
+        let idle = self.config_read().agent.request_timeout_secs.max(30);
+        crate::net::client_with_idle(crate::net::DEFAULT_TIMEOUT_SECS, idle)
     }
 
     pub fn workspace(&self) -> Workspace {
@@ -422,17 +429,68 @@ impl AppCore {
                 });
                 continue;
             }
+            // 名字要拼进工具名 `mcp__<名>__<工具>`，服务商对工具名有硬性格式规则
+            //（`^[a-zA-Z0-9_-]{1,64}$`，违反的请求整体 400）。手动添加与导入两条路
+            // 都会拦，但配置文件可以被直接手改——这里兜住最后一道：宁可这台服务器
+            // 连不上、原因写在面板上，也不能让每一轮带工具的请求都 400。
+            if !crate::agent::tools::mcp::is_server_name_valid(&cfg.name) {
+                let why = "服务器名不合法：只能用英文字母、数字、下划线、连字符（不能带 __），\
+                           不超过 40 个字符——它要拼进工具名 mcp__<名>__<工具>，模型服务商只接受这种格式"
+                    .to_string();
+                eprintln!("[mcp] {} {why}", cfg.name);
+                let log = crate::mcp::McpLog::new();
+                log.push(why.clone());
+                entries.push(McpEntry {
+                    config: cfg,
+                    client: None,
+                    error: Some(why),
+                    log,
+                });
+                continue;
+            }
             // 日志先建好再连：连不上也要把「为什么」留下来（stderr / 退出码 / 命令解析）
             let log = crate::mcp::McpLog::new();
             match crate::mcp::McpClient::connect(&cfg, log.clone()).await {
                 Ok(client) => {
                     match client.list_tools().await {
                         Ok(tools) => {
+                            let mut seen: std::collections::HashSet<String> =
+                                std::collections::HashSet::new();
                             for t in tools {
-                                new_tools.push(Arc::new(crate::agent::tools::mcp::McpTool::new(
-                                    client.clone(),
-                                    t,
-                                )));
+                                // 工具名做「救能救的」清洗（点/空格/中文换下划线、截到 64 字符）；
+                                // 清洗后放不下或撞名的只丢这一个工具，并把决定写进日志
+                                match crate::agent::tools::mcp::exposed_tool_name(&cfg.name, &t.name)
+                                {
+                                    None => {
+                                        let why = format!(
+                                            "工具「{}」拼上前缀后超过 {} 字符上限，没有登记",
+                                            t.name,
+                                            crate::agent::tools::mcp::TOOL_NAME_MAX
+                                        );
+                                        log.push(why.clone());
+                                        eprintln!("[mcp] {} {why}", cfg.name);
+                                    }
+                                    Some(exposed) => {
+                                        // 撞名（清洗后同名）只登记先到的那个，把决定写进日志
+                                        if seen.insert(exposed) {
+                                            if let Some(tool) =
+                                                crate::agent::tools::mcp::McpTool::try_new(
+                                                    client.clone(),
+                                                    t,
+                                                )
+                                            {
+                                                new_tools.push(Arc::new(tool));
+                                            }
+                                        } else {
+                                            let why = format!(
+                                                "工具「{}」清洗后与别的工具重名，只登记先到的那个",
+                                                t.name
+                                            );
+                                            log.push(why.clone());
+                                            eprintln!("[mcp] {} {why}", cfg.name);
+                                        }
+                                    }
+                                }
                             }
                             entries.push(McpEntry {
                                 config: cfg.clone(),

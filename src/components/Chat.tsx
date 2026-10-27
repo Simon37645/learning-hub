@@ -51,7 +51,16 @@ interface PendingImage {
 
 // ---------------------------------------------------------------- Markdown
 
-export function Markdown({ source, onLink }: { source: string; onLink?: (href: string) => void }) {
+export function Markdown({
+  source,
+  onLink,
+  streaming,
+}: {
+  source: string;
+  onLink?: (href: string) => void;
+  /** 流式输出中：mermaid 先不画（见 effect 里的说明），等落库后的那份再画 */
+  streaming?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const deferred = useDeferredValue(source);
   const html = useMemo(() => renderMarkdown(deferred), [deferred]);
@@ -62,11 +71,15 @@ export function Markdown({ source, onLink }: { source: string; onLink?: (href: s
     linkifyCitations(ref.current, (cite) => {
       void useApp.getState().openFile(cite.path, undefined, cite.page ?? undefined);
     });
-    // 思维导图 / 流程图等 mermaid 块在这里画成图（异步，失败时保留代码块）
-    void renderMermaidIn(ref.current);
+    // 思维导图 / 流程图等 mermaid 块在这里画成图（异步，失败时保留代码块）。
+    // **流式期间跳过**：围栏还没闭合时，块的内容是半截定义，解析必然失败——
+    // 每个非法中间态都会在代码块上方闪一下「这张图渲染失败…」（React 重建
+    // innerHTML 又把失败标记丢掉，于是闪个不停），其实只是「还没写完」。
+    // 这时保留代码块原样，围栏闭合后走消息列表那份 Markdown 完整渲染。
+    if (!streaming) void renderMermaidIn(ref.current);
     // agent 写的 ```html / ```svg 演示块渲染成沙箱卡片（同步，讲难懂内容时用）
     renderDemoBlocksIn(ref.current);
-  }, [html]);
+  }, [html, streaming]);
 
   return (
     <div
@@ -497,7 +510,7 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
                   )}
                   {streaming.text ? (
                     <div className="bubble">
-                      <Markdown source={streaming.text} onLink={onLink} />
+                      <Markdown source={streaming.text} onLink={onLink} streaming />
                       <span className="typing-caret" />
                     </div>
                   ) : (
@@ -768,16 +781,20 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
    * 两个键的区别只在「要不要打断这一轮」（见 store 的 queueSend）：
    * Ctrl+Enter = 打断它、它一收尾就发；Alt+Enter = 让它跑完再发。
    * 没在跑的时候两者都等于普通发送。
+   *
+   * queueSend **收下了才清输入框**：已有一条排队时它会拒收（直接覆盖等于把用户
+   * 打的字丢掉——排队内容在输入框清空后就只剩队列那一个副本），这时内容留在
+   * 框里，用户可以先取消旧的再排。
    */
   async function enqueue(interrupt: boolean) {
     if (!text.trim() && images.length === 0) return;
     const t = text;
     const pics = images.map((i) => i.upload);
-    // 先清空输入框（发送用的是快照）：万一排队失败也不至于重复发
+    const accepted = await queueSend(t, attachments, pics, interrupt);
+    if (!accepted) return;
     setText("");
     setAttachments([]);
     setImages([]);
-    await queueSend(t, attachments, pics, interrupt);
   }
 
   /**

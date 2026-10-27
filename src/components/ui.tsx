@@ -481,6 +481,14 @@ export function Dropdown({
       setPos({ left: 0, top: 0, ready: false });
       return;
     }
+    // 菜单开着的时候让原生子 WebView 让路。菜单虽然是 portal 到 body 的 DOM，
+    // 但它只盖住窗口的一小块——原生子 WebView（内置浏览器的网页）是独立的原生
+    // 窗口，浮在一切 DOM 之上，与菜单矩形重叠的那部分会把菜单项压住：字看得见
+    // 半截、点下去落在网页上（composer 的「思考强度」菜单右端就压在第三栏上）。
+    // 让路是全有全无的（viewer_webview_set_visible），只能整块藏；overlay 计数
+    // 正是它的开关（Viewer.tsx 的 canShow）。计数幂等：StrictMode 下
+    // mount→cleanup→mount 净值不变，与 Modal 的 useOverlay 同一套。
+    useApp.getState().bumpOverlay(1);
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
@@ -490,6 +498,7 @@ export function Dropdown({
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
+      useApp.getState().bumpOverlay(-1);
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };

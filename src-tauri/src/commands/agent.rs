@@ -237,8 +237,11 @@ pub async fn chat_archive(
 /// 分叉：把这条对话在「最后一个完整回合」处截断，复制成一条新对话。
 ///
 /// 用途是「从这儿换个讲法重来」——原对话保持不动，新对话继承到这里为止的上下文。
-/// 截断点定在**最后一条 assistant 消息**（含）而不是字面意义上的最后一条：
-/// 末尾若挂着「用户刚提问、模型还没答」，复制过去会让新对话一开头就欠一个回答。
+/// 截断点定在**最后一条 assistant 消息（含）连同它后面成对的 tool_result**：
+/// - 末尾若挂着「用户刚提问、模型还没答」，复制过去会让新对话一开头就欠一个回答；
+/// - 但 assistant 后面成对落库的 tool 行**不能切**（典型：中止一轮后分叉，那几行
+///   「已被用户中止」的结果就挂在那条 assistant 后面）——切了的话新对话以
+///   「有 tool_use 没有回应」结尾，之后每一次请求都会被服务商 400。
 #[tauri::command]
 pub async fn chat_fork(
     state: State<'_, AppState>,
@@ -248,6 +251,10 @@ pub async fn chat_fork(
     mode: Option<String>,
 ) -> AppResult<String> {
     let core = state.0.clone();
+    ensure_safe_chat_id(&chat_id)?;
+    // 分叉要整份读源文件：回合进行中读到的可能正好是「assistant(tool_use) 已落库、
+    // tool_result 还没落库」的中间态，复制出去的新对话天然缺半截配对
+    ensure_not_running(&core, &chat_id, "分叉")?;
     let mode = mode_of(mode.as_deref());
     let ws = core.workspace();
 
@@ -313,20 +320,57 @@ pub async fn chat_fork(
     Ok(new_id)
 }
 
-/// 分叉时保留到哪：**最后一条 assistant 消息之后**（见 `chat_fork` 的说明）。
+/// 分叉时保留到哪：**最后一条 assistant 消息（含）+ 它后面成对的 tool_result**。
+///
+/// 只截到 assistant 的话，新对话会以「带 tool_use 却没有回应」的消息收尾——
+/// 这条对话之后每一次请求都会被服务商 400（见 agent 主循环里关于配对落库的注释）。
+/// assistant 之后再挂着的 user 消息照旧切掉：那是「用户刚提问、模型还没答」。
 fn fork_prefix(messages: &[ChatMessage]) -> AppResult<Vec<ChatMessage>> {
     let at = messages
         .iter()
         .rposition(|m| m.role == crate::agent::message::Role::Assistant)
         .map(|i| i + 1)
         .unwrap_or(messages.len());
-    let kept: Vec<ChatMessage> = messages[..at].to_vec();
+    let mut end = at;
+    while end < messages.len() && messages[end].role == crate::agent::message::Role::Tool {
+        end += 1;
+    }
+    let kept: Vec<ChatMessage> = messages[..end].to_vec();
     if kept.is_empty() {
         return Err(AppError::invalid(
             "这条对话还没有可复制的回合（至少要有一轮问答再分叉）",
         ));
     }
     Ok(kept)
+}
+
+/// chat_id 由前端/远程直接传进来、原样拼进文件名（`<id>.jsonl`）：
+/// 带分隔符或 `..` 就能把删除 / 搬移 / 分叉指到工作区之外的文件。正常 id 都是 uuid。
+/// 与 `transcript_path` / `meta_path` 的既有防护同一套，缺了就是路径穿越
+///（这几条命令在远程白名单里，不能指望前端自觉）。
+fn ensure_safe_chat_id(chat_id: &str) -> AppResult<()> {
+    if crate::paths::is_safe_slug(chat_id) {
+        Ok(())
+    } else {
+        Err(AppError::invalid(format!("对话 id 不合法：{chat_id}")))
+    }
+}
+
+/// 这条对话还有回合在跑就不许动。回合是「每条消息现场追加」的（打开→写→关），
+/// 中途把文件拿走，下一次追加会在原路径把文件重新建出来：删除的对话「复活」成
+/// 一条只有尾巴的残件（无用户消息、无侧车元数据），搬移则在源主题留下同 id 的
+/// 半截副本。等一轮收尾（或点「停止」）再整理，动作天然是安全的。
+fn ensure_not_running(
+    core: &std::sync::Arc<crate::state::AppCore>,
+    chat_id: &str,
+    action: &str,
+) -> AppResult<()> {
+    if core.agent.is_chat_running(chat_id) {
+        return Err(AppError::invalid(format!(
+            "这条对话还有一轮正在进行，等它跑完（或点「停止」）再{action}"
+        )));
+    }
+    Ok(())
 }
 
 /// 分叉到别的主题时前端要切过去（见 `chat_fork` 的 `to_slug`）。
@@ -340,6 +384,8 @@ pub async fn chat_delete(
     topic_slug: Option<String>,
 ) -> AppResult<()> {
     let core = state.0.clone();
+    ensure_safe_chat_id(&chat_id)?;
+    ensure_not_running(&core, &chat_id, "删除")?;
     let dir = crate::agent::chats_dir_for(&core, topic_slug.as_deref());
     let file = dir.join(format!("{chat_id}.jsonl"));
     if !file.is_file() {
@@ -370,6 +416,8 @@ pub async fn chat_move(
     to_slug: String,
 ) -> AppResult<()> {
     let core = state.0.clone();
+    ensure_safe_chat_id(&chat_id)?;
+    ensure_not_running(&core, &chat_id, "搬动")?;
     let ws = core.workspace();
     if from_slug == to_slug {
         return Ok(());
@@ -416,4 +464,59 @@ pub async fn agent_running(state: State<'_, AppState>) -> AppResult<Vec<RunningT
         .into_iter()
         .map(|t| RunningTurn { turn_id: t.turn_id, running_ms: t.started_at_ms })
         .collect())
+}
+
+#[cfg(test)]
+mod fork_tests {
+    use super::*;
+    use crate::agent::message::{ContentBlock, Role};
+
+    #[test]
+    fn keeps_paired_tool_results_after_last_assistant() {
+        // 「中止一轮之后分叉」是最常见的分叉场景：最后一条 assistant 带 tool_use，
+        // 后面跟着补写的「已被用户中止」结果。这些结果必须跟着走——切掉的话
+        // 新对话以孤儿 tool_use 收尾，之后每次请求都被服务商 400。
+        let messages = vec![
+            ChatMessage::user("帮我查一下"),
+            ChatMessage::assistant(vec![ContentBlock::ToolUse {
+                id: "tu1".into(),
+                name: "viewer_read".into(),
+                input: serde_json::json!({}),
+            }]),
+            ChatMessage::tool_result("tu1", "已被用户中止", true),
+            ChatMessage::user("换个讲法"),
+        ];
+        let kept = fork_prefix(&messages).unwrap();
+        assert_eq!(kept.len(), 3, "assistant 后面成对的 tool_result 要一起带走");
+        assert_eq!(kept[0].role, Role::User);
+        assert_eq!(kept[1].role, Role::Assistant);
+        assert_eq!(kept[2].role, Role::Tool);
+    }
+
+    #[test]
+    fn drops_trailing_unanswered_user_message() {
+        // 末尾挂着「用户刚提问、模型还没答」：这句不能复制过去，
+        // 否则新对话一开头就欠一个回答（分叉注释里写明的设计）。
+        let messages = vec![
+            ChatMessage::user("第一问"),
+            ChatMessage::assistant_text("第一答"),
+            ChatMessage::user("第二问"),
+        ];
+        let kept = fork_prefix(&messages).unwrap();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn empty_history_is_rejected() {
+        // 完全空的历史没有可复制的回合。
+        // 注意「只有 user、没有 assistant」的历史**不**在拒绝之列：rposition 找不到
+        // assistant 时截断点落在末尾，kept = 整份历史——这是改前就有的语义
+        //（fork 的是「还没得到回答的提问」本身），这里不改变它，只钉住不回退。
+        assert!(fork_prefix(&[]).is_err());
+        let messages = vec![ChatMessage::user("只有一句提问")];
+        let kept = fork_prefix(&messages).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].role, Role::User);
+    }
 }

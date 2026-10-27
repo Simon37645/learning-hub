@@ -117,8 +117,12 @@ impl PlanTask {
         self.status.is_open() && self.due.is_some_and(|d| d < now)
     }
 
+    /// 截止落在**本地**日历的哪一天。日程分组（`bucket_of`）拿它和使用者的
+    /// 「今天」比，前端展示（fmtDate / daysFromToday）也都是本地日历日——
+    /// 两边必须同一口径，不然会出现「日程里挂『今天』、旁边标签写『明天』」
+    /// 的同屏矛盾。按 UTC 日历日取的话，东八区会错位到前一天。
     pub fn due_date(&self) -> Option<NaiveDate> {
-        self.due.map(|d| d.date_naive())
+        self.due.map(|d| d.with_timezone(&chrono::Local).date_naive())
     }
 }
 
@@ -173,3 +177,28 @@ pub const BUCKETS: [(&str, &str); 7] = [
     ("someday", "未排期"),
     ("done", "已完成"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    /// 分组按**本地**日历日取截止日：东八区里「今晚 23:59 截止」的时刻存在盘上是
+    /// UTC 15:59——按 UTC 日历日取日会和本地「今天」差出一天（录入口径是本地日，
+    /// 前端展示也是本地日，分组必须同口径）。
+    #[test]
+    fn bucket_uses_local_calendar_day() {
+        use chrono::Datelike as _;
+        let today = chrono::Local::now().date_naive();
+        let due = chrono::Local
+            .with_ymd_and_hms(today.year(), today.month(), today.day(), 23, 59, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let task = PlanTask {
+            due: Some(due),
+            ..PlanTask::new("今晚截止")
+        };
+        assert_eq!(bucket_of(&task, today, Utc::now()), "today");
+    }
+}

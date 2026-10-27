@@ -128,6 +128,15 @@ interface AppStore {
    * 拿它当工坊的待落盘对话就会闪出一行假的「新对话」。
    */
   chatMode: AgentMode;
+  /**
+   * 当前这条对话属于哪个主题（null = 工作区级：首页的日常问答或工坊对话）。
+   *
+   * 发送落库到哪、后端去哪读历史，都按**对话自己的归属**（chatMode + chatSlug）算，
+   * 不按「现在停在哪个视图」算——用户可以在首页视图里接着聊一条主题对话
+   * （排队自动发送，或者切走之前打的字）。以前按 view/topic 推导，点一下「首页」
+   * 再发，消息就会写进工作区目录、模型丢掉全部历史、两条侧栏清单各出现同 id 的一行。
+   */
+  chatSlug: string | null;
   /** 每个主题的对话清单（侧栏把对话挂在对应主题下面）。键是主题 slug，首页对话用空串 */
   chatIndex: Record<string, ChatOverviewItem[]>;
   /** 工坊的对话清单。工坊没有主题，所以单独一份，键不是 slug */
@@ -255,8 +264,13 @@ interface AppStore {
   deleteChat: (chatId: string, slug?: string | null, mode?: AgentMode) => Promise<void>;
   send: (text: string, attachments?: string[], images?: ImageUpload[]) => Promise<void>;
   /** 排队发送（Alt+Enter：这一轮跑完再发）；`interrupt` 为真时顺便打断当前一轮（Ctrl+Enter）。
-   *  当前没有在跑就直接发。 */
-  queueSend: (text: string, attachments?: string[], images?: ImageUpload[], interrupt?: boolean) => Promise<void>;
+   *  当前没有在跑就直接发。返回 false = 没收下（已有一条排队时拒绝，调用方该把内容留在输入框里）。 */
+  queueSend: (
+    text: string,
+    attachments?: string[],
+    images?: ImageUpload[],
+    interrupt?: boolean,
+  ) => Promise<boolean>;
   /** 取消排队 */
   cancelQueued: () => void;
   /** 轮到点了就把排队的消息发出去（等的那一轮结束、或回到那条对话时调） */
@@ -362,6 +376,7 @@ export const useApp = create<AppStore>((set, get) => ({
 
   chatId: null,
   chatMode: "study",
+  chatSlug: null,
   chatIndex: {},
   studioChats: [],
   messages: [],
@@ -541,8 +556,21 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   leaveTopic() {
-    // 同上：切视图不该把「哪条对话在跑」这件事抹掉
-    set({ view: "home", topic: null, messages: [], activities: [], usage: null });
+    // 同上：切视图不该把「哪条对话在跑」这件事抹掉（streaming 原样留着）。
+    // 但 chatId/归属要跟着清：首页是「新起一条」的地方，留着旧对话的 id 的话，
+    // 在这里发消息会把内容追加进一条看不见历史的对话（它属于刚才那个主题）。
+    // 序号 +1 把还在路上的 loadChat 响应作废，别让它把刚清掉的 chatId 又写回来。
+    chatSwitchSeq++;
+    set({
+      view: "home",
+      topic: null,
+      chatId: null,
+      chatMode: "study",
+      chatSlug: null,
+      messages: [],
+      activities: [],
+      usage: null,
+    });
     void api.viewerSetVisible(false);
     void get().loadChats(null);
   },
@@ -616,7 +644,16 @@ export const useApp = create<AppStore>((set, get) => ({
     const chatId = await api.agentNewChat();
     // 期间用户已经切到别的对话：这条空对话别抢回来
     if (seq !== chatSwitchSeq) return;
-    set({ chatId, chatMode: "study", messages: [], activities: [], chatError: null, usage: null });
+    set({
+      chatId,
+      chatMode: "study",
+      // 新对话属于「此刻打开的主题」：首页/工坊进来时 topic 为空 = 工作区级
+      chatSlug: get().topic?.slug ?? null,
+      messages: [],
+      activities: [],
+      chatError: null,
+      usage: null,
+    });
     void get().loadChats();
   },
 
@@ -626,17 +663,19 @@ export const useApp = create<AppStore>((set, get) => ({
     // 没传就沿用当前模式：打开主题/工坊时那条模式已经在切视图那一刻设好了，
     // 恢复界面快照那条路也是先 openTopic/openStudio 再 loadChat
     const m = mode ?? get().chatMode;
+    // 对话自己的归属跟着这次载入走（发送落库按它算，不按环境视图算）
+    const owner: string | null = m === "studio" ? null : slug;
     try {
       const messages = await api.agentTranscript(chatId, slug);
       // 先点的对话响应晚到：不能覆盖已经切过去的新对话
       //（否则会出现「标题是 B、正文是 A」的混搭，接着聊还会写错文件）
       if (seq !== chatSwitchSeq) return;
-      set({ chatId, chatMode: m, messages, activities: [], chatError: null, usage: null });
+      set({ chatId, chatMode: m, chatSlug: owner, messages, activities: [], chatError: null, usage: null });
       // 回到「排着队等这一轮结束」的那条对话时，把那条消息发出去
       void get().flushQueued();
     } catch (e) {
       if (seq !== chatSwitchSeq) return;
-      set({ chatId, chatMode: m, messages: [], usage: null });
+      set({ chatId, chatMode: m, chatSlug: owner, messages: [], usage: null });
       console.warn("读取对话失败", e);
     }
   },
@@ -730,6 +769,7 @@ export const useApp = create<AppStore>((set, get) => ({
       view: "studio",
       topic: null,
       chatMode: "studio",
+      chatSlug: null,
       cards: [],
       tasks: [],
       activities: [],
@@ -740,6 +780,9 @@ export const useApp = create<AppStore>((set, get) => ({
     void get().loadStudio();
     try {
       const items = await api.chatOverview(null, false, "studio");
+      // 等清单的窗口里用户可能已经点了别的主题 / 回了首页：这时候不该再切对话，
+      // 否则工坊的 chatId 会骑到主题视图上（下一次发送把工坊对话的后续写进主题目录）
+      if (get().view !== "studio") return;
       if (items.length > 0) await get().loadChat(items[0].id);
       else await get().newStudioChat();
     } catch (e) {
@@ -751,7 +794,7 @@ export const useApp = create<AppStore>((set, get) => ({
     const seq = ++chatSwitchSeq;
     const chatId = await api.agentNewChat();
     if (seq !== chatSwitchSeq) return;
-    set({ chatId, chatMode: "studio", messages: [], activities: [], chatError: null, usage: null });
+    set({ chatId, chatMode: "studio", chatSlug: null, messages: [], activities: [], chatError: null, usage: null });
     void get().loadStudioChats();
   },
 
@@ -861,22 +904,27 @@ export const useApp = create<AppStore>((set, get) => ({
       return;
     }
     sendInFlight = true;
+    // 发到哪按**这条对话自己的归属**算（chatMode/chatSlug 随 loadChat/newChat 走），
+    // 不看「现在停在哪个视图」：用户点首页后再发，或者排队消息在切走后自动发出，
+    // 都必须落回对话本来的地方——按视图推导会把消息写进工作区目录、
+    // 模型丢掉全部历史、侧栏出现同 id 的两行（踩过的坑，别改回去）。
+    const studio = get().chatMode === "studio";
+    const slug = studio ? null : get().chatSlug;
+    // 阶段字段同理：只有环境主题就是这条对话的主题时才带上，不一致就交给后端按主题自己的 meta 取
+    const topic = get().topic;
+    const stage = studio ? null : topic && topic.slug === slug ? topic.meta.stage : null;
     let chatId = get().chatId;
     try {
       if (!chatId) {
         chatId = await api.agentNewChat();
-        set({ chatId });
+        set({ chatId, chatSlug: slug });
       }
       const cid: string = chatId;
-      // 在哪个视图里说话就发给哪个模式：工坊里没有主题，
-      // 传 topicSlug 会让后端把对话写进主题目录（那就跑到学习那边去了）
-      const studio = get().view === "studio";
-      const slug = studio ? null : (get().topic?.slug ?? null);
       const res = await api.agentSend({
         chatId,
         text: t,
         topicSlug: slug,
-        stage: studio ? null : (get().topic?.meta.stage ?? null),
+        stage,
         attachments: attachments ?? [],
         images: pics,
         mode: studio ? "studio" : "study",
@@ -885,6 +933,8 @@ export const useApp = create<AppStore>((set, get) => ({
         messages: [...s.messages, res.message],
         chatError: null,
         activities: [],
+        chatSlug: slug,
+        chatMode: studio ? "studio" : "study",
         // 乐观占位：不等 turn_started 事件，输入框立刻进入「停止」态，
         // 也让后续事件的 turn_id 守卫有东西可比
         streaming: { turnId: res.turnId, chatId: cid, text: "", thinking: "" },
@@ -917,16 +967,24 @@ export const useApp = create<AppStore>((set, get) => ({
    * 否则这条对话之后每次请求都会被服务商 400）。所以这里只负责打断 + 排队，
    * 真正的发送交给 `flushQueued`，在那一轮的 finished/failed 事件里触发——
    * 那时落库已经收尾，顺序天然是对的（中止标记在前、新消息在后）。
+   *
+   * 返回 false = 没收下。唯一会拒收的情形：槽里已经有一条排队的。排队内容在
+   * 输入框清空之后就只剩这一个副本（没落库、没发送），直接覆盖等于把用户
+   * 打的字无声丢掉——所以拒收并提示，让调用方把内容留在输入框里。
    */
   async queueSend(text, attachments, images, interrupt) {
     const t = text.trim();
     const pics = images ?? [];
-    if (!t && pics.length === 0) return;
+    if (!t && pics.length === 0) return false;
     const st = get();
     // 没在跑：跟普通发送一样（Ctrl+Enter 也就等于发送）
     if (!st.streaming) {
       await st.send(t, attachments, pics);
-      return;
+      return true;
+    }
+    if (st.queued) {
+      get().toast("info", "已有一条排队的消息（输入框下面那条），等它发出后再排；点凭证条上的 × 可以取消它");
+      return false;
     }
     set({
       queued: {
@@ -939,6 +997,7 @@ export const useApp = create<AppStore>((set, get) => ({
       },
     });
     if (interrupt) await st.stop();
+    return true;
   },
 
   cancelQueued() {

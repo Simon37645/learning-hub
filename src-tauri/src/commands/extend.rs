@@ -405,6 +405,15 @@ pub async fn mcp_upsert(
     if server.name.contains("__") {
         return Err(AppError::invalid("服务器名里不能有连续下划线 `__`（它用来分隔工具前缀）"));
     }
+    // 服务商对工具名的硬性规则是 `^[a-zA-Z0-9_-]{1,64}$`，不合规的**整轮请求** 400。
+    // 中文产品里用户自然会起「翻译」这样的名字，必须在入口处说清楚为什么不行。
+    if !crate::agent::tools::mcp::is_server_name_valid(&server.name) {
+        return Err(AppError::invalid(
+            "服务器名只能用英文字母、数字、下划线、连字符（不能带 __），不超过 40 个字符——\
+             它要拼进工具名 mcp__<名>__<工具>，模型服务商只接受这种格式。显示名可以随便起， \
+             工具列表里看到的名字才是这个。",
+        ));
+    }
 
     match scope {
         Scope::Global => {

@@ -222,10 +222,17 @@ impl McpClient {
             });
         }
 
-        client
-            .initialize()
-            .await
-            .map_err(|e| AppError::other(format!("MCP 服务器「{}」握手失败：{e}", cfg.name)))?;
+        if let Err(e) = client.initialize().await {
+            // 握手失败也要把子进程收掉：调用方拿到的是 Err、手里没有 client，
+            // 补不了这次 shutdown；不杀的话，子进程要等自己读到 stdin EOF 才退出，
+            // 不读 stdin 的常驻型服务器会连同 read_loop 一起永久挂着，
+            // 反复重连/试运行就攒出一堆孤儿进程。
+            client.shutdown().await;
+            return Err(AppError::other(format!(
+                "MCP 服务器「{}」握手失败：{e}",
+                cfg.name
+            )));
+        }
 
         Ok(client)
     }
@@ -335,13 +342,15 @@ impl McpClient {
                     }
                     _ => {}
                 }
-                // 有些服务器把结构化结果放在 result.structuredContent（MCP 规范里
-                // 它在结果对象上，不在 content 块里）
-                if let Some(sc) = result.get("structuredContent") {
-                    if !sc.is_null() {
-                        text.push_str(&format!("\n{}", serde_json::to_string_pretty(sc).unwrap_or_default()));
-                    }
-                }
+            }
+        }
+        // 有些服务器把结构化结果放在 result.structuredContent（MCP 规范里
+        // 它在结果对象上，不在 content 块里）——判据取自循环外的 result，
+        // 所以必须放在循环**外**：写在循环体里的话，服务器返回 N 个 content 块
+        // 就会把同一段结构化结果重复拼 N 次，白占上下文还像「多条结果」。
+        if let Some(sc) = result.get("structuredContent") {
+            if !sc.is_null() {
+                text.push_str(&format!("\n{}", serde_json::to_string_pretty(sc).unwrap_or_default()));
             }
         }
         if text.trim().is_empty() {
@@ -646,7 +655,16 @@ pub fn parse_agent_server(text: &str) -> AppResult<AgentServerSource> {
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
 
-    let blocked_reason = if !transport.is_empty() && !transport.eq_ignore_ascii_case("stdio") {
+    let blocked_reason = if !crate::agent::tools::mcp::is_server_name_valid(&id) {
+        // id 就是工具名前缀（`mcp__<id>__<tool>`），拼出不合规则的名字会让每一轮
+        // 带工具的请求被服务商整体 400——和 transport=http 一样算「用不了」，
+        // 用户要看到的是原因
+        Some(
+            "id 不合法：只能用英文字母、数字、下划线、连字符（不能带 __），不超过 40 个字符——\
+             它要拼进工具名，模型服务商只接受这种格式"
+                .to_string(),
+        )
+    } else if !transport.is_empty() && !transport.eq_ignore_ascii_case("stdio") {
         Some(format!("transport 是 {transport}，本应用只支持 stdio"))
     } else if has_url {
         Some("带 url（远程服务器），本应用只支持本地 stdio 传输".to_string())
@@ -764,6 +782,18 @@ mod agent_source_tests {
         assert!(parse_agent_server(r#"{"command":"x"}"#).is_err());
         assert!(parse_agent_server(r#"{"id":"","command":"x"}"#).is_err());
         assert!(parse_agent_server("不是 JSON").is_err());
+    }
+
+    #[test]
+    fn id_that_cannot_become_a_tool_prefix_is_blocked() {
+        // id 要拼进 mcp__<id>__<tool>：中文/点/空格/超长的名字会让每一轮带工具的
+        // 请求被服务商整体 400。不算解析失败，用 blocked_reason 表达「用不了」。
+        for bad in ["翻译", "com.example.x", "带 空格", "a__b", &*"x".repeat(41)] {
+            let text = format!(r#"{{"id":"{bad}","command":"x"}}"#);
+            let src = parse_agent_server(&text).unwrap();
+            let reason = src.blocked_reason.expect("该给出 blocked_reason");
+            assert!(reason.contains("id"), "原因里要点名 id：{reason}");
+        }
     }
 
     #[test]

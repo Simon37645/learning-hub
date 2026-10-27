@@ -482,6 +482,12 @@ body.dragging-chat {
   color: var(--text-sub);
   font-size: 12.5px;
   position: relative;
+  /* 按住拖动 = 搬对话到别的主题（指针事件实现，见 Sidebar 的 ChatRow）。
+     这里用 pan-y 而不是 none：行住在可滚动的主题列表里，none 会连「按住列表滚动」
+     一起禁掉；pan-y 把竖向滑动留给滚动、横向的位移交给拖拽——起始动作为横向时
+     浏览器不会接管，拖得起来。竖向起步的手势仍会发 pointercancel（当作滚动），
+     那条路上还有「⋯ → 移动到其他主题」兜底，触摸端不会没有入口。 */
+  touch-action: pan-y;
 }
 
 .chat-row:hover {

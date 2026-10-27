@@ -14,14 +14,24 @@ use std::time::Duration;
 const UA: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
-/// 客户端级兜底超时（秒）。模型请求每轮的超时由 `ChatRequest.timeout` 单独控制，
+/// 客户端级兜底超时（秒）。模型请求的空闲超时由 `AppCore::http_fresh` 按配置另设，
 /// 这里只保证「不管怎么卡，连接池不会挂着一辈子」。
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 pub fn client(timeout_secs: u64) -> AppResult<reqwest::Client> {
+    client_with_idle(timeout_secs, timeout_secs)
+}
+
+/// 同 [`client`]，但另设**块间空闲超时**（这么久没收到任何新字节就算卡死）。
+///
+/// 为什么要有它：reqwest 的总超时从发请求一直计到响应正文读完——把「空闲超时」
+/// 配成总超时的话，一条健康但耗时的 SSE 长回复会在流中途被掐死（模型请求踩过）。
+/// `read_timeout` 只看「距上一个块多久」，正常输出的流不管跑多久都不会撞上。
+pub fn client_with_idle(timeout_secs: u64, idle_secs: u64) -> AppResult<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(UA)
         .timeout(Duration::from_secs(timeout_secs.max(5)))
+        .read_timeout(Duration::from_secs(idle_secs.max(5)))
         .connect_timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()

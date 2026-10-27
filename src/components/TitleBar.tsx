@@ -9,7 +9,8 @@
 // 所以统一按**显示器工作区**摆窗口：`monitor.workArea` 是物理像素、已排除任务栏，
 // 多显示器也取当前那块屏。
 // - 「最大化」= 填满工作区，并记住原尺寸供还原
-// - 尺寸一变就检查：超出工作区就拉回来（Win+↑ 贴靠、系统快捷键都纠正得回来）
+// - 尺寸一变就检查：贴着工作区原点、略微超出的（边框差顶出去的那种）拉回来；
+//   用户主动摆放的跨屏/超大窗口不碰（见 clampToWorkArea 的说明）
 //
 // 交互细节：
 // - 整条是拖拽区（data-tauri-drag-region），按钮上不要加，否则拖不动窗口
@@ -42,7 +43,15 @@ export function TitleBar() {
     return mon?.workArea ?? null;
   }, []);
 
-  /** 窗口超出工作区就拉回来——不管它是怎么变大的（贴靠、系统快捷键、上次遗留） */
+  /**
+   * 窗口超出工作区就拉回来——**只认「我们自己摆出来的」那类越界**。
+   *
+   * 这条兜底（eb41f66）修的是 setSize 内容区/外框口径差造成的约 22px 突出：
+   * 那类越界的特征是位置就贴着工作区左上角（fitOuter 的落点）、只大出去一点点。
+   * 用户**主动**的摆放——拉伸窗口跨过屏边界、拖到缩放不同的第二块屏——位置是
+   * 任意的，一律钳回去等于挫败摆放意图（多显示器下松手 120ms 就被弹回主体屏）。
+   * 所以位置不在工作区原点附近的越界视为用户自己的意图，不动。
+   */
   const clampToWorkArea = useCallback(async () => {
     if (!win) return;
     // 专注模式（F11）期间不插手：系统刚把窗口铺满整块屏，这里再按「工作区」拉一下
@@ -62,6 +71,11 @@ export function TitleBar() {
       pos.x >= wa.position.x - 1 &&
       pos.y >= wa.position.y - 1;
     if (fits) return;
+    // 只修「贴着工作区原点、略微超界」的形态（边框差 / DPI 换算把我们 fit 好的
+    // 窗口顶出去一点）。位置在别处 = 贴靠、系统快捷键、用户自己拖的——都不碰。
+    const atOrigin =
+      Math.abs(pos.x - wa.position.x) <= 24 && Math.abs(pos.y - wa.position.y) <= 24;
+    if (!atOrigin) return;
     // 尺寸与位置一起按**外框**口径设：setSize 设的是内容区，拿工作区尺寸直接设
     // 会永远差那圈边框（见 lib/winfit.ts），窗口就一直是「大出去一点点」的状态。
     const w = Math.min(size.width, wa.size.width);

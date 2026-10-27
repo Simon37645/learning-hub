@@ -137,3 +137,17 @@ it("取消排队：清掉，也不再发", async () => {
   expect(useApp.getState().queued).toBeNull();
   expect(sent).toEqual([]);
 });
+
+it("已有一条排队时再排：拒收不覆盖，第一条保留", async () => {
+  useApp.setState({ streaming: { turnId: "T1", chatId: "c1", text: "", thinking: "" } });
+  const first = await useApp.getState().queueSend("第一条", [], [], false);
+  const second = await useApp.getState().queueSend("第二条", [], [], true);
+  expect(first).toBe(true);
+  expect(second).toBe(false);
+  // 被覆盖 = 用户打的字无声丢失（输入框已清空、还没落库），所以必须拒收
+  expect(useApp.getState().queued?.text).toBe("第一条");
+  expect(useApp.getState().queued?.interrupting).toBe(false);
+  // 拒收的那条不该触发打断
+  expect(cancelled).toEqual([]);
+  expect(sent).toEqual([]);
+});

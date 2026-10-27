@@ -15,8 +15,26 @@ use crate::agent::registry::{
     arg_bool, arg_str, arg_str_array, arg_str_req, object_schema, str_prop, Tool, ToolCtx, ToolOutput,
 };
 use crate::domain::memory::{Memory, MemoryKind, Scope as MemoryScope};
-use crate::error::AppResult;use async_trait::async_trait;
+use crate::error::AppResult;
+use async_trait::async_trait;
 use serde_json::{json, Value};
+
+/// 写之前把目标作用域从盘上同步进缓存。
+///
+/// 为什么必须有这一步：缓存只装「当前主题链 + 全局」。agent 用显式 `topic` 参数
+/// 写**别的主题**时，那个作用域多半不在缓存里——`upsert` 拿着「只有这一条新记录」
+/// 的列表整份覆盖写盘，目标主题原有的记忆（上限 60 条）会被静默清空。
+/// 顺带把「用户刚用记事本改过文件」也同步进来（`load_topic` / `load` 的既有语义）。
+/// 只能在 `memory_write`（写锁）的闭包里调：这两件事都是同步文件读，不 await。
+fn sync_scope(store: &mut crate::domain::memory::MemoryStore, scope: &MemoryScope, dir: Option<&std::path::Path>, root: &std::path::Path) -> AppResult<()> {
+    match scope {
+        MemoryScope::Global => store.load(root),
+        MemoryScope::Topic(slug) => {
+            let dir = dir.ok_or_else(|| crate::error::AppError::other("主题记忆缺目录，写不了"))?;
+            store.load_topic(slug, dir)
+        }
+    }
+}
 
 /// 写入/删除记忆要用户点头吗？——不用。
 ///
@@ -111,8 +129,13 @@ impl Tool for MemoryWrite {
 
         let id = arg_str(&input, "id").unwrap_or_default();
         let id = id.trim().to_string();
+        let root = ctx.core.config_read().workspace_root.clone();
 
         let (saved, added) = ctx.core.memory_write(|store| {
+            // 目标作用域先从盘上同步进来（可能是当前链之外的某个主题）：见 sync_scope。
+            // 不做这一步的话，未加载作用域的缓存是空的，upsert 会用「只有这一条」
+            // 的列表整份覆盖目标主题的 memories.jsonl——原有记忆被静默清空。
+            sync_scope(store, &scope, dir.as_deref(), &root)?;
             if id.is_empty() {
                 store.upsert(&scope, dir.as_deref(), item)
             } else {
@@ -324,7 +347,11 @@ impl Tool for MemoryForget {
             None => "全局".to_string(),
         };
 
+        let root = ctx.core.config_read().workspace_root.clone();
         let n = ctx.core.memory_write(|store| {
+            // 同 MemoryWrite：目标作用域（尤其显式 topic 给的「别的主题」）要先从盘上
+            // 同步进来，否则缓存放的是空表，永远查不到要删的条目、白白报「没有匹配」
+            sync_scope(store, &scope, dir.as_deref(), &root)?;
             store.forget(&scope, dir.as_deref(), &ids, content.as_deref())
         })?;
         if n > 0 {

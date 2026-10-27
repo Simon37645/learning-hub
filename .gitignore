@@ -21,3 +21,8 @@ workspace/
 # 打包产物（ASCII 名，用于发布）
 release/
 config.json.e2e-backup/
+
+# 一次性验证残留：rustc 单文件测 PathBuf::join 穿越行为的临时程序及其编译产物。
+# 含本机绝对路径/编译机符号路径，只留在本地，绝不入库（若要清掉本地文件直接删即可）
+/j.*
+/lh-verify-*/

@@ -95,6 +95,9 @@ pub struct TurnHandleView {
 struct TurnHandle {
     cancel: Arc<AtomicBool>,
     started: Instant,
+    /// 这轮属于哪条对话。chat_delete / chat_move / chat_fork 靠它判断
+    /// 「这条对话还有没有回合正在落库」（那几个动作必须等回合收尾，见 commands/agent.rs）。
+    chat_id: String,
 }
 
 /// 待审批的工具调用：request_id → (工具名, 决定回执)
@@ -204,7 +207,13 @@ impl AgentService {
         let cancel = Arc::new(AtomicBool::new(false));
         self.turns.lock().insert(
             turn_id.clone(),
-            TurnHandle { cancel: cancel.clone(), started: Instant::now() },
+            TurnHandle {
+                cancel: cancel.clone(),
+                started: Instant::now(),
+                // 句柄要在用户消息落库**之前**就位：登记晚了的话，「发出去的瞬间就删」
+                // 这类操作能从窗口里钻过去
+                chat_id: req.chat_id.clone(),
+            },
         );
 
         // 用户消息先落库，前端拿到 id 后直接渲染，避免重复
@@ -249,6 +258,10 @@ impl AgentService {
             let started = Instant::now();
             let result = svc.run_turn(core.clone(), tid.clone(), req2, cancel).await;
             let ms = started.elapsed().as_millis() as u64;
+            // 句柄先摘再发事件：run_turn 已经返回，不会再有任何落库，这之后
+            // chat_delete / chat_move 就该被放行。反过来的话，「轮次刚结束就删」
+            // 会撞上句柄还没摘的窗口，白吃一个「正在进行中」的报错。
+            svc.turns.lock().remove(&tid);
             match result {
                 Ok(reason) => core.emit_agent(&AgentEvent::Finished {
                     turn_id: tid.clone(),
@@ -264,7 +277,6 @@ impl AgentService {
                 }),
                 Err(e) => core.emit_agent(&AgentEvent::Failed { turn_id: tid.clone(), message: e.to_string() }),
             }
-            svc.turns.lock().remove(&tid);
         });
 
         Ok((turn_id, user_msg))
@@ -287,10 +299,19 @@ impl AgentService {
             .iter()
             .map(|(id, h)| TurnHandleView {
                 turn_id: id.clone(),
-                chat_id: String::new(),
+                chat_id: h.chat_id.clone(),
                 started_at_ms: now.duration_since(h.started).as_millis() as i64,
             })
             .collect()
+    }
+
+    /// 某条对话是否还有回合正在跑（落库进行中）。
+    ///
+    /// 删除 / 搬动 / 分叉一条对话之前必须先问这一句：回合是「每条消息现场追加」的，
+    /// 中途把文件拿走的话，下一次追加会在原路径把文件重新建出来——删除的对话
+    /// 「复活」成只有尾巴的残件，搬移则在源主题留下同 id 的半截副本。
+    pub fn is_chat_running(&self, chat_id: &str) -> bool {
+        self.turns.lock().values().any(|h| h.chat_id == chat_id)
     }
 
     /// 回应用户的审批弹窗。
@@ -444,7 +465,6 @@ impl AgentService {
                     temperature: profile.temperature,
                     max_tokens: profile.max_tokens,
                     reasoning: profile.reasoning,
-                    timeout: Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
                     cancel: cancel.clone(),
                     attachments: attachments.clone(),
                     supports_vision: profile.supports_vision,
@@ -826,7 +846,6 @@ pub async fn complete_once(
         temperature: 0.2,
         max_tokens,
         reasoning: profile.reasoning,
-        timeout: std::time::Duration::from_secs(cfg.agent.request_timeout_secs.max(30)),
         cancel: Arc::new(AtomicBool::new(false)),
         // 这条路径只做一次结构化输出，不带图片
         attachments: Attachments::disabled(),

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tauri::{Manager, State};
 
 #[derive(Debug, Clone, Serialize)]
@@ -424,7 +424,8 @@ pub async fn profile_test(state: State<'_, AppState>, id: String) -> AppResult<P
         // 正文一个字都留不下，看着像「连上了但没内容」（DeepSeek 系就是这样）。
         max_tokens: 256,
         reasoning: crate::config::ReasoningConfig::default(),
-        timeout: Duration::from_secs(45),
+        // 不设请求级总超时（ChatRequest 已无该字段）：卡的判定由客户端的
+        // read_timeout 承担（AppCore::http_fresh），「连上了但一个字不吐」照样会超时
         cancel: Arc::new(AtomicBool::new(false)),
         // 连通性测试只发一句 ping：不带图片，也不看档案的图片开关
         attachments: crate::agent::attachment::Attachments::disabled(),

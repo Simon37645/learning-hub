@@ -7,13 +7,31 @@
 //! 与技能/MCP 一样，**定义与开关分开**：记忆一直在磁盘上，
 //! 总开关只决定「要不要注入提示词、要不要给 agent 记忆工具」。
 
-use crate::domain::memory::{Memory, MemoryKind, MemoryOverview, MAX_PER_SCOPE};
+use crate::domain::memory::{Memory, MemoryKind, MemoryOverview, MemoryStore, MAX_PER_SCOPE};
 use crate::domain::topic::Topic;
 use crate::domain::MemoryScope;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
+
+/// 写盘前把目标作用域同步成盘上的最新内容（全局走 `load`，主题走 `load_topic`）。
+///
+/// 为什么主题作用域也要：缓存只装「当前主题链 + 全局」；面板在主题 A 里改一条记忆
+/// 时如果 A 的记忆恰好还没进缓存（本会话没读过它），`patch`/`upsert` 会拿着空列表
+/// 整份覆盖写盘——agent 的 memory_write 工具踩过同一类坑，写法收口在这里。
+fn sync_scope(
+    core: &crate::state::AppCore,
+    store: &mut MemoryStore,
+    scope: &MemoryScope,
+    dir: Option<&std::path::Path>,
+) -> AppResult<()> {
+    store.load(&core.config_read().workspace_root.clone())?;
+    if let (MemoryScope::Topic(slug), Some(dir)) = (scope, dir) {
+        store.load_topic(slug, dir)?;
+    }
+    Ok(())
+}
 
 /// 作用域参数：前端传 "global" 或 "topic"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,7 +147,7 @@ pub async fn memory_upsert(
             let note = input.note.clone();
             let kind = input.kind.as_deref().and_then(MemoryKind::parse);
             core.memory_write(|store| {
-                store.load(&core.config_read().workspace_root.clone())?;
+                sync_scope(&core, store, &scope, dir.as_deref())?;
                 store.patch(
                     &scope,
                     dir.as_deref(),
@@ -148,7 +166,7 @@ pub async fn memory_upsert(
             item.source = input.source.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
             item.pinned = input.pinned.unwrap_or(false);
             core.memory_write(|store| {
-                store.load(&core.config_read().workspace_root.clone())?;
+                sync_scope(&core, store, &scope, dir.as_deref())?;
                 store.upsert(&scope, dir.as_deref(), item)?;
                 Ok(())
             })?;
@@ -175,7 +193,7 @@ pub async fn memory_delete(
     let (scope, dir, topic) = resolve_scope(&state, scope, &topic_slug)?;
     let ids = vec![id];
     let removed = core.memory_write(|store| {
-        store.load(&core.config_read().workspace_root.clone())?;
+        sync_scope(&core, store, &scope, dir.as_deref())?;
         store.forget(&scope, dir.as_deref(), &ids, None)
     })?;
     if removed == 0 {
@@ -201,7 +219,7 @@ pub async fn memory_set_pinned(
     let core = state.0.clone();
     let (scope, dir, _) = resolve_scope(&state, scope, &topic_slug)?;
     core.memory_write(|store| {
-        store.load(&core.config_read().workspace_root.clone())?;
+        sync_scope(&core, store, &scope, dir.as_deref())?;
         store.patch(&scope, dir.as_deref(), &id, None, None, Some(pinned), None)?;
         Ok(())
     })?;
@@ -219,7 +237,7 @@ pub async fn memory_clear(
     let core = state.0.clone();
     let (scope, dir, _) = resolve_scope(&state, scope, &topic_slug)?;
     let n = core.memory_write(|store| {
-        store.load(&core.config_read().workspace_root.clone())?;
+        sync_scope(&core, store, &scope, dir.as_deref())?;
         store.clear(&scope, dir.as_deref())
     })?;
     if n > 0 {

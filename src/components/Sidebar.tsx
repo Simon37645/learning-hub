@@ -629,9 +629,13 @@ function ChatRow({
   const archiveChat = useApp((s) => s.archiveChat);
   const forkChat = useApp((s) => s.forkChat);
   const deleteChat = useApp((s) => s.deleteChat);
+  const topics = useApp((s) => s.topics);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const [confirming, setConfirming] = useState(false);
+  /** 「移动到其他主题」的选择弹层：触摸设备上拖拽会被滚动手势接管（见 .chat-row
+      的 touch-action 注释），这条菜单路是手机端唯一打得开的搬对话入口 */
+  const [moving, setMoving] = useState(false);
   const drag = useRef<{
     el: HTMLElement;
     startX: number;
@@ -829,6 +833,16 @@ function ChatRow({
                       >
                         <Icon name="target" size={13} /> {pinned ? "取消置顶" : "置顶"}
                       </MenuItem>
+                      {mode !== "studio" && (
+                        <MenuItem
+                          onClick={() => {
+                            setMoving(true);
+                            close();
+                          }}
+                        >
+                          <Icon name="folder" size={13} /> 移动到其他主题…
+                        </MenuItem>
+                      )}
                       <MenuItem
                         onClick={() => {
                           doFork();
@@ -890,6 +904,39 @@ function ChatRow({
             「{title || "新对话"}」会被移动到{" "}
             <code className="mono">工作区/.hub/trash/</code>，不会真删。
             只是想让它别占地方的话，用「归档」更合适——随时能翻回来。
+          </div>
+        </Modal>
+      )}
+
+      {/* 移动到其他主题：按住拖拽在触摸设备上会被滚动手势接管（手机端尤其如此），
+          这条菜单路不依赖指针手势，桌面 / 手机都能用。工坊对话没有主题可搬，不出这项。 */}
+      {moving && chatId && (
+        <Modal
+          title={`把「${title || "新对话"}」移到…`}
+          icon="folder"
+          onClose={() => setMoving(false)}
+        >
+          <div className="col" style={{ gap: 4, maxHeight: 320, overflowY: "auto" }}>
+            {topics
+              .filter((t) => t.slug !== topicSlug)
+              .map((t) => (
+                <button
+                  key={t.slug}
+                  className="btn"
+                  style={{ justifyContent: "flex-start" }}
+                  title={t.slug}
+                  onClick={() => {
+                    void moveChat(chatId!, topicSlug, t.slug);
+                    setMoving(false);
+                  }}
+                >
+                  {t.meta.emoji ? `${t.meta.emoji} ` : ""}
+                  {t.meta.name}
+                </button>
+              ))}
+            {topics.filter((t) => t.slug !== topicSlug).length === 0 && (
+              <div className="muted sub">没有别的主题可搬（至少要有两个主题）。</div>
+            )}
           </div>
         </Modal>
       )}

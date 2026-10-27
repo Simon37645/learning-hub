@@ -771,13 +771,23 @@ impl Tool for TaskCreate {
 }
 
 /// 宽松解析日期：支持「2026-10-01」「2026-10-01 20:00」「10-01」「明天」这类常见写法。
+///
+/// 输入是使用者嘴里的**本地**时刻（「10-01」说的是他的 10 月 1 日），要落成正确的
+/// UTC 时刻存库。以前这里直接 `and_utc()`——把本地日期当 UTC 用，存出的时刻比
+/// 录入意图晚一个时区偏移：东八区下所有日期截止在界面上显示晚一天（录「10-26」
+/// 显示「10-27」、「今天」截止显示「明天」），还和日程分组的本地日历日互相矛盾。
 pub fn parse_due(raw: &str) -> Option<chrono::DateTime<Utc>> {
+    use chrono::TimeZone as _;
     let s = raw.trim();
     if s.is_empty() {
         return None;
     }
     let now = chrono::Local::now();
-    let end_of_day = |d: chrono::NaiveDate| d.and_hms_opt(23, 59, 0).map(|n| n.and_utc());
+    // 本地日历日 → 当天 23:59 的**本地**时刻 → UTC。DST 造成的不存在/歧义时刻取最早一档。
+    let end_of_day = |d: chrono::NaiveDate| -> Option<chrono::DateTime<Utc>> {
+        let naive = d.and_hms_opt(23, 59, 0)?;
+        chrono::Local.from_local_datetime(&naive).earliest().map(|t| t.with_timezone(&Utc))
+    };
 
     match s {
         "今天" | "today" => return end_of_day(now.date_naive()),
@@ -792,7 +802,11 @@ pub fn parse_due(raw: &str) -> Option<chrono::DateTime<Utc>> {
     }
     for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d", "%Y/%m/%d"] {
         if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(naive.and_utc());
+            // 带时刻的输入同样按本地时刻理解（「10-01 20:00」说的是他的晚上八点）
+            return chrono::Local
+                .from_local_datetime(&naive)
+                .earliest()
+                .map(|t| t.with_timezone(&Utc));
         }
         if let Ok(date) = chrono::NaiveDate::parse_from_str(s, fmt) {
             return end_of_day(date);
@@ -808,6 +822,33 @@ pub fn parse_due(raw: &str) -> Option<chrono::DateTime<Utc>> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod due_tests {
+    use super::*;
+
+    /// 纯日期 / 相对词的截止要落在**本地**的那一天：转回本地时区后必须还是
+    /// 录入的那个日历日、23:59（旧实现把本地日期当 UTC 存，显示端按本地读
+    /// 就系统性晚一天）。用「明天」构造，测试在任何时区下都成立。
+    #[test]
+    fn local_dates_stay_local_days() {
+        let want = (chrono::Local::now() + Duration::days(1)).date_naive();
+        let got = parse_due("明天").unwrap();
+        assert_eq!(got.with_timezone(&chrono::Local).date_naive(), want);
+        assert_eq!(
+            got.with_timezone(&chrono::Local).format("%H:%M").to_string(),
+            "23:59"
+        );
+        // 缺年份的「MM-DD」同理
+        let s = format!("{:02}-{:02}", want.month(), want.day());
+        let got2 = parse_due(&s).unwrap();
+        assert_eq!(got2.with_timezone(&chrono::Local).date_naive(), want);
+        // 带时刻的输入也按本地理解
+        let s3 = format!("{} 20:00", want.format("%Y-%m-%d"));
+        let got3 = parse_due(&s3).unwrap();
+        assert_eq!(got3.with_timezone(&chrono::Local).format("%H:%M").to_string(), "20:00");
+    }
 }
 
 use chrono::Datelike as _;

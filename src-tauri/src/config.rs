@@ -279,7 +279,9 @@ pub struct AgentConfig {
     /// 是否允许 agent 联网抓取网页
     #[serde(default = "yes")]
     pub allow_web: bool,
-    /// 请求超时（秒）
+    /// 模型流式请求的**空闲**超时（秒）：这么久没有收到任何新数据才算请求卡死
+    /// （首 token 不来、流中途停住）。健康的长回复跑多久都不受它限制——
+    /// 别把它当总超时用（总时长另有 10 分钟兜底，见 `net::DEFAULT_TIMEOUT_SECS`）
     #[serde(default = "default_timeout")]
     pub request_timeout_secs: u64,
     /// 模型连接中断后的自动重连上限。0 = 关闭，失败就直接报错。

@@ -64,10 +64,10 @@ impl LlmProvider for OpenAiProvider {
         // 让官方端点也在流里带上 usage（官方默认不带，界面上的缓存命中率就没数据了）。
         // 但不是所有网关都认这个字段：一旦报「不认识的参数」就退回不带它的请求——用量拿不到可以忍，
         // 对话失败不能。
-        let resp = match self.post_with_usage(&body, &req).await {
+        let resp = match self.post_with_usage(&body).await {
             Err(e) if e.to_string().contains("stream_options") => {
                 eprintln!("[provider] 该端点不认 stream_options，已退回不带用量的请求");
-                self.post(&body, &req).await?
+                self.post(&body).await?
             }
             other => other?,
         };
@@ -156,15 +156,14 @@ impl LlmProvider for OpenAiProvider {
 
 impl OpenAiProvider {
     /// 发一次请求；非 2xx 会转成可读的错误。
-    async fn post(
-        &self,
-        body: &Map<String, Value>,
-        req: &ChatRequest,
-    ) -> AppResult<reqwest::Response> {
+    async fn post(&self, body: &Map<String, Value>) -> AppResult<reqwest::Response> {
         let mut rb = self
             .http
             .post(self.profile.chat_url())
-            .timeout(req.timeout)
+            // **不设请求级总超时**：reqwest 的 `.timeout()` 从发请求一直计到正文读完，
+            // 健康的长流（思考 + 满速输出）轻轻松过它，会在流中途被掐死、又被当成
+            // 网络抖动整轮原样重发。空闲超时（首 token 不来 / 流卡住）由客户端的
+            // read_timeout 承担——见 AppCore::http_fresh。
             .json(&Value::Object(body.clone()));
         let key = self.profile.api_key.trim();
         if !key.is_empty() {
@@ -181,14 +180,10 @@ impl OpenAiProvider {
     }
 
     /// 同上，但请求体里多带 `stream_options.include_usage`（官方端点靠它才会在流里报用量）。
-    async fn post_with_usage(
-        &self,
-        body: &Map<String, Value>,
-        req: &ChatRequest,
-    ) -> AppResult<reqwest::Response> {
+    async fn post_with_usage(&self, body: &Map<String, Value>) -> AppResult<reqwest::Response> {
         let mut with_usage = body.clone();
         with_usage.insert("stream_options".into(), json!({ "include_usage": true }));
-        self.post(&with_usage, req).await
+        self.post(&with_usage).await
     }
 }
 

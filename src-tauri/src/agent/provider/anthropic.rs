@@ -93,7 +93,9 @@ impl LlmProvider for AnthropicProvider {
                 .http
                 .post(self.profile.chat_url())
                 .header("anthropic-version", ANTHROPIC_VERSION)
-                .timeout(req.timeout)
+                // **不设请求级总超时**（同 openai.rs 的 post）：健康的长流会在中途被
+                // 总超时掐死、又被当成网络抖动整轮重发；空闲超时由客户端的
+                // read_timeout 承担——见 AppCore::http_fresh。
                 .json(&Value::Object(body));
             let key = self.profile.api_key.trim();
             if !key.is_empty() {

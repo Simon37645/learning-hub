@@ -26,8 +26,6 @@ pub struct ChatRequest {
     pub max_tokens: u32,
     /// 思考强度设置（由模型档案决定）
     pub reasoning: crate::config::ReasoningConfig,
-    /// 单次请求超时
-    pub timeout: std::time::Duration,
     /// 用户点「停止」时置位，provider 在流循环里检查
     pub cancel: Arc<AtomicBool>,
     /// 图片附件的落盘位置：消息里的 `image` 块只存路径，字节在这里读。

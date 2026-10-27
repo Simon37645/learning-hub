@@ -2,7 +2,7 @@
 //
 // 这里是「学习资产」的管理界面——agent 在对话里产出的东西，都在这里被查看、编辑、复习。
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../lib/api";
 import { isRemote } from "../lib/remote";
@@ -586,8 +586,15 @@ function CardsPane() {
   const [adding, setAdding] = useState(false);
   /// 复习队列：进入复习时固定下来，评完一张就前进一张
   const [queue, setQueue] = useState<Card[]>([]);
-  /// 打分请求在途：挡住双击 / 连按造成的重复评分
-  const [grading, setGrading] = useState(false);
+  /**
+   * 打分请求在途的守卫（挡住双击 / 连按造成的重复评分）。必须用 ref 而不是 state：
+   * `grade` 的键盘路径走的是 keydown 监听器，监听器的 effect 依赖数组里没有这个值
+   * （重订阅会拖慢按键路径），闭包里捕获的永远是注册那一刻的 false——state 在
+   * 请求在途期间对监听器不可见，长按评分键（键盘自动重复约 30 次/秒）就会对同一张卡
+   * 连发多次评分，后端把 SM-2 连算多次（ease/间隔/次数全错）、队列 slice 多次跳卡。
+   * ref 在 await 之前同步置位，按钮 / 键盘两条路径都挡得住。
+   */
+  const gradingRef = useRef(false);
 
   useEffect(() => {
     void loadCards({ dueOnly });
@@ -605,15 +612,16 @@ function CardsPane() {
 
   async function grade(g: Grade) {
     // 重入保护：连按两次「3」会在 await 期间双双进来，current 还是同一张——
-    // 后端把同一张卡连算两次 SM-2，队列 slice 两次还会跳过下一张
-    if (!current || grading) return;
-    setGrading(true);
+    // 后端把同一张卡连算两次 SM-2，队列 slice 两次还会跳过下一张。
+    // 判据用 ref（同步置位），state 在键盘监听器的旧闭包里恒是 false，挡不住。
+    if (!current || gradingRef.current) return;
+    gradingRef.current = true;
     try {
       await reviewCard(current.id, g);
       setShowBack(false);
       setQueue((q) => q.slice(1));
     } finally {
-      setGrading(false);
+      gradingRef.current = false;
     }
   }
 

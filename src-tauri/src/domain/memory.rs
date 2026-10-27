@@ -286,22 +286,28 @@ impl MemoryStore {
         Self::default()
     }
 
-    /// 切换到某个工作区：根目录变了就整体重载，没变就是空操作。
+    /// 切换到某个工作区：根目录变了就整体重载。
     ///
     /// 每次读记忆前都调一次是故意的——用户可能把工作区换到别的盘，
     /// 也可能直接用编辑器改了 jsonl 文件，这样一进来就是最新的。
+    ///
+    /// 全局那份**同根也要重读**（与 [`load_topic`] 同一套纪律）：以前这里同根
+    /// 直接早退，全局文件在整个应用生命周期内只在第一次读盘——用户手改过的
+    /// 全局记忆既不生效，还会在下一次写全局记忆（甚至 memory_flush 落「用了几次」）
+    /// 时被陈旧缓存整份覆盖、悄悄回滚。
     pub fn load(&mut self, workspace_root: &Path) -> AppResult<()> {
         let want = workspace_root.to_path_buf();
-        if self.root.as_deref() == Some(want.as_path()) {
-            return Ok(());
+        if self.root.as_deref() != Some(want.as_path()) {
+            self.root = Some(want);
+            self.scopes.clear();
+            self.dirty.clear();
         }
-        self.root = Some(want);
-        self.scopes.clear();
+        // 先把攒着的「用了几次」落盘再读，不然重读会把它们丢掉（与 load_topic 同理）
+        if self.dirty.contains(GLOBAL_KEY) {
+            self.persist_key(GLOBAL_KEY, None)?;
+        }
         let global = store::read_jsonl::<Memory>(&global_path(workspace_root))?;
-        if !global.is_empty() {
-            self.scopes.insert(GLOBAL_KEY.to_string(), global);
-        }
-        self.dirty.clear();
+        self.put(&Scope::Global, global);
         Ok(())
     }
 
@@ -976,6 +982,36 @@ mod tests {
 
         std::fs::remove_dir_all(&a).ok();
         std::fs::remove_dir_all(&b).ok();
+    }
+
+    /// 全局记忆**同根也要重读**：用户按设计用记事本改 `memories.jsonl`，
+    /// 下一次 load 就要能看到；缓存停在第一次的内容上，之后任何写盘都会
+    /// 把手改整份回滚（主题那份 load_topic 一直有这个保证，全局不能缺席）。
+    #[test]
+    fn reloads_global_on_same_root() {
+        let root = tmp();
+        let mut store = store_with(&root);
+        assert!(store.list(&Scope::Global).is_empty());
+
+        // 用户在应用外面新建/追加了一条全局记忆
+        let hand_written = Memory::new(MemoryKind::Preference, "手写的一条");
+        store::write_jsonl(&global_path(&root), &[hand_written]).unwrap();
+        store.load(&root).unwrap();
+        assert_eq!(store.list(&Scope::Global).len(), 1);
+        assert_eq!(store.list(&Scope::Global)[0].content, "手写的一条");
+
+        // 再改一次也能看到（老代码在同根时直接早退，永远停在第一次的内容上）
+        let mut again = Memory::new(MemoryKind::Fact, "第二条");
+        again.use_count = 3;
+        store::write_jsonl(&global_path(&root), &[store.list(&Scope::Global)[0].clone(), again]).unwrap();
+        store.load(&root).unwrap();
+        assert_eq!(store.list(&Scope::Global).len(), 2);
+        // 文件被清空（用户全删了）也要如实反映，不能把缓存里的旧条目再写回去
+        store::write_jsonl(&global_path(&root), &[] as &[Memory]).unwrap();
+        store.load(&root).unwrap();
+        assert!(store.list(&Scope::Global).is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// 父主题里记下的事，学「某一章」（子主题）时必须照样生效——

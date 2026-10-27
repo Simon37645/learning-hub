@@ -120,6 +120,26 @@ struct TurnHandle {
 /// 待审批的工具调用：request_id → (工具名, 决定回执)
 type ApprovalSlot = (String, oneshot::Sender<bool>);
 
+/// 审批槽的 Drop 守卫：槽位插进 approvals 表之后交给它保管，无论哪条退出路径
+///（用户回执 / 超时 / 用户点「停止」/ 整个工具 future 在 await 点被就地丢弃）
+/// 都把条目摘掉。
+///
+/// 为什么必须用 Drop：摘槽散在各个等待分支里盖不住「丢弃」——工具 future 里
+/// 深处 await 的 request_sandbox，在 execute_tool 的 select 因取消而放弃工具时
+/// **连同它自己的清理分支一起被丢弃**，而且外层的 wait_cancel 相位恒领先内层
+///（早创建早到期），内层先醒的概率趋近于零。以前只有 is_allowed（在丢弃点
+/// 之外等待）能靠分支摘干净。respond_approval 先摘的场合 guard 再摘是 no-op。
+struct ApprovalSlotGuard<'a> {
+    request_id: String,
+    slots: &'a Mutex<HashMap<String, ApprovalSlot>>,
+}
+
+impl Drop for ApprovalSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.slots.lock().remove(&self.request_id);
+    }
+}
+
 pub struct AgentService {
     /// 工具表。MCP 服务器是运行时才连上来的，所以这里要能动态加工具。
     tools: parking_lot::RwLock<ToolRegistry>,
@@ -698,10 +718,16 @@ impl AgentService {
                     .map(|(_, p)| crate::agent::message::estimate_tokens(&p.text))
                     .sum::<u32>();
             let real = acc.usage;
+            // 报了总量但缺一半（Anthropic 形网关只在收尾时报 output、或
+            // prompt_tokens 报 0）的那一半退回本地估算——「没报」不能落成假 0，
+            // 界面浮层会把「输入 0」当真数字显示
             let (in_tokens, out_tokens) = if real.is_empty() {
                 (est_in, est_out)
             } else {
-                (real.input_tokens, real.output_tokens)
+                (
+                    if real.input_tokens == 0 { est_in } else { real.input_tokens },
+                    if real.output_tokens == 0 { est_out } else { real.output_tokens },
+                )
             };
             total_in += in_tokens;
             total_out += out_tokens;
@@ -713,8 +739,12 @@ impl AgentService {
             assistant.meta.input_tokens = Some(in_tokens);
             assistant.meta.output_tokens = Some(out_tokens);
             if !real.is_empty() {
-                assistant.meta.cached_tokens = Some(real.cached_tokens);
-                assistant.meta.cache_write_tokens = Some(real.cache_write_tokens);
+                // 缓存明细只在**真的报了**时才落：没报落 None（界面上那一轮就不
+                // 计入命中率），以前落 Some(0) 会被当成「命中 0%」把整条对话的
+                // 命中率假性拉低（Ollama / vLLM / 不透传明细的网关全中）
+                assistant.meta.cached_tokens = real.cache_reported.then_some(real.cached_tokens);
+                assistant.meta.cache_write_tokens =
+                    real.cache_reported.then_some(real.cache_write_tokens);
             }
             messages.push(assistant.clone());
             append_transcript(&core, topic.as_ref(), &req.chat_id, &assistant)?;
@@ -920,6 +950,11 @@ impl AgentService {
         self.approvals
             .lock()
             .insert(request_id.clone(), (format!("sandbox:{mode}"), tx));
+        // 摘槽交给守卫：这个 future 嵌在工具 run 的深处，execute_tool 在取消时
+        // 会把工具 future **连同这里的清理分支一起丢弃**——靠分支摘槽盖不住
+        // 丢弃路径（「沙箱弹窗开着时点停止」泄漏槽位的根因），Drop 在被丢弃的
+        // future 里照样执行。
+        let _slot = ApprovalSlotGuard { request_id: request_id.clone(), slots: &self.approvals };
 
         core.emit_agent(&AgentEvent::SandboxRequest {
             turn_id: turn_id.to_string(),
@@ -931,22 +966,14 @@ impl AgentService {
             pre_approved: false,
         });
 
-        // 等待也要盯着「停止」（与 is_allowed 同一套）：这个 future 挂在工具
-        // run 的深处，execute_tool 在取消时丢弃工具 future——不在这里自己摘槽的话，
-        // approvals 表里的条目就随丢弃失去清理时机，每次「沙箱弹窗开着时点停止」
-        // 永久泄漏一个。
+        // 等待也要盯着「停止」（与 is_allowed 同一套）。摘槽不在这里做：
+        // guard 兜住包括「被丢弃」在内的所有退出路径。
         let allowed = tokio::select! {
             biased;
-            _ = wait_cancel(cancel) => {
-                self.approvals.lock().remove(&request_id);
-                false
-            }
+            _ = wait_cancel(cancel) => false,
             r = tokio::time::timeout(APPROVAL_TIMEOUT, rx) => match r {
                 Ok(Ok(allow)) => allow,
-                _ => {
-                    self.approvals.lock().remove(&request_id);
-                    false
-                }
+                _ => false,
             },
         };
         if allowed {
@@ -1107,6 +1134,8 @@ impl AgentService {
         self.approvals
             .lock()
             .insert(request_id.clone(), (tc.name.clone(), tx));
+        // 摘槽交给守卫：任何退出路径（回执/超时/取消）都兜得住
+        let _slot = ApprovalSlotGuard { request_id: request_id.clone(), slots: &self.approvals };
 
         core.emit_agent(&AgentEvent::ToolApproval {
             turn_id: turn_id.to_string(),
@@ -1124,19 +1153,13 @@ impl AgentService {
         let decision = tokio::select! {
             biased;
             // 用户点了「停止」：立刻按拒绝处理，别干等超时（见函数说明）
-            _ = wait_cancel(cancel) => {
-                self.approvals.lock().remove(&request_id);
-                false
-            }
+            _ = wait_cancel(cancel) => false,
             r = rx => match r {
                 Ok(allow) => allow,
                 // 回执端没了（slot 被别的路径摘掉）：按拒绝处理
                 Err(_) => false,
             },
-            _ = tokio::time::sleep(APPROVAL_TIMEOUT) => {
-                self.approvals.lock().remove(&request_id);
-                false
-            }
+            _ = tokio::time::sleep(APPROVAL_TIMEOUT) => false,
         };
         decision
     }

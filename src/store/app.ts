@@ -338,7 +338,9 @@ interface AppStore {
   loadCards: (opts?: { dueOnly?: boolean }) => Promise<void>;
   createCard: (input: { front: string; back: string; kind?: CardKind; tags?: string[] }) => Promise<void>;
   deleteCard: (id: string) => Promise<void>;
-  reviewCard: (id: string, grade: "again" | "hard" | "good" | "easy") => Promise<void>;
+  /** 复习打分。返回 false = 没写进去（没开主题/后端报错，如卡被删、写盘失败）——
+   *  调用方不能前进队列，否则失败那张卡被静默跳过、本轮失去评分机会 */
+  reviewCard: (id: string, grade: "again" | "hard" | "good" | "easy") => Promise<boolean>;
   loadTasks: () => Promise<void>;
   createTask: (input: { title: string; due?: string | null; priority?: number }) => Promise<void>;
   updateTask: (id: string, patch: { status?: string; due?: string; priority?: number; title?: string }) => Promise<void>;
@@ -1083,10 +1085,21 @@ export const useApp = create<AppStore>((set, get) => ({
    */
   async reconcileRunning() {
     const cur = get().streaming;
-    if (!cur) return;
+    const bg = get().backgroundTurns;
+    // backgroundTurns 也要对账：它是「前端自维护」的名单，手机息屏/切网丢掉
+    // finished 事件后幽灵条目会让那条对话在侧栏永久转圈（streaming 最初就是
+    // 因为这个才有对账）。后端 agent_running 返回的是**全部**在跑轮次，
+    // 对两边是同一个响应。
+    if (!cur && bg.length === 0) return;
     try {
       const running = await api.agentRunning();
-      if (!running.some((r) => r.turnId === cur.turnId)) set({ streaming: null });
+      const ids = new Set(running.map((r) => r.turnId));
+      set((s) => ({
+        // 对账是自愈不是权威：后端说没有的才清；后端说在跑但本实例没见过
+        // TurnStarted 的**不认领**（那是另一端的轮次，这里没有它的流式缓冲）
+        streaming: s.streaming && !ids.has(s.streaming.turnId) ? null : s.streaming,
+        backgroundTurns: s.backgroundTurns.filter((t) => ids.has(t.turnId)),
+      }));
     } catch {
       /* 对不上就算了，别打扰用户 */
     }
@@ -1434,7 +1447,7 @@ export const useApp = create<AppStore>((set, get) => ({
 
   async reviewCard(id, grade) {
     const slug = get().topic?.slug;
-    if (!slug) return;
+    if (!slug) return false;
     const before = get().cards.find((c) => c.id === id);
     const wasDue = before ? new Date(before.srs.due) <= new Date() : false;
     try {
@@ -1448,8 +1461,10 @@ export const useApp = create<AppStore>((set, get) => ({
             ? { ...s.topic, stats: { ...s.topic.stats, cardsDue: Math.max(0, s.topic.stats.cardsDue - 1) } }
             : s.topic,
       }));
+      return true;
     } catch (e) {
       get().toast("error", errText(e));
+      return false;
     }
   },
 
@@ -2070,14 +2085,18 @@ function handleAgentEvent(
         if (s.streaming && s.streaming.turnId !== ev.turn_id) {
           return { backgroundTurns, lessonTick: s.lessonTick + 1 };
         }
-        // 审批浮层只撤「属于这一轮」的：并发轮次的审批（显示中的或排队的）
-        // 不能被无关轮次的收尾顺手清掉
+        // 审批只撤「属于这一轮」的（显示中的与排队中的都算——那一轮已经收尾，
+        // 它排着的审批再显示出来就是让人批准一个已经死掉的请求）；显示槽被撤
+        // 后把队列里还活着的第一条顶上来，不然它永远上不了屏
+        const alive = s.pendingApprovals.filter((p) => p.turnId !== ev.turn_id);
         const clearApproval = approvalTurn === ev.turn_id;
-        approvalTurn = clearApproval ? null : approvalTurn;
+        const next = clearApproval ? (alive.shift() ?? null) : null;
+        approvalTurn = next?.turnId ?? (clearApproval ? null : approvalTurn);
         return {
           streaming: null,
           iteration: null,
-          approval: clearApproval ? null : s.approval,
+          approval: next?.approval ?? (clearApproval ? null : s.approval),
+          pendingApprovals: alive,
           backgroundTurns,
           lessonTick: s.lessonTick + 1,
         };
@@ -2099,12 +2118,16 @@ function handleAgentEvent(
         const backgroundTurns = s.backgroundTurns.filter((t) => t.turnId !== ev.turn_id);
         // 迟到的旧轮次失败不许清掉新一轮的 streaming，错误也只属于它的对话
         if (s.streaming && s.streaming.turnId !== ev.turn_id) return { backgroundTurns };
+        // 与 finished 同一套：撤这一轮的排队审批、顶起还活着的第一条
+        const alive = s.pendingApprovals.filter((p) => p.turnId !== ev.turn_id);
         const clearApproval = approvalTurn === ev.turn_id;
-        approvalTurn = clearApproval ? null : approvalTurn;
+        const next = clearApproval ? (alive.shift() ?? null) : null;
+        approvalTurn = next?.turnId ?? (clearApproval ? null : approvalTurn);
         return {
           streaming: null,
           iteration: null,
-          approval: clearApproval ? null : s.approval,
+          approval: next?.approval ?? (clearApproval ? null : s.approval),
+          pendingApprovals: alive,
           backgroundTurns,
           chatError: ev.message,
         };

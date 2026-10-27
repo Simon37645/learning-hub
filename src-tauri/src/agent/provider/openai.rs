@@ -208,6 +208,11 @@ fn usage_from_openai(u: &Value) -> Option<ProviderUsage> {
         .get("completion_tokens")
         .and_then(num)
         .unwrap_or_default();
+    // 明细字段存在与否要单独记下：全缺失 = 服务商没报缓存（落 None，前端不计入
+    // 命中率），而不是「命中 0」
+    let cache_reported = u.pointer("/prompt_tokens_details/cached_tokens").is_some()
+        || u.get("prompt_cache_hit_tokens").is_some()
+        || u.get("cache_read_input_tokens").is_some();
     let cached = u
         .pointer("/prompt_tokens_details/cached_tokens")
         .and_then(num)
@@ -225,6 +230,7 @@ fn usage_from_openai(u: &Value) -> Option<ProviderUsage> {
         cached_tokens: cached,
         cache_write_tokens: cache_write,
         output_tokens: output,
+        cache_reported,
     })
 }
 

@@ -284,6 +284,10 @@ fn usage_from_anthropic(u: &Value) -> Option<ProviderUsage> {
     let read = num("cache_read_input_tokens");
     let write = num("cache_creation_input_tokens");
     let output = num("output_tokens");
+    // 明细字段存在与否单独记：system_plain 降级（不带 cache_control）或网关
+    // 不透传时这两个字段整体缺失——是「没报缓存」，不是「命中 0」
+    let cache_reported =
+        u.get("cache_read_input_tokens").is_some() || u.get("cache_creation_input_tokens").is_some();
     let total_in = fresh + read + write;
     if total_in == 0 && output == 0 {
         return None;
@@ -293,6 +297,7 @@ fn usage_from_anthropic(u: &Value) -> Option<ProviderUsage> {
         cached_tokens: read,
         cache_write_tokens: write,
         output_tokens: output,
+        cache_reported,
     })
 }
 

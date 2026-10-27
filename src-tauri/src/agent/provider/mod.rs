@@ -50,6 +50,11 @@ pub struct ProviderUsage {
     pub cached_tokens: u32,
     pub cache_write_tokens: u32,
     pub output_tokens: u32,
+    /// 服务商**报没报缓存明细**。报了总量但没报明细（Ollama / vLLM / 不透传
+    /// 缓存字段的中转网关）时 cached_tokens 是 0——把 0 落进 jsonl，界面会把
+    /// 这一轮当「命中 0%」计进整条对话的命中率（AGENTS.md：别把没数据算成
+    /// 没命中）。两个信息位必须分开。
+    pub cache_reported: bool,
 }
 
 impl ProviderUsage {
@@ -60,6 +65,8 @@ impl ProviderUsage {
         self.cached_tokens = self.cached_tokens.max(other.cached_tokens);
         self.cache_write_tokens = self.cache_write_tokens.max(other.cache_write_tokens);
         self.output_tokens = self.output_tokens.max(other.output_tokens);
+        // 任一次上报带了缓存明细，这一轮就算「报过」
+        self.cache_reported = self.cache_reported || other.cache_reported;
     }
 
     pub fn is_empty(&self) -> bool {

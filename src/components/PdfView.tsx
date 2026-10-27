@@ -63,6 +63,11 @@ export function PdfView({ tab, highlight }: { tab: TabView; highlight: string | 
     })();
     return () => {
       cancelled = true;
+      // 卸载/重载都要让旧的逐页抽取循环**立即失效**：只 bump seq 的话这里不 bump，
+      // 旧循环的 stale() 永远为假——切走/关标签后它继续烧完最多 400 页，还会把
+      // 刚被卸载清理删掉的快照提供器连着旧文档全文重新注册回去（内存不释放、
+      // 旧快照还能后写覆盖新快照）。bump 之后循环在下一个检查点退出。
+      extractSeq.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, reloadSeq]);
@@ -100,6 +105,8 @@ export function PdfView({ tab, highlight }: { tab: TabView; highlight: string | 
         pages.push({ page: i, text: "" });
       }
       if (i % 5 === 0 || i === total) {
+        // 注册前再查一次：卸载清理可能刚发生在本页处理途中
+        if (stale()) return;
         pagesRef.current = pages;
         registerSnapshotProvider(tab.id, () => ({ pages, totalPages: pdf.numPages }));
       }
@@ -113,6 +120,9 @@ export function PdfView({ tab, highlight }: { tab: TabView; highlight: string | 
 
   useEffect(() => {
     return () => {
+      // 与上面同理：卸载也让抽取循环失效（这个 effect 在 tab.id 变化时也会跑，
+      // 两条卸载路径都不能漏）
+      extractSeq.current += 1;
       registerSnapshotProvider(tab.id, null);
     };
   }, [tab.id]);

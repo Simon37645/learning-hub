@@ -77,8 +77,11 @@ export function Markdown({
     // innerHTML 又把失败标记丢掉，于是闪个不停），其实只是「还没写完」。
     // 这时保留代码块原样，围栏闭合后走消息列表那份 Markdown 完整渲染。
     if (!streaming) void renderMermaidIn(ref.current);
-    // agent 写的 ```html / ```svg 演示块渲染成沙箱卡片（同步，讲难懂内容时用）
-    renderDemoBlocksIn(ref.current);
+    // agent 写的 ```html / ```svg 演示块渲染成沙箱卡片（同步，讲难懂内容时用）。
+    // **流式期间同样跳过**：每个增量都整体重建 innerHTML，卡片（含沙箱 iframe）
+    // 会被拆除重建、srcdoc 重新赋值触发 iframe 重载——用户看着卡片白屏闪烁、
+    // CSS 动画不断从头跑。落库后的消息列表那份（无 streaming prop）才是稳定的。
+    if (!streaming) renderDemoBlocksIn(ref.current);
   }, [html, streaming]);
 
   return (

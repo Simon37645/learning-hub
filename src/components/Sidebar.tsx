@@ -55,12 +55,15 @@ export function Sidebar() {
   const studioChats = useApp((s) => s.studioChats);
   /** 当前这条对话属于哪个模式：判断「刚开、还没落盘的工坊对话」要用 */
   const chatMode = useApp((s) => s.chatMode);
-  // 哪条对话正在跑一轮（转圈的标识用它）：store 里那份是「当前正在看的这轮」，
-  // 并发轮次（另一端发起的）挂在 backgroundTurns 里——它们同样在跑，照样转圈；
-  // 每条对话行只在自己是其中之一的时候显示
-  const runningChatId = useApp((s) => {
-    if (s.streaming?.chatId) return s.streaming.chatId;
-    return s.backgroundTurns[0]?.chatId ?? null;
+  // 哪些对话正在跑一轮（转圈的标识用它）：正在看的这轮在 streaming 里，
+  // 并发轮次（另一端发起的）在 backgroundTurns 里——**可能同时有多条在跑**，
+  // 每条对话行只看自己在不在这个集合里。旧实现取单值且 streaming 非空就
+  // 短路，并发时只有一个圈、后台轮次干脆不转。
+  const runningChatIds = useApp((s) => {
+    const ids = new Set<string>();
+    if (s.streaming?.chatId) ids.add(s.streaming.chatId);
+    for (const t of s.backgroundTurns) ids.add(t.chatId);
+    return ids;
   });
   const loadChat = useApp((s) => s.loadChat);
   const loadChats = useApp((s) => s.loadChats);
@@ -248,7 +251,7 @@ export function Sidebar() {
                 active={c.id === activeChatId}
                 pinned={c.pinned}
                 customTitle={c.customTitle}
-                running={runningChatId === c.id}
+                running={runningChatIds.has(c.id)}
                 onClick={() => openChat(c.id)}
               />
             ))}
@@ -261,7 +264,7 @@ export function Sidebar() {
                 active
                 // 这一行还没有 chatId（文件都没建），但它就是当前那条——
                 // 刚开的新对话马上发消息时，转圈也得转在它身上
-                running={runningChatId === activeChatId}
+                running={runningChatIds.has(activeChatId)}
                 onClick={() => {}}
               />
             )}
@@ -407,7 +410,7 @@ export function Sidebar() {
                   active={c.id === activeChatId}
                   pinned={c.pinned}
                   customTitle={c.customTitle}
-                  running={runningChatId === c.id}
+                  running={runningChatIds.has(c.id)}
                   onClick={() => void loadChat(c.id, "studio")}
                 />
               ))}
@@ -419,7 +422,7 @@ export function Sidebar() {
                 time={null}
                 depth={1}
                 active
-                running={runningChatId === activeChatId}
+                running={runningChatIds.has(activeChatId)}
                 onClick={() => {}}
               />
             )}
@@ -651,6 +654,8 @@ function ChatRow({
     moved: boolean;
     ghost: HTMLDivElement | null;
     target: string | null;
+    /** 拖拽开始时挂的 window 级兜底收尾（见 onPointerMove 里的说明） */
+    cleanup?: () => void;
   } | null>(null);
   // 拖拽结束后的短时间内不把 pointerup 当「打开」。用时间窗而不是一次性布尔：
   // pointerup 落在窗口外 / pointercancel 时 click 事件根本不来，布尔会卡住
@@ -704,6 +709,19 @@ function ChatRow({
       document.body.appendChild(ghost);
       d.ghost = ghost;
       document.body.classList.add("dragging-chat");
+      // window 级兜底收尾：松手时指针滑到原生子 WebView（独立 HWND）上、
+      // 或拖动中窗口失焦，pointerup/pointercancel 到不了行上——幽灵卡片、
+      // grabbing 光标、drag.current 全部残留，直到再点一次那一行。
+      // 分界线拖拽在 dragcursor.ts 里已有同款三路兜底，这里补齐。
+      const finish = () => finishDragRef.current();
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+      window.addEventListener("blur", finish);
+      d.cleanup = () => {
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        window.removeEventListener("blur", finish);
+      };
     }
     if (d.ghost) {
       d.ghost.style.left = `${e.clientX + 12}px`;
@@ -718,10 +736,12 @@ function ChatRow({
     }
   };
 
-  const onPointerUp = () => {
+  /** 拖拽收尾（幂等）：行上的 pointerup、window 级兜底、卸载清理共用这一个。 */
+  const finishDrag = () => {
     const d = drag.current;
     drag.current = null;
     if (!d) return;
+    d.cleanup?.();
     d.ghost?.remove();
     document.body.classList.remove("dragging-chat");
     clearTarget(d.target ? findRow(d.target) : null);
@@ -730,6 +750,13 @@ function ChatRow({
       void moveChat(chatId, topicSlug, d.target);
     }
   };
+  // finishDrag 每次渲染重建，window 监听要拿稳定引用
+  const finishDragRef = useRef(finishDrag);
+  finishDragRef.current = finishDrag;
+  // 组件卸载（列表重渲染）时若还挂在拖拽里，同样收尾
+  useEffect(() => () => finishDragRef.current(), []);
+
+  const onPointerUp = () => finishDrag();
 
   const startRename = () => {
     setDraft(title);

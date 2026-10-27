@@ -617,7 +617,11 @@ function CardsPane() {
     if (!current || gradingRef.current) return;
     gradingRef.current = true;
     try {
-      await reviewCard(current.id, g);
+      const ok = await reviewCard(current.id, g);
+      // 评分没写进去（后端报错：卡被删/写盘失败/远程桥断）就停在这张——
+      // 队列照样前进的话，失败那张被静默跳过，本轮不再出现，toast 与翻页
+      // 信号互相矛盾；留在队首还能再按一次
+      if (!ok) return;
       setShowBack(false);
       setQueue((q) => q.slice(1));
     } finally {

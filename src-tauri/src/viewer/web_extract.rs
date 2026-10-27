@@ -501,7 +501,15 @@ fn collect_links(md: &str) -> Vec<(String, String)> {
             }
             let url = &md[i + 2..j.min(md.len())];
             if url.starts_with("http") {
-                let start = md[..i].rfind('[').unwrap_or(i);
+                // 左边找不到 '['：这不是一个完整的链接形状（比如正文里裸露的
+                // 「](https://…) 右半截」——讲 Markdown 语法的页面、教人修断链
+                // 的文档都会出现）。按普通文本跳过。以前用 unwrap_or(i) 的哨兵
+                // 值凑出 i+1..i 的空区间，起点大于终点**直接 panic**——
+                // release 构建配了 panic="abort"，一篇网页就能让整个应用闪退。
+                let Some(start) = md[..i].rfind('[') else {
+                    i = j;
+                    continue;
+                };
                 let text = md[start + 1..i].to_string();
                 links.push((text, url.to_string()));
             }
@@ -518,6 +526,18 @@ fn collect_links(md: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 正文里裸露的「](https://…) 右半截」（此前全文再无 '['）不能让提取 panic：
+    /// release 构建是 panic="abort"，一条由网页内容触发的全进程闪退。
+    #[test]
+    fn bare_right_half_of_link_does_not_panic() {
+        // 直接触发点：]( 紧邻 + url 以 http 开头 + 此前全文无 '['
+        let links = collect_links("右半部分是 ](https://example.com/x) 就断了");
+        assert!(links.is_empty(), "不是完整链接形状，不该产出链接：{links:?}");
+        // 走完整提取管线（含 pre 围栏）也不 panic
+        let html = r#"<html><body><pre>右半部分是 ](https://example.com/x) 就断了</pre></body></html>"#;
+        let _ = extract(html, "https://example.com/");
+    }
 
     #[test]
     fn extracts_article() {

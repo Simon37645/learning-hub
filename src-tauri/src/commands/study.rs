@@ -415,12 +415,18 @@ pub async fn agenda(state: State<'_, AppState>, horizon_days: Option<u32>) -> Ap
     for s in ws.list()? {
         let Ok(topic) = ws.load(&s.slug) else { continue };
         for task in PlanTask::load_all(&topic.tasks_path()) {
-            // 已完成/归档的只保留最近 3 天的，避免日程被历史淹没
+            // 已完成/归档的只保留最近 3 天的，避免日程被历史淹没。
+            // 完成日要按**本地**日历日算（与上面 today、与 due_date 的分组口径
+            // 一致——done_at 存的是 UTC 时刻，直接取 UTC 日历日的话，东八区
+            // 00:00-08:00 完成的任务会被多算一天龄，提前一天从日程消失）。
             if matches!(task.status, TaskStatus::Done | TaskStatus::Archived) {
                 let recent = task
                     .done_at
                     .or(Some(task.updated_at))
-                    .map(|d| (today - d.date_naive()).num_days() <= 3)
+                    .map(|d| {
+                        let day = d.with_timezone(&chrono::Local).date_naive();
+                        (today - day).num_days() <= 3
+                    })
                     .unwrap_or(false);
                 if !recent {
                     continue;

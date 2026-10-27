@@ -40,7 +40,7 @@ impl LlmProvider for AnthropicProvider {
 
     async fn stream(&self, req: ChatRequest, tx: UnboundedSender<StreamEvent>) -> AppResult<()> {
         // Anthropic 开了 extended thinking 就不接受自定义 temperature（必须为默认值 1）
-        let thinking = reasoning_for_anthropic(&req.reasoning);
+        let (thinking, max_tokens) = thinking_params(&req.reasoning, req.max_tokens);
         // 系统提示词打断点开启 prompt caching：同一份长提示词每轮都全价计费
         // 太浪费（官方的缓存是显式打断点才生效，OpenAI 那边是端点自动的）。
         // 第三方兼容端点不一定认这个形状——被 400 拒了就退回普通字符串再试一次。
@@ -49,18 +49,15 @@ impl LlmProvider for AnthropicProvider {
         let build_body = |system_plain: bool| {
             let mut body = Map::new();
             body.insert("model".into(), json!(req.model));
-            body.insert("max_tokens".into(), json!(req.max_tokens));
+            body.insert("max_tokens".into(), json!(max_tokens));
             if thinking.is_none() {
                 body.insert("temperature".into(), json!(req.temperature));
             }
             if let Some(budget) = thinking {
-                // 官方要求 budget_tokens < max_tokens，这里夹一下避免请求被拒
-                let budget = budget.min(req.max_tokens.saturating_sub(1).max(1024));
                 body.insert(
                     "thinking".into(),
                     json!({ "type": "enabled", "budget_tokens": budget }),
                 );
-                body.insert("max_tokens".into(), json!(req.max_tokens.max(budget + 1)));
             }
             body.insert("stream".into(), json!(true));
             if !req.system.trim().is_empty() {
@@ -313,6 +310,25 @@ fn reasoning_for_anthropic(cfg: &crate::config::ReasoningConfig) -> Option<u32> 
     }
 }
 
+/// 开思考时的 (budget_tokens, max_tokens)。
+///
+/// Anthropic 的思考 token **计入** max_tokens：把预算夹到 max_tokens-1 虽然不会
+/// 400，但正文空间能被压到只剩 1 个 token——思考一吃满，可见输出（正文/工具
+/// 调用）必然被截（stop_reason=max_tokens），而且每轮原样重发每轮复现。所以
+/// 这里反过来**抬高 max_tokens**，给正文至少留一半（且不少于 1024）：
+/// 用户把思考开到「高/最高」就是要深想，压预算违背意图；总输出变大是思考
+/// 预算本身该有的成本。
+fn thinking_params(cfg: &crate::config::ReasoningConfig, max_tokens: u32) -> (Option<u32>, u32) {
+    match reasoning_for_anthropic(cfg) {
+        None => (None, max_tokens),
+        Some(budget) => {
+            let visible_floor = (max_tokens / 2).max(1024);
+            let total = max_tokens.max(budget.saturating_add(visible_floor));
+            (Some(budget), total)
+        }
+    }
+}
+
 /// 消息 → Anthropic 格式，并合并连续同角色消息。
 ///
 /// `attachments` / `supports_vision` 只影响带图的用户消息：Anthropic 的图是内容块
@@ -487,6 +503,31 @@ fn to_anthropic_tools(tools: &[ToolSpec]) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 思考预算不再把正文挤到只剩 1 个 token：预算超过 max_tokens 时抬高总输出，
+    /// 给正文至少留一半（≥1024）；低档与不开思考的行为不变。
+    #[test]
+    fn thinking_budget_keeps_room_for_visible_output() {
+        use crate::config::{ReasoningConfig, ReasoningEffort, ReasoningStyle};
+        let cfg = |effort| ReasoningConfig { effort, style: ReasoningStyle::Auto };
+        use ReasoningEffort::*;
+
+        // 不开思考：原样
+        let (b, t) = thinking_params(&cfg(Off), 8192);
+        assert_eq!((b, t), (None, 8192));
+        // 低档：预算远小于 max_tokens，行为不变
+        let (b, t) = thinking_params(&cfg(Low), 8192);
+        assert_eq!((b, t), (Some(1024), 8192));
+        // 中档：总输出不动，预算正好留出一半正文
+        let (b, t) = thinking_params(&cfg(Medium), 8192);
+        assert_eq!((b, t), (Some(4096), 8192));
+        // 高/最高：预算超过 max_tokens → 抬高总输出，正文仍有下半
+        let (b, t) = thinking_params(&cfg(High), 8192);
+        assert_eq!((b, t), (Some(12000), 12000 + 4096));
+        let (b, t) = thinking_params(&cfg(Max), 8192);
+        assert_eq!(b, Some(32000));
+        assert!(t - b.unwrap() >= 4096, "正文至少留一半：{t}");
+    }
 
     #[test]
     fn anthropic_usage_sums_cache_into_input() {

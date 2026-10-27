@@ -55,9 +55,13 @@ export function Sidebar() {
   const studioChats = useApp((s) => s.studioChats);
   /** 当前这条对话属于哪个模式：判断「刚开、还没落盘的工坊对话」要用 */
   const chatMode = useApp((s) => s.chatMode);
-  // 哪条对话正在跑一轮（转圈的标识用它）：store 里那份是「最近一轮」，
-  // 每条对话行只在自己是它的时候显示
-  const runningChatId = useApp((s) => s.streaming?.chatId ?? null);
+  // 哪条对话正在跑一轮（转圈的标识用它）：store 里那份是「当前正在看的这轮」，
+  // 并发轮次（另一端发起的）挂在 backgroundTurns 里——它们同样在跑，照样转圈；
+  // 每条对话行只在自己是其中之一的时候显示
+  const runningChatId = useApp((s) => {
+    if (s.streaming?.chatId) return s.streaming.chatId;
+    return s.backgroundTurns[0]?.chatId ?? null;
+  });
   const loadChat = useApp((s) => s.loadChat);
   const loadChats = useApp((s) => s.loadChats);
   const view = useApp((s) => s.view);

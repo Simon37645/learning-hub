@@ -243,8 +243,15 @@ pub fn collect(
         out.push(overview_item(id, &messages, &meta, updated_at));
     }
     sort_items(&mut out);
-    out.truncate(60);
-    Ok(out)
+    // 条数上限只截**未归档**的：归档沉底之后正好落在截断窗口里，超限的主题
+    // 里最旧的归档会被无声截掉——文件还在盘上，但侧栏「已归档」分组永远看不到，
+    // 也没有任何其它入口能访问，归档语义（「先收起来」）退化成对旧条目的「隐藏」。
+    // 归档本来就是低频整理动作，全保留。
+    let (archived, rest): (Vec<_>, Vec<_>) = out.into_iter().partition(|c| c.archived);
+    let mut rest = rest;
+    rest.truncate(60);
+    rest.extend(archived);
+    Ok(rest)
 }
 
 #[cfg(test)]

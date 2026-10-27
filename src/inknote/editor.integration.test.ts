@@ -124,7 +124,9 @@ describe("Markdown 所见即所得预览", () => {
     expect(parent.querySelectorAll(".md-codeblock-widget")).toHaveLength(2);
   });
 
-  it("completes a language with Tab but confirms the typed language with Enter", async () => {
+  // 这条用例是全文件唯一挂在异步补全激活上的，给专属超时：全量并行/构建机
+  // 高负载下计时器会成倍晚点（实测挂 46-64 秒，单跑 0.1 秒），默认 30s 会被杀
+  it("completes a language with Tab but confirms the typed language with Enter", { timeout: 120_000 }, async () => {
     const { parent, handle } = mount("");
     typeText(handle, "```py");
     startCompletion(handle.view);
@@ -133,7 +135,7 @@ describe("Markdown 所见即所得预览", () => {
     // 墙钟被挤爆，实测这一用例能从 ~100ms 涨到 4s+，1s 等不到就直接撞 testTimeout。
     // 空闲时激活在几十毫秒内完成，放宽上限不影响速度，只是不再对负载过敏。
     await vi.waitFor(() => expect(completionStatus(handle.view.state)).toBe("active"), {
-      timeout: 20_000,
+      timeout: 45_000,
       interval: 25,
     });
     press(handle, "Tab");

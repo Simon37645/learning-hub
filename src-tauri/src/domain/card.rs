@@ -83,6 +83,11 @@ impl SrsState {
             }
             Grade::Hard => {
                 self.ease = (self.ease - 0.15).max(1.3);
+                // Hard 也是**成功回忆**（SM-2 的 quality≥3、Anki 同义），计进连续
+                // 答对次数——不计数的话，连按几次「吃力」攒起来的间隔会在下一次
+                // 「记得」时被阶梯（repetitions==1 → 1 天）整段拍回去：更好的评分
+                // 得到更短的间隔，复习节奏倒退。
+                self.repetitions += 1;
                 self.interval_days = if self.interval_days < 1.0 {
                     1.0
                 } else {
@@ -92,7 +97,11 @@ impl SrsState {
             Grade::Good => {
                 self.repetitions += 1;
                 self.interval_days = match self.repetitions {
-                    1 => 1.0,
+                    // 「第一次成功记 1 天」只对**确实还没起步**的卡生效：beta 期间
+                    // 产生的存量数据里有「连按过多次吃力（当时 Hard 不计数）、
+                    // 间隔已爬起来而 repetitions 仍为 0」的卡，这里再按一次
+                    // 「记得」不能把它拍回 1 天。
+                    1 if self.interval_days < 1.0 => 1.0,
                     2 => 3.0,
                     _ => (self.interval_days * self.ease).max(self.interval_days + 1.0),
                 };
@@ -280,6 +289,65 @@ mod tests {
         assert!(s.ease < before);
         assert_eq!(s.repetitions, 0);
         assert!(s.due <= t0 + Duration::minutes(11));
+    }
+
+    /// 连按「吃力」攒起来的间隔，在下一次「记得」时不能被拍回 1 天：
+    /// Hard 是成功回忆（要计数），「记得」的按钮语义是「正常推进」——
+    /// 更好的评分得到更短的间隔就是节奏倒退。
+    #[test]
+    fn hard_streak_then_good_keeps_progressing() {
+        let t0 = Utc::now();
+        let mut s = SrsState::default();
+        for _ in 0..8 {
+            s.apply(Grade::Hard, t0);
+        }
+        assert!(s.interval_days > 3.0, "连按吃力间隔应该爬起来：{}", s.interval_days);
+        let before = s.interval_days;
+        s.apply(Grade::Good, t0);
+        assert!(
+            s.interval_days > before,
+            "「记得」不能比「吃力」排得更近：{} → {}",
+            before,
+            s.interval_days
+        );
+        // 最小复现：2 连 Hard（1.5 → 1.8）后按「记得」也不能倒退
+        let mut s2 = SrsState::default();
+        s2.apply(Grade::Hard, t0);
+        s2.apply(Grade::Hard, t0);
+        let before2 = s2.interval_days;
+        s2.apply(Grade::Good, t0);
+        assert!(s2.interval_days > before2, "{} → {}", before2, s2.interval_days);
+        // 复学路径：忘了 → 吃力 → 吃力 → 记得，一路单调不倒退
+        let mut s3 = SrsState::default();
+        s3.apply(Grade::Again, t0);
+        s3.apply(Grade::Hard, t0);
+        s3.apply(Grade::Hard, t0);
+        let before3 = s3.interval_days;
+        s3.apply(Grade::Good, t0);
+        assert!(s3.interval_days > before3, "{} → {}", before3, s3.interval_days);
+        // 存量数据：beta 期间「Hard 不计数」留下的卡——间隔已爬起来、repetitions
+        // 仍为 0。再按「记得」也不能被阶梯拍回 1 天
+        let legacy = SrsState {
+            repetitions: 0,
+            interval_days: 5.18,
+            ..SrsState::default()
+        };
+        let mut legacy = legacy;
+        legacy.apply(Grade::Good, t0);
+        assert!(legacy.interval_days > 5.18, "{}", legacy.interval_days);
+
+        // 新卡与 Again 清零后的阶梯保持原语义：1 天 → 3 天
+        let mut s4 = SrsState::default();
+        s4.apply(Grade::Good, t0);
+        assert_eq!(s4.interval_days, 1.0);
+        s4.apply(Grade::Good, t0);
+        assert_eq!(s4.interval_days, 3.0);
+        let mut s5 = SrsState::default();
+        s5.apply(Grade::Again, t0);
+        s5.apply(Grade::Good, t0);
+        assert_eq!(s5.interval_days, 1.0);
+        s5.apply(Grade::Good, t0);
+        assert_eq!(s5.interval_days, 3.0);
     }
 
     /// 复习按钮上的「10 分钟 / 1 天 / 4 天」来自 preview_secs，

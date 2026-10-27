@@ -89,6 +89,46 @@ fn default_enabled() -> bool {
     true
 }
 
+/// 把服务器的 inputSchema 修成 Anthropic/OpenAI 都接受的形状。
+///
+/// 两家服务商对 `tools[].input_schema` 有硬校验：顶层必须是 `{"type":"object"}`，
+/// 不合规的 schema 会让**每一轮带工具的请求整体 400**（is_transient 对 400 不重试），
+/// 这条对话在该档案下就废了。MCP 规范里 inputSchema 是自由 JSON Schema、顶层
+/// type 非必需——官方 SDK 的 helper 会补，手写/第三方服务器可能漏。与「服务器名
+/// 不合法」同一个防御思路（宁可修形/放弃这一个工具，也不能让每轮请求都 400）：
+/// - 缺失 / 不是对象：整份换成空参数模式（工具照常能被调用，只是无参数）；
+/// - 对象但缺 `type`：补上 `"type": "object"`（properties 等原样保留）；
+/// - 对象但 `type` 是别的：换空参数模式并记日志。
+fn normalize_input_schema(raw: Value, tool: &str, log: &McpLog) -> Value {
+    let empty = || json!({ "type": "object", "properties": {} });
+    match &raw {
+        Value::Object(map) => match map.get("type").and_then(|t| t.as_str()) {
+            Some("object") => raw,
+            // 缺 type 的最常见（手写服务器照抄了 properties 忘了写顶层）：补上即可
+            None => {
+                log.push(format!("[schema] 工具「{tool}」的 inputSchema 缺顶层 type，已按 object 补全"));
+                let mut fixed = raw.clone();
+                if let Value::Object(m) = &mut fixed {
+                    m.insert("type".into(), json!("object"));
+                }
+                fixed
+            }
+            Some(other) => {
+                log.push(format!(
+                    "[schema] 工具「{tool}」的 inputSchema 顶层 type 是 {other:?}，                     服务商不认，已换成空参数模式（调用时工具自己报缺参）"
+                ));
+                empty()
+            }
+        },
+        _ => {
+            log.push(format!(
+                "[schema] 工具「{tool}」的 inputSchema 不是 JSON 对象，已换成空参数模式"
+            ));
+            empty()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolInfo {
@@ -286,17 +326,18 @@ impl McpClient {
             .into_iter()
             .filter_map(|t| {
                 let name = t.get("name")?.as_str()?.to_string();
+                let raw_schema = t
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
                 Some(McpToolInfo {
-                    name,
+                    name: name.clone(),
                     description: t
                         .get("description")
                         .and_then(|d| d.as_str())
                         .unwrap_or("")
                         .to_string(),
-                    input_schema: t
-                        .get("inputSchema")
-                        .cloned()
-                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+                    input_schema: normalize_input_schema(raw_schema, &name, &self.log),
                 })
             })
             .collect())
@@ -794,6 +835,34 @@ mod agent_source_tests {
             let reason = src.blocked_reason.expect("该给出 blocked_reason");
             assert!(reason.contains("id"), "原因里要点名 id：{reason}");
         }
+    }
+
+    #[test]
+    fn input_schema_is_normalized_for_providers() {
+        // 缺 type：最常见的漏写，补全即可（properties 原样保留）
+        let log = McpLog::new();
+        let fixed = normalize_input_schema(
+            serde_json::json!({ "properties": { "q": { "type": "string" } } }),
+            "查词",
+            &log,
+        );
+        assert_eq!(fixed["type"], "object");
+        assert!(fixed["properties"]["q"].is_object());
+        // 顶层 type 是别的 / 根本不是对象：换空参数模式（工具仍可调用）
+        let bad = normalize_input_schema(serde_json::json!("一个字符串"), "x", &log);
+        assert_eq!(bad["type"], "object");
+        let wrong = normalize_input_schema(serde_json::json!({ "type": "string" }), "y", &log);
+        assert_eq!(wrong["type"], "object");
+        assert!(wrong["properties"].is_object());
+        // 合规的原样透传
+        let ok = normalize_input_schema(
+            serde_json::json!({ "type": "object", "properties": {}, "required": ["a"] }),
+            "z",
+            &log,
+        );
+        assert_eq!(ok["required"], serde_json::json!(["a"]));
+        // 每次修形都留了痕（面板上看得见这台服务器哪里被兜过底）
+        assert!(!log.tail().is_empty());
     }
 
     #[test]

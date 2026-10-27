@@ -164,6 +164,18 @@ interface AppStore {
   } | null;
   chatError: string | null;
   approval: ApprovalRequest | null;
+  /**
+   * 排队中的审批（并发轮次各自弹的）：后端按 requestId 是多槽表，前端显示槽
+   * 只有单值——后来者直接覆盖的话，被覆盖的那个用户永远看不到，600 秒后被
+   * 后端按「拒绝」放行。连发起那一轮的 turn_id 一起记：那一轮收尾时它的审批
+   * 要跟着撤（弹窗还开着也不能让人批准一个已经死掉的请求）。
+   */
+  pendingApprovals: { approval: ApprovalRequest; turnId: string }[];
+  /**
+   * 后台在跑的轮次（另一端——比如手机——发起的）：不占 streaming 槽
+   * （那会顶掉用户正在看的这一轮的流式与停止键），侧栏转圈与收尾清理认它。
+   */
+  backgroundTurns: { turnId: string; chatId: string }[];
   /** 每跑完一轮 +1：讲解步骤面板靠它刷新（agent 会在这一轮里改方案） */
   lessonTick: number;
   /** 每次记忆变化 +1：记忆面板靠它刷新（agent 可能在对话里刚记下一条） */
@@ -346,6 +358,8 @@ interface AppStore {
 
 let toastSeq = 1;
 let gotoSeq = 1;
+/** 当前显示的审批浮层属于哪一轮（收尾时按它撤浮层；并发轮次互不误伤） */
+let approvalTurn: string | null = null;
 
 /**
  * 初始化只允许跑一次。
@@ -391,6 +405,8 @@ export const useApp = create<AppStore>((set, get) => ({
   usage: null,
   chatError: null,
   approval: null,
+  pendingApprovals: [],
+  backgroundTurns: [],
   lessonTick: 0,
   memoryTick: 0,
 
@@ -895,8 +911,11 @@ export const useApp = create<AppStore>((set, get) => ({
   async moveChat(chatId, fromSlug, toSlug) {
     try {
       await api.chatMove(chatId, fromSlug, toSlug);
+      await get().refreshTopics();
+      // 快照要在 refreshTopics **之后**取：那是一次 IPC，窗口里用户可能已经
+      // loadChat 切到别的对话——用旧快照判断会误触 newChat，把用户刚点开的
+      // 对话顶成一条空白新对话（deleteChat 用的是实时 get().chatId，同理）
       const st = get();
-      await st.refreshTopics();
       void st.loadChats(fromSlug);
       void st.loadChats(toSlug);
       // 正在看的这条被搬走了：源主题里已经没有它，新开一条，避免接着聊又写回源主题
@@ -940,8 +959,16 @@ export const useApp = create<AppStore>((set, get) => ({
     let chatId = get().chatId;
     try {
       if (!chatId) {
+        // 懒建也是一次 IPC：期间用户可能已经点开别的对话/回了首页（loadChat/
+        // leaveTopic 都会推进切换序号或改写 chatId）。先记序号，回来发现被人
+        // 推进了就**不把新对话的身份写回界面**——写回会让后面的 moved 判断
+        // 失真（消息串进别人对话的视图）。消息照发：落库在新对话里，切回去能读到。
+        // 正常路径（没切走）照旧写回，界面继续这条新对话。
+        const seq = ++chatSwitchSeq;
         chatId = await api.agentNewChat();
-        set({ chatId, chatSlug: slug });
+        if (seq === chatSwitchSeq && get().chatId === null) {
+          set({ chatId, chatSlug: slug });
+        }
       }
       const cid: string = chatId;
       const res = await api.agentSend({
@@ -1098,7 +1125,11 @@ export const useApp = create<AppStore>((set, get) => ({
   async approve(allow, always) {
     const pending = get().approval;
     if (!pending) return;
-    set({ approval: null });
+    // 出队下一条排队中的审批接着显示（并发轮次各自的申请依次过目）
+    const queue = [...get().pendingApprovals];
+    const next = queue.shift() ?? null;
+    approvalTurn = next?.turnId ?? null;
+    set({ approval: next?.approval ?? null, pendingApprovals: queue });
     const requestId = pending.kind === "tool" ? pending.call.requestId : pending.request.requestId;
     try {
       await api.agentApprove(requestId, allow, always);
@@ -1759,12 +1790,15 @@ async function bootstrapStore(
         }
       }
       if (ui?.view === "topic" && ui.topicSlug && boot.topics.some((t) => t.slug === ui.topicSlug)) {
-        await get().openTopic(ui.topicSlug);
-        // openTopic 默认续上最近一条对话；快照里存的那条还在就切回去
-        if (ui.chatId && ui.chatId !== get().chatId) {
+        const opened = await get().openTopic(ui.topicSlug);
+        // 没打开成（磁盘 IO 失败 / 恢复期间用户点了别的主题被作废）就停手：
+        // 此刻 topic 为 null 或已是别的主题，接着 loadChat 快照对话会把
+        // chatSlug 记错——发送落进工作区级或错误主题目录下的同名 jsonl
+        //（与 Sidebar.openChat 的守卫同一族，启动恢复这条路别漏）
+        if (opened && ui.chatId && ui.chatId !== get().chatId) {
           await get().loadChat(ui.chatId);
         }
-        restored = true;
+        restored = opened;
       } else if (ui?.view === "studio") {
         await get().openStudio();
         if (ui.chatId && ui.chatId !== get().chatId) {
@@ -1884,8 +1918,26 @@ function handleAgentEvent(
 ): void {
   switch (ev.kind) {
     case "turn_started":
+      // 并发轮次（另一端——比如手机——发起的）不许顶掉正在看的这一轮：
+      // 顶掉的后果是流式气泡、活动卡片、停止按钮全部消失，正在跑的那轮既
+      // 看不到输出也点不了停止（AGENTS.md：切视图都不许清 streaming，这里
+      // 更不能拿别人的 turn_started 来清）。新轮记进后台名单：侧栏照样转圈，
+      // 它收尾时按 turn_id 摘掉。没在跑的、或同对话的新一轮照常接管。
+      set((s) => {
+        if (s.streaming && s.streaming.chatId !== ev.chat_id) {
+          if (s.backgroundTurns.some((t) => t.turnId === ev.turn_id)) return {};
+          return {
+            backgroundTurns: [...s.backgroundTurns, { turnId: ev.turn_id, chatId: ev.chat_id }],
+          };
+        }
+        return {
+          streaming: { turnId: ev.turn_id, chatId: ev.chat_id, text: "", thinking: "" },
+          activities: [],
+          iteration: null,
+          chatError: null,
+        };
+      });
       lastTurn = { turnId: ev.turn_id, chatId: ev.chat_id };
-      set({ streaming: { turnId: ev.turn_id, chatId: ev.chat_id, text: "", thinking: "" }, activities: [], iteration: null, chatError: null });
       break;
     case "delta":
       set((s) => {
@@ -1924,12 +1976,22 @@ function handleAgentEvent(
       set((s) => (isCurrentTurn(s, ev.turn_id) ? { iteration: { index: ev.index, max: ev.max } } : {}));
       break;
     case "tool_approval":
-      // 审批是全局浮层：哪怕用户切到了别的对话，后台那轮也得等这个决定
-      set({ approval: { kind: "tool", call: ev.call } });
+      // 审批是全局浮层：哪怕用户切到了别的对话，后台那轮也得等这个决定。
+      // 但它不是「后来者顶掉先来者」：并发轮次各自的审批在这里排队依次显示
+      // （后端按 requestId 本来就是多槽表），显示槽空着才直接上。
+      set((s) => {
+        const approval: ApprovalRequest = { kind: "tool", call: ev.call };
+        if (s.approval) {
+          return { pendingApprovals: [...s.pendingApprovals, { approval, turnId: ev.turn_id }] };
+        }
+        approvalTurn = ev.turn_id;
+        return { approval };
+      });
       break;
-    case "sandbox_request":
-      set({
-        approval: {
+    case "sandbox_request": {
+      // 同 tool_approval：显示槽被占就排队（并发轮次各自的申请依次过目）
+      set((s) => {
+        const approval: ApprovalRequest = {
           kind: "sandbox",
           request: {
             requestId: ev.request_id,
@@ -1939,9 +2001,15 @@ function handleAgentEvent(
             reason: ev.reason,
             preApproved: ev.pre_approved,
           },
-        },
+        };
+        if (s.approval) {
+          return { pendingApprovals: [...s.pendingApprovals, { approval, turnId: ev.turn_id }] };
+        }
+        approvalTurn = ev.turn_id;
+        return { approval };
       });
       break;
+    }
     case "tool_started":
       set((s) => {
         if (!isCurrentTurn(s, ev.turn_id)) return {};
@@ -1996,11 +2064,23 @@ function handleAgentEvent(
       break;
     case "finished":
       set((s) => {
+        // 后台轮次收尾：从名单里摘掉
+        const backgroundTurns = s.backgroundTurns.filter((t) => t.turnId !== ev.turn_id);
         // 迟到的旧轮次收尾不许把新一轮的 streaming 清掉
         if (s.streaming && s.streaming.turnId !== ev.turn_id) {
-          return { lessonTick: s.lessonTick + 1 };
+          return { backgroundTurns, lessonTick: s.lessonTick + 1 };
         }
-        return { streaming: null, iteration: null, approval: null, lessonTick: s.lessonTick + 1 };
+        // 审批浮层只撤「属于这一轮」的：并发轮次的审批（显示中的或排队的）
+        // 不能被无关轮次的收尾顺手清掉
+        const clearApproval = approvalTurn === ev.turn_id;
+        approvalTurn = clearApproval ? null : approvalTurn;
+        return {
+          streaming: null,
+          iteration: null,
+          approval: clearApproval ? null : s.approval,
+          backgroundTurns,
+          lessonTick: s.lessonTick + 1,
+        };
       });
       void get().refreshTopics();
       void get().refreshBrief();
@@ -2016,9 +2096,18 @@ function handleAgentEvent(
       break;
     case "failed":
       set((s) => {
+        const backgroundTurns = s.backgroundTurns.filter((t) => t.turnId !== ev.turn_id);
         // 迟到的旧轮次失败不许清掉新一轮的 streaming，错误也只属于它的对话
-        if (s.streaming && s.streaming.turnId !== ev.turn_id) return {};
-        return { streaming: null, iteration: null, approval: null, chatError: ev.message };
+        if (s.streaming && s.streaming.turnId !== ev.turn_id) return { backgroundTurns };
+        const clearApproval = approvalTurn === ev.turn_id;
+        approvalTurn = clearApproval ? null : approvalTurn;
+        return {
+          streaming: null,
+          iteration: null,
+          approval: clearApproval ? null : s.approval,
+          backgroundTurns,
+          chatError: ev.message,
+        };
       });
       get().toast("error", ev.message);
       // 失败也一样：排队的消息别一直卡着

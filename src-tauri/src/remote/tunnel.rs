@@ -122,10 +122,19 @@ async fn worker(
         }
         let outcome = tokio::select! {
             _ = shutdown.changed() => break,
-            r = serve_one(&relay, &token, local_port, &live, &busy) => r,
+            r = serve_one(&relay, &token, local_port, &busy) => r,
         };
         match outcome {
-            Ok(()) => break, // 服务过一次就收工，监管会补一条新的
+            Ok(()) => {
+                // 服务完成：消费掉监管给这个 worker 的那个授权名额（spawn 时的
+                // live+1）。**只在这里扣**——失败重试的 worker 重连中继后仍然
+                // 是一条「空闲隧道」，名额并没有被消费；以前在配对成功那一刻扣，
+                // 「收到 GO → 连本机失败 → 重试」会重复扣，live 减到 0 再减就
+                // 按 AtomicUsize 语义回绕成 usize::MAX，`l < POOL` 从此恒假，
+                // 监管循环永不补池，连接池随现有隧道用完而静默枯竭。
+                live.fetch_sub(1, Ordering::Relaxed);
+                break; // 服务过一次就收工，监管会补一条新的
+            }
             Err(e) => {
                 failures += 1;
                 if failures == 1 || failures % 10 == 0 {
@@ -145,12 +154,26 @@ async fn worker(
     topup.notify_waiters();
 }
 
+/// busy 计数的 Drop 守卫：构造时 +1、离开作用域（含 `?` 早退、panic、以及
+/// shutdown 的 select 把整个 future 在 await 点丢弃）一律 -1。靠函数尾部的
+/// 减法盖不住「被丢弃」那条路。
+struct BusyGuard<'a>(&'a AtomicUsize);
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// 建一条隧道并服务一次配对。返回 `Ok(())` 表示真的服务了一次。
+///
+/// 不碰 `live`：本机 connect 失败 / 搬运出错时 worker 会重试、再次配对，
+/// 那时它仍然是一条「空闲隧道」，监管给的名额并没有被消费（消费点在 worker
+/// 的 Ok 分支）。
 async fn serve_one(
     relay: &str,
     token: &str,
     local_port: u16,
-    live: &Arc<AtomicUsize>,
     busy: &Arc<AtomicUsize>,
 ) -> std::io::Result<()> {
     let stream = TcpStream::connect(relay).await?;
@@ -187,9 +210,12 @@ async fn serve_one(
         }
     }
 
-    // 配对成功：这条连接被占住了，先记账（监管据此补一条新的空闲隧道）
-    live.fetch_sub(1, Ordering::Relaxed);
+    // 配对成功：这条连接被占住了，记一笔「在搬运」（监管的 topup 通知由
+    // worker 在 Ok 分支发）。busy 的归还交给 BusyGuard 的 Drop——本机
+    // connect 失败的 `?` 路径、搬运错误、甚至整个 future 被 shutdown 丢弃，
+    // 都不会漏。
     busy.fetch_add(1, Ordering::Relaxed);
+    let _busy = BusyGuard(busy);
 
     // 连本机服务，双向搬运。注意用的是同一个 `reader`（它可能已经把来访请求的
     // 头几个字节读进缓冲了），换成裸 socket 会把那几个字节丢掉。
@@ -211,9 +237,8 @@ async fn serve_one(
         res
     };
     let _ = tokio::join!(to_local, to_remote);
-    busy.fetch_sub(1, Ordering::Relaxed);
     Ok(())
-}
+}   // `_busy` 在这里 Drop：busy 归还
 
 #[cfg(test)]
 mod tests {
@@ -290,16 +315,43 @@ mod tests {
             String::from_utf8_lossy(&buf).to_string()
         });
 
-        let live = Arc::new(AtomicUsize::new(1));
         let busy = Arc::new(AtomicUsize::new(0));
-        serve_one(&format!("127.0.0.1:{relay_port}"), "tok", target_port, &live, &busy)
+        serve_one(&format!("127.0.0.1:{relay_port}"), "tok", target_port, &busy)
             .await
             .unwrap();
         let response = browser.await.unwrap();
         assert!(response.contains("echo:GET / HTTP/1.1"), "实际：{response}");
-        // 配对之后这条连接就不算「空闲」了：监管据此补新的一条
-        assert_eq!(live.load(Ordering::Relaxed), 0);
+        // 服务完成后 busy 必须归还（live 的消费在 worker 的 Ok 分支，单测够不到）
         assert_eq!(busy.load(Ordering::Relaxed), 0);
         let _ = relay_task.await;
+    }
+    /// 本机服务连不上（远程端口被占/换端口/回环异常）时：serve_one 返回 Err，
+    /// busy 必须原样归还——不然每次失败泄漏 +1，累计把 MAX_TOTAL 顶满后
+    /// 监管循环就再也不补池，中继远控随连接枯竭静默瘫痪。
+    #[tokio::test]
+    async fn local_connect_failure_returns_the_busy_slot() {
+        // 先占一个端口再放掉：拿到一个确定没人监听的端口号
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        // 假中继：握手后直接说 GO（不搬运）
+        let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = relay.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tunnel, _) = relay.accept().await.unwrap();
+            let (mut rh, mut wh) = tunnel.into_split();
+            let mut line = String::new();
+            BufReader::new(&mut rh).read_line(&mut line).await.unwrap();
+            let _ = wh.write_all(b"GO
+").await;
+            // 保持连接一会儿，让 serve_one 走到 connect 失败
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+
+        let busy = Arc::new(AtomicUsize::new(0));
+        let r = serve_one(&format!("127.0.0.1:{relay_port}"), "tok", dead_port, &busy).await;
+        assert!(r.is_err(), "本机端口没人监听，应该失败");
+        assert_eq!(busy.load(Ordering::Relaxed), 0, "失败路径 busy 必须归还");
     }
 }

@@ -367,6 +367,17 @@ npm run test:e2e                                  # 完整对话链路冒烟（1
   在脚本的允许名单里）。**排查这类"凭空出现的方块"**：先把截图做像素级分析（洪水填充量
   精确矩形、算叠色——4 层 34% 深色叠在浅色上正好是实测的 `#3E3C38`），再开 dev 实例用
   CDP `document.elementFromPoint` 直接问「这一点的元素是什么」，比盯着截图猜快得多。
+- **zustand 的选择器必须返回稳定引用**（v0.8.0-alpha.2 所有用户开机白屏的根因）：
+  `useApp((s) => ...)` 里 `new Set()` / `.filter()` / 对象字面量每次调用都返回新引用，
+  React 的 useSyncExternalStore 认定快照永远在变 → 启动即无限重渲染（React #185
+  「Maximum update depth exceeded」），整棵树挂掉、窗口一片白，控制台伴随
+  「The result of getSnapshot should be cached to avoid an infinite loop」，组件栈指向
+  挂掉的那个组件（dev 模式下报错带全名，如 `<Sidebar>`）。要派生集合就订阅**稳定切片**
+  （基础值、store 里原样的数组引用），用 `useMemo` 在组件里算（`Sidebar.tsx` 的
+  `runningChatIds` 就是这么修的）。typecheck / 单测都查不出这类问题——
+  **改了渲染路径的版本必须真的把应用跑起来看一眼**再发（CDP
+  `node scripts/cdp.mjs eval "document.getElementById('root').childElementCount"`，
+  结果为 0 就是白屏）。
 - **复习是内置的，外部 Anki 已整体移除**：卡片调度（SM-2）、复习界面都在本应用里。
   曾经的 AnkiConnect 同步与 TSV 导出已经删干净——`anki.rs` 模块、`anki_status` / `anki_sync` /
   `anki_ping` / `card_export_anki` 四个命令、`AnkiConfig`、`Card::anki_note_id` 与 `anki_fields`、

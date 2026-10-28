@@ -59,12 +59,18 @@ export function Sidebar() {
   // 并发轮次（另一端发起的）在 backgroundTurns 里——**可能同时有多条在跑**，
   // 每条对话行只看自己在不在这个集合里。旧实现取单值且 streaming 非空就
   // 短路，并发时只有一个圈、后台轮次干脆不转。
-  const runningChatIds = useApp((s) => {
+  // 订阅必须落在**稳定的**切片上（基础值 / store 里原样的数组引用），
+  // 集合在 useMemo 里派生。别把 new Set 挪回选择器里：那会让每次调用都
+  // 返回新引用，useSyncExternalStore 认为快照永远在变，启动即无限重渲染、
+  // 整树白屏（v0.8.0-alpha.2 的开机白屏就是这个写法带进来的）。
+  const streamingChatId = useApp((s) => s.streaming?.chatId ?? null);
+  const backgroundTurns = useApp((s) => s.backgroundTurns);
+  const runningChatIds = useMemo(() => {
     const ids = new Set<string>();
-    if (s.streaming?.chatId) ids.add(s.streaming.chatId);
-    for (const t of s.backgroundTurns) ids.add(t.chatId);
+    if (streamingChatId) ids.add(streamingChatId);
+    for (const t of backgroundTurns) ids.add(t.chatId);
     return ids;
-  });
+  }, [streamingChatId, backgroundTurns]);
   const loadChat = useApp((s) => s.loadChat);
   const loadChats = useApp((s) => s.loadChats);
   const view = useApp((s) => s.view);

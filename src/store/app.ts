@@ -13,6 +13,7 @@ import { registerRemoteInvoker } from "../lib/remoteinvoke";
 import { isRemote } from "../lib/remote";
 import { currentMonitor, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 import { fitOuter } from "../lib/winfit";
+import { parseResearchInput } from "../lib/research";
 import { api, errText } from "../lib/api";
 import { renderPdfPage } from "../lib/pdfshot";
 import type {
@@ -934,8 +935,12 @@ export const useApp = create<AppStore>((set, get) => ({
   async send(text, attachments, images) {
     const t = text.trim();
     const pics = images ?? [];
+    // 「/研究 」前缀在这里剥掉并转成 deepResearch 标志：直接发送、Alt/Ctrl+Enter
+    // 排队、排队补发全都汇经 send，所以只在这一个地方认前缀就够了。
+    // 剥掉后落库的用户消息就是问题本身（侧栏自动标题不会带着「/研究」开头）。
+    const research = parseResearchInput(t);
     // 只贴图不打字是合法的（「这张图里的第三行是什么」可以省略）
-    if (!t && pics.length === 0) return false;
+    if (!research.text && pics.length === 0) return false;
     // 双发竞态：streaming 要等 turn_started 事件回来才置上，快速连按两次
     // 回车会双双穿过守卫、在同一对话里并发跑两个轮次。sendInFlight 在
     // invoke 返回前就同步置位，把窗口关死。两个挡回都带提示并返回 false——
@@ -975,12 +980,13 @@ export const useApp = create<AppStore>((set, get) => ({
       const cid: string = chatId;
       const res = await api.agentSend({
         chatId,
-        text: t,
+        text: research.text,
         topicSlug: slug,
         stage,
         attachments: attachments ?? [],
         images: pics,
         mode: studio ? "studio" : "study",
+        deepResearch: research.deep || undefined,
       });
       set((s) => {
         // await 期间用户可能已经切走（切对话 / 回首页 / 进工坊——远程桥一个往返

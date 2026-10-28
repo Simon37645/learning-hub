@@ -728,3 +728,24 @@ PDF 的文字层里只有字——插图、示意图、公式图、扫描页、�
 | 手机上要多一个能力 | 什么都别做——手机上跑的就是桌面端那份界面，命令能通就自动有了。只有在 Rust 白名单里补一条（`bridge.rs` 的 `ALLOWED`，别忘了写理由） |
 | 手机上某个能力要收起来 | `src/lib/remote.ts` 的 `isRemote()` 判一下（藏按钮 / 换浏览器做法），或在 `bridge.rs` 的 `DENIED` 里写明原因 |
 | 局域网地址探测不准 | `remote::rank_addresses` 的排序规则（家用网段优先，VPN/CGNAT 靠后） |
+
+## 20. 深度研究（DeepResearch，内测）
+
+输入框里以「/研究 」开头发送，这一轮就变成一次小型研究：**列计划 → 多轮检索与阅读 →
+逐轮反思补漏 → 产出带来源的结构化报告**（对标 GPT 的 Deep Research）。选前缀而不是
+Composer 上的常驻开关，是因为「研究」是一轮的属性——前缀跟着消息走，不需要额外状态。
+
+实现刻意薄：**没有新的编排层**，还是普通对话循环，只动四处——
+
+| 改动 | 位置 |
+| --- | --- |
+| 注入研究协议提示词（按可用通道裁剪：联网 / 讲义库 / 都没有时的中文降级说明） | `agent/prompt.rs` 的 `deep_research_protocol`，`run_turn` 里追加到系统提示词并进「上下文构成」 |
+| 放宽工具循环上限到「不小于 40」（用户调大过的照常生效） | `agent/mod.rs` 的 `effective_max_iterations` |
+| 触发与剥前缀（发送的唯一咽喉，排队 / 打断重发天然都认） | `store/app.ts` 的 `send` → `lib/research.ts` 的 `parseResearchInput` |
+| 报告挂「存为笔记」（该轮最后一条带正文的 assistant 消息；工坊 / 无主题时没有入口） | `MessageMeta.deep_research` → `components/Chat.tsx` 的 `SaveAsNoteButton`，走 `note_create` + `note_save` 现有通道 |
+
+检索就是已有工具的组合：讲义库 `kb_search`（Study 专属、要开主题）、联网 `web_search` /
+`web_fetch`（实现在 `agent/tools/web.rs`，协议里的可用性判断与工具表实际给出的一致）。流程借鉴 dzhng/deep-research、
+GPT Researcher、stanford-oval/storm 的思路（均为 MIT，只借思路没引代码）；
+来源格式沿用现有约定——本地资料 `【来源：路径 第 N 页】`（可点击跳转），
+网页用 Markdown 链接（`openFile` 不认 http，所以网页来源不走 `【来源：…】`）。

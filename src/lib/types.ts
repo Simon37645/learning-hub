@@ -98,6 +98,8 @@ export interface MessageMeta {
   /** 这一轮写进缓存的部分（Anthropic 才有） */
   cacheWriteTokens?: number | null;
   interrupted?: boolean;
+  /** 这条消息来自「深度研究」轮（前端据此给该轮报告挂「存为笔记」入口）。普通轮没有这个字段 */
+  deepResearch?: boolean | null;
 }
 
 /** 「上下文构成」里的一块：标签 + 估算 token 数（后端按字符估的，只用来画比例） */
@@ -727,6 +729,8 @@ export interface TurnRequest {
   images?: ImageUpload[];
   /** study（默认）/ studio（工坊） */
   mode?: AgentMode;
+  /** 深度研究轮：注入研究协议提示词并放宽工具循环上限（输入框「/研究 」前缀触发） */
+  deepResearch?: boolean;
 }
 
 // ---------------------------------------------------------------- 查看器

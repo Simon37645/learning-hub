@@ -59,6 +59,21 @@ async fn wait_cancel(cancel: &AtomicBool) {
     }
 }
 
+/// 深度研究轮的工具循环下限：研究是「计划 → 多轮搜索/阅读 → 反思 → 报告」的
+/// 长循环（流程借鉴 dzhng/deep-research 的 breadth/depth 反馈式研究、
+/// GPT Researcher 与 stanford-oval/storm 的计划-报告结构，均为 MIT 协议；
+/// 只借思路没引代码），常规的每轮上限（默认 8 次往返）跑不完一次像样的研究。
+/// 取「不小于 40」而不是固定值：用户手动调大过的上限照常生效。
+pub const DEEP_RESEARCH_MIN_ITERATIONS: u32 = 40;
+
+pub fn effective_max_iterations(base: u32, deep_research: bool) -> u32 {
+    if deep_research {
+        base.max(DEEP_RESEARCH_MIN_ITERATIONS)
+    } else {
+        base
+    }
+}
+
 /// 开始一轮对话的入参。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +94,10 @@ pub struct TurnRequest {
     /// study（学习，默认）/ studio（工坊）。老对话与不传这个字段的前端都是学习模式
     #[serde(default)]
     pub mode: AgentMode,
+    /// 深度研究轮：前端用「/研究 」前缀触发。注入研究协议提示词（计划 → 多轮
+    /// 检索与阅读 → 反思补漏 → 带来源的结构化报告），并放宽工具循环轮数上限。
+    #[serde(default)]
+    pub deep_research: bool,
 }
 
 /// 一张随消息上传的图片（前端贴图/拖文件时传来）。
@@ -467,6 +486,8 @@ impl AgentService {
                 .unwrap_or_else(|| workspace.root.clone()),
         };
 
+        let max_iterations = effective_max_iterations(cfg.agent.max_iterations, req.deep_research);
+
         core.emit_agent(&AgentEvent::TurnStarted {
             turn_id: turn_id.clone(),
             chat_id: req.chat_id.clone(),
@@ -485,7 +506,8 @@ impl AgentService {
             .or_else(|| topic.as_ref().map(|t| t.meta.stage));
 
         // 两套提示词：工坊那份没有主题、没有资料清单，换成「读规范 → 写文件 → 发布 → 看状态」
-        let (system, system_sections) = match mode {
+        // （两者都要可变：深度研究轮会把协议追加进系统提示词并登记一个版块）
+        let (mut system, mut system_sections) = match mode {
             AgentMode::Studio => prompt::build_studio_prompt_with_stats(&prompt::StudioInputs {
                 config: &cfg,
                 supports_tools: profile.supports_tools,
@@ -508,6 +530,33 @@ impl AgentService {
                 memory: core.memory_digest(topic.as_ref()),
             }),
         };
+        // 深度研究：把研究协议追加到系统提示词末尾（含检索工具的可用性与降级
+        // 说明），并作为独立版块进「上下文构成」，让用户看得到这部分开销。
+        // 可用性在这里判一次（kb_search 是 Study 专属工具且要开着主题；
+        // 联网要总闸 + DeepSeek 配置都就绪——两侧判断都和工具表实际给的一致）。
+        if req.deep_research {
+            let web = cfg.agent.allow_web && cfg.deepseek.effective();
+            let kb = matches!(mode, AgentMode::Study) && topic.is_some();
+            if !web && !kb {
+                // 两侧都不可用：协议会让模型在报告里说明，但用户不该等到
+                // 报告写完才知道——这里先给一条能立刻看见的中文提示
+                core.toast(
+                    "warn",
+                    "深度研究：联网搜索没配置（设置 → 联网搜索），当前也没有可检索的本地知识库，\
+                     这一轮只能基于模型已有知识作答，结论请自行核实。",
+                );
+            }
+            let protocol = prompt::deep_research_protocol(prompt::ResearchTools {
+                web_search: web,
+                kb_search: kb,
+            });
+            system_sections.push(prompt::PromptSectionStat {
+                label: "深度研究协议".into(),
+                tokens: crate::agent::message::estimate_tokens(&protocol),
+            });
+            system = format!("{}\n\n{}", system, protocol);
+        }
+
         let system = format!("{}\n\n{}", prompt::current_date_line(), system);
 
         // 只把「当前模式下可见」的工具给模型（工坊不给出卷、写卡片这些要主题的工具）；
@@ -540,14 +589,14 @@ impl AgentService {
         let mut total_cache_write = 0u32;
         let mut reason = "stop".to_string();
 
-        for iteration in 1..=cfg.agent.max_iterations.max(1) {
+        for iteration in 1..=max_iterations.max(1) {
             if cancel.load(Ordering::SeqCst) {
                 return Err(AppError::Cancelled);
             }
             core.emit_agent(&AgentEvent::Iteration {
                 turn_id: turn_id.clone(),
                 index: iteration,
-                max: cfg.agent.max_iterations,
+                max: max_iterations,
             });
 
             trim_to_budget(&mut messages, cfg.agent.context_budget_chars);
@@ -736,6 +785,10 @@ impl AgentService {
 
             let mut assistant = ChatMessage::assistant(blocks);
             assistant.meta.model = Some(profile.model.clone());
+            // 前端据此给报告（该轮最后一条 assistant）挂「存为笔记」入口
+            if req.deep_research {
+                assistant.meta.deep_research = Some(true);
+            }
             assistant.meta.input_tokens = Some(in_tokens);
             assistant.meta.output_tokens = Some(out_tokens);
             if !real.is_empty() {
@@ -788,7 +841,7 @@ impl AgentService {
                 append_transcript(&core, topic.as_ref(), &req.chat_id, &tool_msg)?;
             }
 
-            if iteration >= cfg.agent.max_iterations {
+            if iteration >= max_iterations {
                 reason = "max_iterations".into();
                 break;
             }
@@ -1663,6 +1716,16 @@ mod tests {
         assert_eq!(parse_tool_args(""), Value::Object(Default::default()));
         assert_eq!(parse_tool_args("{bad").as_object().unwrap().len(), 0);
         assert_eq!(parse_tool_args("{\"a\":1}")["a"], 1);
+    }
+
+    /// 深度研究轮的循环上限：只放宽到「不小于 40」，用户手动调大过的上限照常生效；
+    /// 普通轮原样返回——这个函数是「让研究跑得完」的唯一开关，别在主循环里再写特例。
+    #[test]
+    fn deep_research_relaxes_iteration_cap() {
+        assert_eq!(effective_max_iterations(8, false), 8, "普通轮不动");
+        assert_eq!(effective_max_iterations(8, true), DEEP_RESEARCH_MIN_ITERATIONS);
+        assert_eq!(effective_max_iterations(120, true), 120, "用户调大过的上限优先");
+        assert_eq!(effective_max_iterations(0, true), DEEP_RESEARCH_MIN_ITERATIONS);
     }
 
     #[test]

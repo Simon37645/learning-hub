@@ -1248,6 +1248,14 @@ body.dragging-chat {
   align-items: center;
 }
 
+/* 深度研究报告的「存为笔记」：挂在消息 meta 那一行，跟时间/模型名排一起，
+   不另起一行占地方。继承 .btn 的形状，只压小字号对齐 meta 行 */
+button.save-report {
+  font-size: 11px;
+  padding: 2px 8px;
+  gap: 4px;
+}
+
 .typing-caret {
   display: inline-block;
   width: 7px;

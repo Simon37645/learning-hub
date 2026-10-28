@@ -176,6 +176,10 @@ pub struct MessageMeta {
     /// 这条消息是否被用户中止
     #[serde(default)]
     pub interrupted: bool,
+    /// 这条消息来自「深度研究」轮（前端据此给报告挂「存为笔记」入口）。
+    /// 普通轮不写这个字段（skip 掉），历史文件保持紧凑。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep_research: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

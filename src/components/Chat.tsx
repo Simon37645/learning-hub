@@ -10,6 +10,7 @@ import { highlightWithin, linkifyCitations, renderDemoBlocksIn, renderMarkdown, 
 import { clampText, fmtClock, fmtTokens, hotkey } from "../lib/format";
 import { imageFilesFrom, prepareImage } from "../lib/images";
 import { contextShares, lastRoundUsage, summarizeCache } from "../lib/usage";
+import { parseResearchInput, researchReportTitle } from "../lib/research";
 import { LessonSteps } from "./Lesson";
 import {
   EFFORT_HINT,
@@ -175,6 +176,7 @@ function MessageView({
   results,
   onLink,
   onImage,
+  canSaveAsNote = false,
 }: {
   msg: ChatMessage;
   /** 这一轮的首条消息（决定画不画头像：一轮只画一次） */
@@ -182,6 +184,8 @@ function MessageView({
   results: Map<string, ToolResultView>;
   onLink: (href: string) => void;
   onImage: (img: LightboxImage) => void;
+  /** 深度研究报告（该轮最后一条带正文的 assistant 消息）：挂「存为笔记」入口 */
+  canSaveAsNote?: boolean;
 }) {
   const user = msg.role === "user";
   const userName = useApp((s) => s.config?.userName ?? "我");
@@ -257,10 +261,52 @@ function MessageView({
             <span>{fmtClock(msg.createdAt)}</span>
             {msg.meta?.model && <span>{msg.meta.model}</span>}
             {msg.meta?.inputTokens ? <span>↑{msg.meta.inputTokens} ↓{msg.meta.outputTokens ?? 0}</span> : null}
+            {canSaveAsNote && <SaveAsNoteButton msg={msg} />}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+/** 深度研究报告的「存为笔记」：把报告正文写进当前主题的 notes/（走现有笔记通道）。
+ *  入口是否显示由 Chat 决定（只有学习模式 + 开着主题 + 该轮最后一条带正文的
+ *  assistant 消息），这里只管存：createNote 起标题（唯一文件名、自带 front matter），
+ *  saveNote 填正文——两个都是设置页/工作台在用的同一套命令，没有新通道。 */
+function SaveAsNoteButton({ msg }: { msg: ChatMessage }) {
+  const [saving, setSaving] = useState(false);
+  const toast = useApp((s) => s.toast);
+
+  async function save() {
+    const st = useApp.getState();
+    const slug = st.topic?.slug;
+    if (!slug || saving) return;
+    const content = msg.blocks
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("")
+      .trim();
+    if (!content) {
+      toast("warn", "这条消息没有可保存的正文");
+      return;
+    }
+    setSaving(true);
+    try {
+      const note = await st.createNote(researchReportTitle(content));
+      if (note) {
+        await st.saveNote(note.path, content);
+        toast("success", `报告已存为笔记：${note.path}`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <button className="btn sm save-report" title="把这份研究报告写进当前主题的 notes/（Markdown）" disabled={saving} onClick={() => void save()}>
+      {saving ? <Spinner /> : <Icon name="download" size={12} />}
+      存为笔记
+    </button>
   );
 }
 
@@ -449,6 +495,22 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
     const prev = visible[i - 1];
     return !prev || prev.role !== "assistant";
   };
+  // 深度研究报告：该轮**最后**一条带正文的 assistant 消息（下一条可见消息是用户发言
+  // 或没有下一条），且只有学习模式 + 开着主题才给「存为笔记」——工坊没有 notes/，
+  // 没开主题没处写。中途的过程性消息（后头还跟着 assistant）不算报告。
+  const researchReports = useMemo(() => {
+    const ids = new Set<string>();
+    if (mode !== "study" || !topic) return ids;
+    for (let i = 0; i < visible.length; i++) {
+      const m = visible[i];
+      if (m.role !== "assistant" || !m.meta?.deepResearch) continue;
+      const next = visible[i + 1];
+      if (next && next.role !== "user") continue;
+      if (!m.blocks.some((b) => b.type === "text" && b.text.trim())) continue;
+      ids.add(m.id);
+    }
+    return ids;
+  }, [visible, mode, topic]);
   const runningActs = liveActivities.filter((a) => a.running);
   const lastShown = visible[visible.length - 1];
   // 这一轮已经在上面画过头像了吗（用于活动卡片 / 流式气泡）
@@ -483,6 +545,7 @@ export function Chat({ mode = "study", welcome }: { mode?: AgentMode; welcome?: 
                 results={results}
                 onLink={onLink}
                 onImage={setLightbox}
+                canSaveAsNote={researchReports.has(m.id)}
               />
             ))}
 
@@ -955,6 +1018,17 @@ function Composer({ mode = "study" }: { mode?: AgentMode }) {
             <button className="icon-btn" title="取消排队" onClick={() => cancelQueued()}>
               <Icon name="close" size={11} />
             </button>
+          </div>
+        )}
+
+        {/* 「/研究 」前缀已敲上：明示这一轮会发生什么（多轮检索，比普通回复慢），
+            免得用户以为是卡住了。纯派生自输入框文本，不占状态 */}
+        {parseResearchInput(text).deep && (
+          <div className="composer-queued">
+            <Icon name="sparkle" size={12} />
+            <span className="ellip grow">
+              深度研究：这一轮会先列计划、多轮检索与阅读，最后产出带来源的报告（比普通回复慢不少）
+            </span>
           </div>
         )}
 

@@ -28,3 +28,6 @@ config.json.e2e-backup/
 /j_*.pdb
 /lh-verify-*/
 /lh_*_check.*
+
+# 应用运行时配置（会填入真实 API Key，不入库；文件本身保留在磁盘上）
+config.json
